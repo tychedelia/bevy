@@ -711,6 +711,10 @@ impl From<ColorGrading> for ColorGradingUniform {
 ///
 /// The vast majority of applications will not need to use this component, as it
 /// generally reduces rendering performance.
+///
+/// Note: This component should not be toggled at runtime. It is intended to be
+/// set up once when the camera is created. Changing this component after
+/// the initial setup may lead to unexpected behavior.
 #[derive(Component, Default)]
 pub struct NoIndirectDrawing;
 
