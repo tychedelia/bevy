@@ -1707,11 +1707,12 @@ impl BinnedRenderPhaseType {
     pub fn mesh(
         batchable: bool,
         gpu_preprocessing_support: &GpuPreprocessingSupport,
+        view_indirect_disabled: bool,
     ) -> BinnedRenderPhaseType {
-        match (batchable, gpu_preprocessing_support.max_supported_mode) {
-            (true, GpuPreprocessingMode::Culling) => BinnedRenderPhaseType::MultidrawableMesh,
-            (true, _) => BinnedRenderPhaseType::BatchableMesh,
-            (false, _) => BinnedRenderPhaseType::UnbatchableMesh,
+        match (batchable, gpu_preprocessing_support.max_supported_mode, view_indirect_disabled) {
+            (true, GpuPreprocessingMode::Culling, false) => BinnedRenderPhaseType::MultidrawableMesh,
+            (true, _, _) => BinnedRenderPhaseType::BatchableMesh,
+            (false, _, _) => BinnedRenderPhaseType::UnbatchableMesh,
         }
     }
 }
