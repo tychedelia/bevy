@@ -647,9 +647,24 @@ pub struct ViewLightsUniformOffset {
     pub offset: u32,
 }
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct LightMeta {
     pub view_gpu_lights: DynamicUniformBuffer<GpuLights>,
+}
+
+impl FromWorld for LightMeta {
+    fn from_world(world: &mut World) -> Self {
+        let mut buffer = DynamicUniformBuffer::default();
+        buffer.set_label(Some("gpu_lights_buffer"));
+
+        let render_device = world.resource::<RenderDevice>();
+
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            buffer.add_usages(BufferUsages::STORAGE);
+        }
+
+        Self { view_gpu_lights: buffer }
+    }
 }
 
 #[derive(Component)]

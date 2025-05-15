@@ -2,6 +2,7 @@
 
 #import bevy_pbr::{
     mesh_view_bindings::{
+        push_constants,
         view,
         visibility_ranges,
         VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE
@@ -146,7 +147,13 @@ fn get_visibility_range_dither_level(instance_index: u32, world_position: vec4<f
     }
 
     let lod_range = visibility_ranges[visibility_buffer_index];
+
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let view_index = push_constants.view_index;
+    let camera_distance = length(view[view_index].world_position.xyz - world_position.xyz);
+#else
     let camera_distance = length(view.world_position.xyz - world_position.xyz);
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 
     // This encodes the following mapping:
     //

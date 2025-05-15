@@ -80,7 +80,7 @@ pub mod prelude {
         mesh_material::MeshMaterial3d,
         parallax::ParallaxMappingMethod,
         pbr_material::StandardMaterial,
-        ssao::ScreenSpaceAmbientOcclusionPlugin,
+        // ssao::ScreenSpaceAmbientOcclusionPlugin,
     };
 }
 
@@ -483,7 +483,6 @@ impl Plugin for PbrPlugin {
                     prepare_clusters.in_set(RenderSystems::PrepareResources),
                 ),
             )
-            .init_resource::<LightMeta>()
             .init_resource::<RenderMaterialBindings>();
 
         render_app.world_mut().add_observer(add_light_view_entities);
@@ -512,6 +511,7 @@ impl Plugin for PbrPlugin {
 
         // Extract the required data from the main world
         render_app
+            .init_resource::<LightMeta>()
             .init_resource::<ShadowSamplers>()
             .init_resource::<GlobalClusterableObjectMeta>()
             .init_resource::<FallbackBindlessResources>();

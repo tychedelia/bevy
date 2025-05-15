@@ -73,7 +73,7 @@ use bevy_ecs::system::SystemChangeTick;
 use bevy_render::camera::TemporalJitter;
 use bevy_render::prelude::Msaa;
 use bevy_render::sync_world::{MainEntity, MainEntityHashMap};
-use bevy_render::view::ExtractedView;
+use bevy_render::view::{ExtractedView, ViewIndex};
 use bevy_render::RenderSystems::PrepareAssets;
 use bytemuck::{Pod, Zeroable};
 use nonmax::{NonMaxU16, NonMaxU32};
@@ -2618,7 +2618,14 @@ impl SpecializedMeshPipeline for MeshPipeline {
                 })],
             }),
             layout: bind_group_layout,
-            push_constant_ranges: vec![],
+            push_constant_ranges: if self.binding_arrays_are_usable {
+                vec![PushConstantRange {
+                    stages: ShaderStages::VERTEX_FRAGMENT,
+                    range: 0..4,
+                }]
+            } else {
+                vec![]
+            },
             primitive: PrimitiveState {
                 front_face: FrontFace::Ccw,
                 cull_mode: Some(Face::Back),
@@ -2881,7 +2888,7 @@ fn prepare_mesh_bind_groups_for_phase(
 
 pub struct SetMeshViewBindGroup<const I: usize>;
 impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshViewBindGroup<I> {
-    type Param = ();
+    type Param = (SRes<MeshPipeline>,);
     type ViewQuery = (
         Read<ViewUniformOffset>,
         Read<ViewLightsUniformOffset>,
@@ -2890,6 +2897,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshViewBindGroup<I> 
         Read<ViewScreenSpaceReflectionsUniformOffset>,
         Read<ViewEnvironmentMapUniformOffset>,
         Read<MeshViewBindGroup>,
+        Read<ViewIndex>,
         Option<Read<OrderIndependentTransparencySettingsOffset>>,
     );
     type ItemQuery = ();
@@ -2905,24 +2913,30 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshViewBindGroup<I> 
             view_ssr,
             view_environment_map,
             mesh_view_bind_group,
+            view_index,
             maybe_oit_layers_count_offset,
         ): ROQueryItem<'w, Self::ViewQuery>,
         _entity: Option<()>,
-        _: SystemParamItem<'w, '_, Self::Param>,
+        (mesh_pipeline,): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
-        let mut offsets: SmallVec<[u32; 8]> = smallvec![
-            view_uniform.offset,
-            view_lights.offset,
-            view_fog.offset,
-            **view_light_probes,
-            **view_ssr,
-            **view_environment_map,
-        ];
-        if let Some(layers_count_offset) = maybe_oit_layers_count_offset {
-            offsets.push(layers_count_offset.offset);
+        if mesh_pipeline.binding_arrays_are_usable {
+            pass.set_bind_group(I, &mesh_view_bind_group.value, &[]);
+            pass.set_push_constants(ShaderStages::VERTEX_FRAGMENT, 0, &view_index.to_le_bytes());
+        } else {
+            let mut offsets: SmallVec<[u32; 8]> = smallvec![
+                view_uniform.offset,
+                view_lights.offset,
+                view_fog.offset,
+                **view_light_probes,
+                **view_ssr,
+                **view_environment_map,
+            ];
+            if let Some(layers_count_offset) = maybe_oit_layers_count_offset {
+                offsets.push(layers_count_offset.offset);
+            }
+            pass.set_bind_group(I, &mesh_view_bind_group.value, &offsets);
         }
-        pass.set_bind_group(I, &mesh_view_bind_group.value, &offsets);
 
         RenderCommandResult::Success
     }

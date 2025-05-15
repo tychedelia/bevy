@@ -1,5 +1,11 @@
 //! Screen space reflections implemented via raymarching.
 
+use crate::{
+    binding_arrays_are_usable, graph::NodePbr, prelude::EnvironmentMapLight,
+    MeshPipelineViewLayoutKey, MeshPipelineViewLayouts, MeshViewBindGroup, RenderViewLightProbes,
+    ViewEnvironmentMapUniformOffset, ViewFogUniformOffset, ViewLightProbesUniformOffset,
+    ViewLightsUniformOffset,
+};
 use bevy_app::{App, Plugin};
 use bevy_asset::{load_internal_asset, weak_handle, Handle};
 use bevy_core_pipeline::{
@@ -24,6 +30,7 @@ use bevy_ecs::{
 use bevy_image::BevyDefault as _;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 use bevy_render::render_graph::RenderGraph;
+use bevy_render::render_resource::{BufferUsages, PushConstantRange};
 use bevy_render::{
     extract_component::{ExtractComponent, ExtractComponentPlugin},
     render_graph::{NodeRunError, RenderGraphApp, RenderGraphContext, ViewNode, ViewNodeRunner},
@@ -41,13 +48,6 @@ use bevy_render::{
 };
 use bevy_utils::{once, prelude::default};
 use tracing::info;
-
-use crate::{
-    binding_arrays_are_usable, graph::NodePbr, prelude::EnvironmentMapLight,
-    MeshPipelineViewLayoutKey, MeshPipelineViewLayouts, MeshViewBindGroup, RenderViewLightProbes,
-    ViewEnvironmentMapUniformOffset, ViewFogUniformOffset, ViewLightProbesUniformOffset,
-    ViewLightsUniformOffset,
-};
 
 const SSR_SHADER_HANDLE: Handle<Shader> = weak_handle!("0b559df2-0d61-4f53-bf62-aea16cf32787");
 const RAYMARCH_SHADER_HANDLE: Handle<Shader> = weak_handle!("798cc6fc-6072-4b6c-ab4f-83905fa4a19e");
@@ -161,8 +161,23 @@ pub struct ScreenSpaceReflectionsPipeline {
 }
 
 /// A GPU buffer that stores the screen space reflection settings for each view.
-#[derive(Resource, Default, Deref, DerefMut)]
+#[derive(Resource, Deref, DerefMut)]
 pub struct ScreenSpaceReflectionsBuffer(pub DynamicUniformBuffer<ScreenSpaceReflectionsUniform>);
+
+impl FromWorld for ScreenSpaceReflectionsBuffer {
+    fn from_world(world: &mut World) -> Self {
+        let mut buffer = DynamicUniformBuffer::default();
+        buffer.set_label(Some("ssr_buffer"));
+
+        let render_device = world.resource::<RenderDevice>();
+
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            buffer.add_usages(BufferUsages::STORAGE);
+        }
+
+        Self(buffer)
+    }
+}
 
 /// A component that stores the offset within the
 /// [`ScreenSpaceReflectionsBuffer`] for each view.
@@ -195,7 +210,6 @@ impl Plugin for ScreenSpaceReflectionsPlugin {
         };
 
         render_app
-            .init_resource::<ScreenSpaceReflectionsBuffer>()
             .add_systems(Render, prepare_ssr_pipelines.in_set(RenderSystems::Prepare))
             .add_systems(
                 Render,
@@ -213,6 +227,7 @@ impl Plugin for ScreenSpaceReflectionsPlugin {
         };
 
         render_app
+            .init_resource::<ScreenSpaceReflectionsBuffer>()
             .init_resource::<ScreenSpaceReflectionsPipeline>()
             .init_resource::<SpecializedRenderPipelines<ScreenSpaceReflectionsPipeline>>();
 
@@ -555,7 +570,14 @@ impl SpecializedRenderPipeline for ScreenSpaceReflectionsPipeline {
                     write_mask: ColorWrites::ALL,
                 })],
             }),
-            push_constant_ranges: vec![],
+            push_constant_ranges: if self.binding_arrays_are_usable {
+                vec![PushConstantRange {
+                    stages: ShaderStages::VERTEX_FRAGMENT,
+                    range: 0..4,
+                }]
+            } else {
+                vec![]
+            },
             primitive: default(),
             depth_stencil: None,
             multisample: default(),

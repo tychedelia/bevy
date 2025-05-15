@@ -6,8 +6,13 @@
     globals::Globals,
 }
 
-@group(0) @binding(0) var<uniform> view: View;
-@group(0) @binding(1) var<uniform> lights: types::Lights;
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+@group(0) @binding(0) var<storage> view: View;
+@group(0) @binding(1) var<storage> lights: types::Lights;
+#else
+@group(0) @binding(0) var<uniform> views: array<View>;
+@group(0) @binding(1) var<uniform> lights: array<types::Lights>;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 #ifdef NO_CUBE_ARRAY_TEXTURES_SUPPORT
 @group(0) @binding(2) var point_shadow_textures: texture_depth_cube;
 #else
@@ -38,8 +43,14 @@
 #endif
 
 @group(0) @binding(11) var<uniform> globals: Globals;
+
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+@group(0) @binding(12) var<storage> fog: array<types::Fog>;
+@group(0) @binding(13) var<storage> light_probes: array<types::LightProbes>;
+#else
 @group(0) @binding(12) var<uniform> fog: types::Fog;
 @group(0) @binding(13) var<uniform> light_probes: types::LightProbes;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 
 const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 #if AVAILABLE_STORAGE_BUFFER_BINDINGS >= 6
@@ -48,7 +59,11 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 @group(0) @binding(14) var<uniform> visibility_ranges: array<vec4<f32>, VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE>;
 #endif
 
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+@group(0) @binding(15) var<storage> ssr_settings: array<types::ScreenSpaceReflectionsSettings>;
+#else
 @group(0) @binding(15) var<uniform> ssr_settings: types::ScreenSpaceReflectionsSettings;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 @group(0) @binding(16) var screen_space_ambient_occlusion_texture: texture_2d<f32>;
 
 #ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
@@ -115,5 +130,25 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 #ifdef OIT_ENABLED
 @group(0) @binding(34) var<storage, read_write> oit_layers: array<vec2<u32>>;
 @group(0) @binding(35) var<storage, read_write> oit_layer_ids: array<atomic<i32>>;
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+@group(0) @binding(36) var<storage> oit_settings: array<types::OrderIndependentTransparencySettings>;
+#else
 @group(0) @binding(36) var<uniform> oit_settings: types::OrderIndependentTransparencySettings;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 #endif // OIT_ENABLED
+
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+struct PushConstants {
+    view_index: u32,
+}
+
+var<push_constant> push_constants: PushConstants;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+
+//fn get_view() -> View {
+//#if MULTIPLE_LIGHT_PROBES_IN_ARRAY
+//    let view_index = push_constants.view_index;
+//    let view = views[view_index];
+//#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+//    return view;
+//}

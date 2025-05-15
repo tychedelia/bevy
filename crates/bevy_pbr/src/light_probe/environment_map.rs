@@ -63,12 +63,12 @@ use bevy_render::{
     texture::{FallbackImage, GpuImage},
 };
 
-use core::{num::NonZero, ops::Deref};
-
 use crate::{
     add_cubemap_texture_view, binding_arrays_are_usable, EnvironmentMapUniform,
     MAX_VIEW_LIGHT_PROBES,
 };
+use bevy_render::render_resource::binding_types::storage_buffer;
+use core::{num::NonZero, ops::Deref};
 
 use super::{LightProbeComponent, RenderViewLightProbes};
 
@@ -212,16 +212,18 @@ pub(crate) fn get_bind_group_layout_entries(
 ) -> [BindGroupLayoutEntryBuilder; 4] {
     let mut texture_cube_binding =
         binding_types::texture_cube(TextureSampleType::Float { filterable: true });
+    let mut environment_map_binding = uniform_buffer::<EnvironmentMapUniform>(true);
     if binding_arrays_are_usable(render_device, render_adapter) {
         texture_cube_binding =
             texture_cube_binding.count(NonZero::<u32>::new(MAX_VIEW_LIGHT_PROBES as _).unwrap());
+        environment_map_binding = storage_buffer::<EnvironmentMapUniform>(false)
     }
 
     [
         texture_cube_binding,
         texture_cube_binding,
         binding_types::sampler(SamplerBindingType::Filtering),
-        uniform_buffer::<EnvironmentMapUniform>(true).visibility(ShaderStages::FRAGMENT),
+        environment_map_binding.visibility(ShaderStages::FRAGMENT),
     ]
 }
 

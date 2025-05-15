@@ -10,7 +10,7 @@ use bevy_render::{
     view::ExtractedView,
     Render, RenderApp, RenderSystems,
 };
-
+use bevy_render::render_resource::BufferUsages;
 use crate::{DistanceFog, FogFalloff};
 
 /// The GPU-side representation of the fog configuration that's sent as a uniform to the shader
@@ -40,9 +40,24 @@ const GPU_FOG_MODE_EXPONENTIAL_SQUARED: u32 = 3;
 const GPU_FOG_MODE_ATMOSPHERIC: u32 = 4;
 
 /// Metadata for fog
-#[derive(Default, Resource)]
+#[derive(Resource)]
 pub struct FogMeta {
     pub gpu_fogs: DynamicUniformBuffer<GpuFog>,
+}
+
+impl FromWorld for FogMeta {
+    fn from_world(world: &mut World) -> Self {
+        let mut buffer = DynamicUniformBuffer::default();
+        buffer.set_label(Some("fog_buffer"));
+
+        let render_device = world.resource::<RenderDevice>();
+
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            buffer.add_usages(BufferUsages::STORAGE);
+        }
+
+        Self { gpu_fogs: buffer }
+    }
 }
 
 /// Prepares fog metadata and writes the fog-related uniform buffers to the GPU
@@ -138,7 +153,9 @@ impl Plugin for FogPlugin {
 
         app.register_type::<DistanceFog>();
         app.add_plugins(ExtractComponentPlugin::<DistanceFog>::default());
+    }
 
+    fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<FogMeta>()

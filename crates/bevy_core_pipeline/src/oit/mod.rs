@@ -223,6 +223,10 @@ impl FromWorld for OitBuffers {
         let mut settings = DynamicUniformBuffer::default();
         settings.set_label(Some("oit_settings"));
 
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            settings.add_usages(BufferUsages::STORAGE);
+        }
+
         Self {
             layers,
             layer_ids,

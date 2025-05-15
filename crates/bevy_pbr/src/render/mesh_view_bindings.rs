@@ -202,16 +202,31 @@ fn layout_entries(
     render_device: &RenderDevice,
     render_adapter: &RenderAdapter,
 ) -> Vec<BindGroupLayoutEntry> {
+    let binding_arrays_are_usable =
+        crate::light_probe::binding_arrays_are_usable(render_device, render_adapter);
+
     let mut entries = DynamicBindGroupLayoutEntries::new_with_indices(
         ShaderStages::FRAGMENT,
         (
             // View
             (
                 0,
-                uniform_buffer::<ViewUniform>(true).visibility(ShaderStages::VERTEX_FRAGMENT),
+                if binding_arrays_are_usable {
+                    storage_buffer::<ViewUniform>(false)
+                } else {
+                    uniform_buffer::<ViewUniform>(true)
+                }
+                .visibility(ShaderStages::VERTEX_FRAGMENT),
             ),
             // Lights
-            (1, uniform_buffer::<GpuLights>(true)),
+            (
+                1,
+                if binding_arrays_are_usable {
+                    storage_buffer::<ViewUniform>(false)
+                } else {
+                    uniform_buffer::<GpuLights>(true)
+                },
+            ),
             // Point Shadow Texture Cube Array
             (
                 2,
@@ -290,12 +305,31 @@ fn layout_entries(
             // Globals
             (
                 11,
-                uniform_buffer::<GlobalsUniform>(false).visibility(ShaderStages::VERTEX_FRAGMENT),
+                if binding_arrays_are_usable {
+                    storage_buffer::<GlobalsUniform>(false)
+                } else {
+                    uniform_buffer::<GlobalsUniform>(true)
+                }
+                .visibility(ShaderStages::VERTEX_FRAGMENT),
             ),
             // Fog
-            (12, uniform_buffer::<GpuFog>(true)),
+            (
+                12,
+                if binding_arrays_are_usable {
+                    storage_buffer::<GpuFog>(false)
+                } else {
+                    uniform_buffer::<GpuFog>(true)
+                },
+            ),
             // Light probes
-            (13, uniform_buffer::<LightProbesUniform>(true)),
+            (
+                13,
+                if binding_arrays_are_usable {
+                    storage_buffer::<LightProbesUniform>(false)
+                } else {
+                    uniform_buffer::<LightProbesUniform>(true)
+                },
+            ),
             // Visibility ranges
             (
                 14,
@@ -307,7 +341,14 @@ fn layout_entries(
                 .visibility(ShaderStages::VERTEX),
             ),
             // Screen space reflection settings
-            (15, uniform_buffer::<ScreenSpaceReflectionsUniform>(true)),
+            (
+                15,
+                if binding_arrays_are_usable {
+                    storage_buffer::<ScreenSpaceReflectionsUniform>(false)
+                } else {
+                    uniform_buffer::<ScreenSpaceReflectionsUniform>(true)
+                },
+            ),
             // Screen space ambient occlusion texture
             (
                 16,
@@ -392,7 +433,11 @@ fn layout_entries(
                 // oit_layer_count
                 (
                     36,
-                    uniform_buffer::<OrderIndependentTransparencySettings>(true),
+                    if binding_arrays_are_usable {
+                        storage_buffer::<OrderIndependentTransparencySettings>(false)
+                    } else {
+                        uniform_buffer::<OrderIndependentTransparencySettings>(true)
+                    },
                 ),
             ));
         }

@@ -7,7 +7,7 @@
     clustered_forward,
     lighting,
     lighting::{LAYER_BASE, LAYER_CLEARCOAT},
-    mesh_view_bindings::{view, depth_prepass_texture, deferred_prepass_texture, ssr_settings},
+    mesh_view_bindings::{view, depth_prepass_texture, deferred_prepass_texture, ssr_settings, push_constants},
     pbr_deferred_functions::pbr_input_from_deferred_gbuffer,
     pbr_deferred_types,
     pbr_functions,
@@ -58,15 +58,27 @@
 //
 // [1]: https://lettier.github.io/3d-game-shaders-for-beginners/screen-space-reflection.html
 fn evaluate_ssr(R_world: vec3<f32>, P_world: vec3<f32>) -> vec4<f32> {
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let view_index = push_constants.view_index;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
     let depth_size = vec2<f32>(textureDimensions(depth_prepass_texture));
 
     var raymarch = depth_ray_march_new_from_depth(depth_size);
     depth_ray_march_from_cs(&raymarch, position_world_to_ndc(P_world));
     depth_ray_march_to_ws_dir(&raymarch, normalize(R_world));
+
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    raymarch.linear_steps = ssr_settings[view_index].linear_steps;
+    raymarch.bisection_steps = ssr_settings[view_index].bisection_steps;
+    raymarch.use_secant = ssr_settings[view_index].use_secant != 0u;
+    raymarch.depth_thickness_linear_z = ssr_settings[view_index].thickness;
+#else
     raymarch.linear_steps = ssr_settings.linear_steps;
     raymarch.bisection_steps = ssr_settings.bisection_steps;
     raymarch.use_secant = ssr_settings.use_secant != 0u;
     raymarch.depth_thickness_linear_z = ssr_settings.thickness;
+#endif
+
     raymarch.jitter = 1.0;  // Disable jitter for now.
     raymarch.march_behind_surfaces = false;
 
@@ -83,6 +95,10 @@ fn evaluate_ssr(R_world: vec3<f32>, P_world: vec3<f32>) -> vec4<f32> {
 
 @fragment
 fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let view_index = push_constants.view_index;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+
     // Sample the depth.
     var frag_coord = in.position;
     frag_coord.z = prepass_utils::prepass_depth(in.position, 0u);
@@ -95,7 +111,11 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // Don't do anything if the surface is too rough, since we can't blur or do
     // temporal accumulation yet.
     let perceptual_roughness = pbr_input.material.perceptual_roughness;
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    if (perceptual_roughness > ssr_settings[view_index].perceptual_roughness_threshold) {
+#else
     if (perceptual_roughness > ssr_settings.perceptual_roughness_threshold) {
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
         return fragment;
     }
 
@@ -184,7 +204,11 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
         &lighting_input, &clusterable_object_index_ranges, false);
 
     // Accumulate the environment map light.
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    indirect_light += view[view_index].exposure *
+#else
     indirect_light += view.exposure *
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
         (environment_light.diffuse * diffuse_occlusion +
         environment_light.specular * specular_occlusion);
 #endif

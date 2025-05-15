@@ -10,7 +10,7 @@
     prepass_utils,
     lighting,
     mesh_bindings::mesh,
-    mesh_view_bindings::view,
+    mesh_view_bindings::{push_constants, view},
     parallax_mapping::parallaxed_uv,
     lightmap::lightmap,
 }
@@ -46,7 +46,12 @@ fn pbr_input_from_vertex_output(
     pbr_input.flags = mesh[in.instance_index].flags;
 #endif
 
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let view_index = push_constants.view_index;
+    pbr_input.is_orthographic = view[view_index].clip_from_view[3].w == 1.0;
+#else
     pbr_input.is_orthographic = view.clip_from_view[3].w == 1.0;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
     pbr_input.V = pbr_functions::calculate_view(in.world_position, pbr_input.is_orthographic);
     pbr_input.frag_coord = in.position;
     pbr_input.world_position = in.world_position;

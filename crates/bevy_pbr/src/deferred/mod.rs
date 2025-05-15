@@ -397,7 +397,14 @@ impl SpecializedRenderPipeline for DeferredLightingLayout {
                 },
             }),
             multisample: MultisampleState::default(),
-            push_constant_ranges: vec![],
+            push_constant_ranges: if self.mesh_pipeline.binding_arrays_are_usable {
+                vec![PushConstantRange {
+                    stages: ShaderStages::VERTEX_FRAGMENT,
+                    range: 0..4,
+                }]
+            } else {
+                vec![]
+            },
             zero_initialize_workgroup_memory: false,
         }
     }

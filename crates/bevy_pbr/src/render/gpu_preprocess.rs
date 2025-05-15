@@ -56,11 +56,9 @@ use bevy_utils::TypeIdMap;
 use bitflags::bitflags;
 use smallvec::{smallvec, SmallVec};
 use tracing::warn;
-
 use crate::{
     graph::NodePbr, MeshCullingData, MeshCullingDataBuffer, MeshInputUniform, MeshUniform,
 };
-
 use super::{ShadowView, ViewLightEntities};
 
 /// The handle to the `mesh_preprocess.wgsl` compute shader.

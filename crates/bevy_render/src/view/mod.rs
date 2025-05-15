@@ -584,6 +584,7 @@ impl FromWorld for ViewUniforms {
         uniforms.set_label(Some("view_uniforms_buffer"));
 
         let render_device = world.resource::<RenderDevice>();
+
         if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
             uniforms.add_usages(BufferUsages::STORAGE);
         }
@@ -596,6 +597,9 @@ impl FromWorld for ViewUniforms {
 pub struct ViewUniformOffset {
     pub offset: u32,
 }
+
+#[derive(Component, Deref)]
+pub struct ViewIndex(pub u32);
 
 #[derive(Component)]
 pub struct ViewTarget {
@@ -912,7 +916,9 @@ pub fn prepare_view_uniforms(
     else {
         return;
     };
-    for (entity, extracted_camera, extracted_view, frustum, temporal_jitter, mip_bias) in &views {
+    for (index, (entity, extracted_camera, extracted_view, frustum, temporal_jitter, mip_bias)) in
+        views.iter().enumerate()
+    {
         let viewport = extracted_view.viewport.as_vec4();
         let unjittered_projection = extracted_view.clip_from_view;
         let mut clip_from_view = unjittered_projection;
@@ -959,7 +965,9 @@ pub fn prepare_view_uniforms(
             }),
         };
 
-        commands.entity(entity).insert(view_uniforms);
+        let view_index = ViewIndex(index as u32);
+
+        commands.entity(entity).insert((view_uniforms, view_index));
     }
 }
 

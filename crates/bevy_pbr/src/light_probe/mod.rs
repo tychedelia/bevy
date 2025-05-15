@@ -32,14 +32,15 @@ use bevy_render::{
 use bevy_transform::{components::Transform, prelude::GlobalTransform};
 use tracing::error;
 
-use core::{hash::Hash, ops::Deref};
-
 use crate::{
     irradiance_volume::IRRADIANCE_VOLUME_SHADER_HANDLE,
     light_probe::environment_map::{
         EnvironmentMapIds, EnvironmentMapLight, ENVIRONMENT_MAP_SHADER_HANDLE,
     },
 };
+use bevy_ecs::prelude::{FromWorld, World};
+use bevy_render::render_resource::BufferUsages;
+use core::{hash::Hash, ops::Deref};
 
 use self::irradiance_volume::IrradianceVolume;
 
@@ -174,8 +175,23 @@ pub struct LightProbesUniform {
 }
 
 /// A GPU buffer that stores information about all light probes.
-#[derive(Resource, Default, Deref, DerefMut)]
+#[derive(Resource, Deref, DerefMut)]
 pub struct LightProbesBuffer(DynamicUniformBuffer<LightProbesUniform>);
+
+impl FromWorld for LightProbesBuffer {
+    fn from_world(world: &mut World) -> Self {
+        let mut buffer = DynamicUniformBuffer::default();
+        buffer.set_label(Some("light_probes_buffer"));
+
+        let render_device = world.resource::<RenderDevice>();
+
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            buffer.add_usages(BufferUsages::STORAGE);
+        }
+
+        Self(buffer)
+    }
+}
 
 /// A component attached to each camera in the render world that stores the
 /// index of the [`LightProbesUniform`] in the [`LightProbesBuffer`].
@@ -334,8 +350,23 @@ impl Default for EnvironmentMapUniform {
 }
 
 /// A GPU buffer that stores the environment map settings for each view.
-#[derive(Resource, Default, Deref, DerefMut)]
+#[derive(Resource, Deref, DerefMut)]
 pub struct EnvironmentMapUniformBuffer(pub DynamicUniformBuffer<EnvironmentMapUniform>);
+
+impl FromWorld for EnvironmentMapUniformBuffer {
+    fn from_world(world: &mut World) -> Self {
+        let mut buffer = DynamicUniformBuffer::default();
+        buffer.set_label(Some("environment_buffer"));
+
+        let render_device = world.resource::<RenderDevice>();
+
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            buffer.add_usages(BufferUsages::STORAGE);
+        }
+
+        Self(buffer)
+    }
+}
 
 /// A component that stores the offset within the
 /// [`EnvironmentMapUniformBuffer`] for each view.
@@ -799,6 +830,7 @@ pub(crate) fn binding_arrays_are_usable(
                 as u32
         && render_device.features().contains(
             WgpuFeatures::TEXTURE_BINDING_ARRAY
-                | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
+                | WgpuFeatures::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+                | WgpuFeatures::PUSH_CONSTANTS,
         )
 }

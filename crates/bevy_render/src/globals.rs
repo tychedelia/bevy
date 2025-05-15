@@ -10,6 +10,7 @@ use bevy_asset::{load_internal_asset, weak_handle, Handle};
 use bevy_diagnostic::FrameCount;
 use bevy_ecs::prelude::*;
 use bevy_reflect::prelude::*;
+use bevy_render::render_resource::BufferUsages;
 use bevy_time::Time;
 
 pub const GLOBALS_TYPE_HANDLE: Handle<Shader> =
@@ -21,7 +22,9 @@ impl Plugin for GlobalsPlugin {
     fn build(&self, app: &mut App) {
         load_internal_asset!(app, GLOBALS_TYPE_HANDLE, "globals.wgsl", Shader::from_wgsl);
         app.register_type::<GlobalsUniform>();
+    }
 
+    fn finish(&self, app: &mut App) {
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<GlobalsBuffer>()
@@ -62,9 +65,24 @@ pub struct GlobalsUniform {
 }
 
 /// The buffer containing the [`GlobalsUniform`]
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct GlobalsBuffer {
     pub buffer: UniformBuffer<GlobalsUniform>,
+}
+
+impl FromWorld for GlobalsBuffer {
+    fn from_world(world: &mut World) -> Self {
+        let mut uniforms = UniformBuffer::default();
+        uniforms.set_label(Some("globals_buffer"));
+
+        let render_device = world.resource::<RenderDevice>();
+
+        if render_device.limits().max_storage_buffers_per_shader_stage > 0 {
+            uniforms.add_usages(BufferUsages::STORAGE);
+        }
+
+        Self { buffer: uniforms }
+    }
 }
 
 fn prepare_globals_buffer(
