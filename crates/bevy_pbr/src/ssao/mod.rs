@@ -59,12 +59,12 @@ impl Plugin for ScreenSpaceAmbientOcclusionPlugin {
             Shader::from_wgsl
         );
         load_internal_asset!(app, SSAO_SHADER_HANDLE, "ssao.wgsl", Shader::from_wgsl);
-        // load_internal_asset!(
-        //     app,
-        //     SPATIAL_DENOISE_SHADER_HANDLE,
-        //     "spatial_denoise.wgsl",
-        //     Shader::from_wgsl
-        // );
+        load_internal_asset!(
+            app,
+            SPATIAL_DENOISE_SHADER_HANDLE,
+            "spatial_denoise.wgsl",
+            Shader::from_wgsl
+        );
         load_internal_asset!(
             app,
             SSAO_UTILS_SHADER_HANDLE,

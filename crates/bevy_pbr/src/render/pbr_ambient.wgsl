@@ -2,7 +2,7 @@
 
 #import bevy_pbr::{
     lighting::{EnvBRDFApprox, F_AB},
-    mesh_view_bindings::lights,
+    mesh_view_bindings::get_lights,
 }
 
 // A precomputed `NdotV` is provided because it is computed regardless,
@@ -25,5 +25,5 @@ fn ambient_light(
     // See: https://google.github.io/filament/Filament.html#specularocclusion
     let specular_occlusion = saturate(dot(specular_color, vec3(50.0 * 0.33)));
 
-    return (diffuse_ambient + specular_ambient * specular_occlusion) * lights.ambient_color.rgb * occlusion;
+    return (diffuse_ambient + specular_ambient * specular_occlusion) * get_lights().ambient_color.rgb * occlusion;
 }

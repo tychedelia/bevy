@@ -599,7 +599,7 @@ fn directional_light(
     let V = (*input).V;
     let roughness = (*input).layers[LAYER_BASE].roughness;
 
-    let light = &view_bindings::lights.directional_lights[light_id];
+    let light = &view_bindings::get_lights().directional_lights[light_id];
 
     let L = (*light).direction_to_light.xyz;
     var derived_input = derive_lighting_input(N, V, L);

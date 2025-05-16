@@ -38,24 +38,24 @@ fn view_z_to_z_slice(view_z: f32, is_orthographic: bool) -> u32 {
     var z_slice: u32 = 0u;
     if is_orthographic {
         // NOTE: view_z is correct in the orthographic case
-        z_slice = u32(floor((view_z - bindings::lights.cluster_factors.z) * bindings::lights.cluster_factors.w));
+        z_slice = u32(floor((view_z - bindings::get_lights().cluster_factors.z) * bindings::get_lights().cluster_factors.w));
     } else {
         // NOTE: had to use -view_z to make it positive else log(negative) is nan
-        z_slice = u32(log(-view_z) * bindings::lights.cluster_factors.z - bindings::lights.cluster_factors.w + 1.0);
+        z_slice = u32(log(-view_z) * bindings::get_lights().cluster_factors.z - bindings::get_lights().cluster_factors.w + 1.0);
     }
     // NOTE: We use min as we may limit the far z plane used for clustering to be closer than
     // the furthest thing being drawn. This means that we need to limit to the maximum cluster.
-    return min(z_slice, bindings::lights.cluster_dimensions.z - 1u);
+    return min(z_slice, bindings::get_lights().cluster_dimensions.z - 1u);
 }
 
 fn fragment_cluster_index(frag_coord: vec2<f32>, view_z: f32, is_orthographic: bool) -> u32 {
-    let xy = vec2<u32>(floor((frag_coord - bindings::view.viewport.xy) * bindings::lights.cluster_factors.xy));
+    let xy = vec2<u32>(floor((frag_coord - bindings::get_view().viewport.xy) * bindings::get_lights().cluster_factors.xy));
     let z_slice = view_z_to_z_slice(view_z, is_orthographic);
     // NOTE: Restricting cluster index to avoid undefined behavior when accessing uniform buffer
     // arrays based on the cluster index.
     return min(
-        (xy.y * bindings::lights.cluster_dimensions.x + xy.x) * bindings::lights.cluster_dimensions.z + z_slice,
-        bindings::lights.cluster_dimensions.w - 1u
+        (xy.y * bindings::get_lights().cluster_dimensions.x + xy.x) * bindings::get_lights().cluster_dimensions.z + z_slice,
+        bindings::get_lights().cluster_dimensions.w - 1u
     );
 }
 
@@ -151,10 +151,10 @@ fn cluster_debug_visualization(
     var z_slice: u32 = view_z_to_z_slice(view_z, is_orthographic);
     // A hack to make the colors alternate a bit more
     if (z_slice & 1u) == 1u {
-        z_slice = z_slice + bindings::lights.cluster_dimensions.z / 2u;
+        z_slice = z_slice + bindings::get_lights().cluster_dimensions.z / 2u;
     }
     let slice_color_hsv = vec3(
-        f32(z_slice) / f32(bindings::lights.cluster_dimensions.z + 1u) * PI_2,
+        f32(z_slice) / f32(bindings::get_lights().cluster_dimensions.z + 1u) * PI_2,
         1.0,
         0.5
     );

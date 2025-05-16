@@ -10,7 +10,7 @@
     prepass_utils,
     lighting,
     mesh_bindings::mesh,
-    mesh_view_bindings::{push_constants, view},
+    mesh_view_bindings::get_view,
     parallax_mapping::parallaxed_uv,
     lightmap::lightmap,
 }
@@ -46,12 +46,7 @@ fn pbr_input_from_vertex_output(
     pbr_input.flags = mesh[in.instance_index].flags;
 #endif
 
-#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
-    let view_index = push_constants.view_index;
-    pbr_input.is_orthographic = view[view_index].clip_from_view[3].w == 1.0;
-#else
-    pbr_input.is_orthographic = view.clip_from_view[3].w == 1.0;
-#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    pbr_input.is_orthographic = get_view().clip_from_view[3].w == 1.0;
     pbr_input.V = pbr_functions::calculate_view(in.world_position, pbr_input.is_orthographic);
     pbr_input.frag_coord = in.position;
     pbr_input.world_position = in.world_position;
@@ -113,7 +108,7 @@ fn pbr_input_from_standard_material(
     bias.ddx_uv = in.ddx_uv;
     bias.ddy_uv = in.ddy_uv;
 #else   // MESHLET_MESH_MATERIAL_PASS
-    bias.mip_bias = view.mip_bias;
+    bias.mip_bias = get_view().mip_bias;
 #endif  // MESHLET_MESH_MATERIAL_PASS
 
 // TODO: Transforming UVs mean we need to apply derivative chain rule for meshlet mesh material pass

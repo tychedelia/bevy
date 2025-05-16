@@ -7,11 +7,11 @@
 }
 
 #ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
-@group(0) @binding(0) var<storage> view: View;
-@group(0) @binding(1) var<storage> lights: types::Lights;
+@group(0) @binding(0) var<storage> view: array<View>;
+@group(0) @binding(1) var<storage> lights: array<types::Lights>;
 #else
-@group(0) @binding(0) var<uniform> views: array<View>;
-@group(0) @binding(1) var<uniform> lights: array<types::Lights>;
+@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(1) var<uniform> lights: types::Lights;
 #endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 #ifdef NO_CUBE_ARRAY_TEXTURES_SUPPORT
 @group(0) @binding(2) var point_shadow_textures: texture_depth_cube;
@@ -42,7 +42,11 @@
 @group(0) @binding(10) var<uniform> cluster_offsets_and_counts: types::ClusterOffsetsAndCounts;
 #endif
 
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+@group(0) @binding(11) var<storage> globals: Globals;
+#else
 @group(0) @binding(11) var<uniform> globals: Globals;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 
 #ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
 @group(0) @binding(12) var<storage> fog: array<types::Fog>;
@@ -138,6 +142,14 @@ const VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE: u32 = 64u;
 #endif // OIT_ENABLED
 
 #ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+@group(0) @binding(0) var<storage> view: array<View>;
+@group(0) @binding(1) var<storage> lights: array<types::Lights>;
+#else
+@group(0) @binding(0) var<uniform> view: View;
+@group(0) @binding(1) var<uniform> lights: types::Lights;
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
 struct PushConstants {
     view_index: u32,
 }
@@ -145,10 +157,19 @@ struct PushConstants {
 var<push_constant> push_constants: PushConstants;
 #endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
 
-//fn get_view() -> View {
-//#if MULTIPLE_LIGHT_PROBES_IN_ARRAY
-//    let view_index = push_constants.view_index;
-//    let view = views[view_index];
-//#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
-//    return view;
-//}
+fn get_view() -> View {
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let view_index = push_constants.view_index;
+    let view = view[view_index];
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    return view;
+}
+
+fn get_lights() -> ptr<?, types::Lights> { // <-- what to put for storage here?
+#ifdef MULTIPLE_LIGHT_PROBES_IN_ARRAY
+    let view_index = push_constants.view_index;
+    let lights = lights[view_index];
+#endif // MULTIPLE_LIGHT_PROBES_IN_ARRAY
+
+    return &lights;
+}

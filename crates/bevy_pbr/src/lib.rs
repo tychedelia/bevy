@@ -80,7 +80,7 @@ pub mod prelude {
         mesh_material::MeshMaterial3d,
         parallax::ParallaxMappingMethod,
         pbr_material::StandardMaterial,
-        // ssao::ScreenSpaceAmbientOcclusionPlugin,
+        ssao::ScreenSpaceAmbientOcclusionPlugin,
     };
 }
 

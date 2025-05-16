@@ -212,7 +212,7 @@ fn layout_entries(
             (
                 0,
                 if binding_arrays_are_usable {
-                    storage_buffer::<ViewUniform>(false)
+                    storage_buffer_read_only::<ViewUniform>(false)
                 } else {
                     uniform_buffer::<ViewUniform>(true)
                 }
@@ -222,7 +222,7 @@ fn layout_entries(
             (
                 1,
                 if binding_arrays_are_usable {
-                    storage_buffer::<ViewUniform>(false)
+                    storage_buffer_read_only::<GpuLights>(false)
                 } else {
                     uniform_buffer::<GpuLights>(true)
                 },
@@ -306,7 +306,7 @@ fn layout_entries(
             (
                 11,
                 if binding_arrays_are_usable {
-                    storage_buffer::<GlobalsUniform>(false)
+                    storage_buffer_read_only::<GlobalsUniform>(false)
                 } else {
                     uniform_buffer::<GlobalsUniform>(true)
                 }
@@ -316,7 +316,7 @@ fn layout_entries(
             (
                 12,
                 if binding_arrays_are_usable {
-                    storage_buffer::<GpuFog>(false)
+                    storage_buffer_read_only::<GpuFog>(false)
                 } else {
                     uniform_buffer::<GpuFog>(true)
                 },
@@ -325,7 +325,7 @@ fn layout_entries(
             (
                 13,
                 if binding_arrays_are_usable {
-                    storage_buffer::<LightProbesUniform>(false)
+                    storage_buffer_read_only::<LightProbesUniform>(false)
                 } else {
                     uniform_buffer::<LightProbesUniform>(true)
                 },
@@ -344,7 +344,7 @@ fn layout_entries(
             (
                 15,
                 if binding_arrays_are_usable {
-                    storage_buffer::<ScreenSpaceReflectionsUniform>(false)
+                    storage_buffer_read_only::<ScreenSpaceReflectionsUniform>(false)
                 } else {
                     uniform_buffer::<ScreenSpaceReflectionsUniform>(true)
                 },
