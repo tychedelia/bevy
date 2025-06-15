@@ -9,7 +9,7 @@
 use bevy::{
     core_pipeline::{
         core_3d::graph::{Core3d, Node3d},
-        fullscreen_vertex_shader::fullscreen_shader_vertex_state,
+        fullscreen::fullscreen_shader_vertex_state,
     },
     ecs::query::QueryItem,
     prelude::*,

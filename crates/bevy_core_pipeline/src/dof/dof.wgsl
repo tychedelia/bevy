@@ -15,7 +15,7 @@
 //
 // [1]: https://colinbarrebrisebois.com/2017/04/18/hexagonal-bokeh-blur-revisited-part-2-improved-2-pass-version/
 
-#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import bevy_core_pipeline::fullscreen::FullscreenVertexOutput
 #import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::view_transformations::depth_ndc_to_view_z
 #import bevy_render::view::View

@@ -43,7 +43,7 @@ use bevy_utils::prelude::default;
 use crate::{
     core_2d::graph::{Core2d, Node2d},
     core_3d::graph::{Core3d, Node3d},
-    fullscreen_vertex_shader,
+    fullscreen,
 };
 
 /// The handle to the built-in postprocessing shader `post_process.wgsl`.
@@ -332,7 +332,7 @@ impl SpecializedRenderPipeline for PostProcessingPipeline {
         RenderPipelineDescriptor {
             label: Some("postprocessing".into()),
             layout: vec![self.bind_group_layout.clone()],
-            vertex: fullscreen_vertex_shader::fullscreen_shader_vertex_state(),
+            vertex: fullscreen::fullscreen_shader_vertex_state(),
             fragment: Some(FragmentState {
                 shader: POST_PROCESSING_SHADER_HANDLE,
                 shader_defs: vec![],

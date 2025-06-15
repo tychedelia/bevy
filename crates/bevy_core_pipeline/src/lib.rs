@@ -14,7 +14,7 @@ pub mod core_3d;
 pub mod deferred;
 pub mod dof;
 pub mod experimental;
-pub mod fullscreen_vertex_shader;
+pub mod fullscreen;
 pub mod motion_blur;
 pub mod msaa_writeback;
 pub mod oit;
@@ -42,7 +42,7 @@ use crate::{
     deferred::copy_lighting_id::CopyDeferredLightingIdPlugin,
     dof::DepthOfFieldPlugin,
     experimental::mip_generation::MipGenerationPlugin,
-    fullscreen_vertex_shader::FULLSCREEN_SHADER_HANDLE,
+    fullscreen::FULLSCREEN_SHADER_HANDLE,
     motion_blur::MotionBlurPlugin,
     msaa_writeback::MsaaWritebackPlugin,
     post_process::PostProcessingPlugin,
@@ -60,13 +60,6 @@ pub struct CorePipelinePlugin;
 
 impl Plugin for CorePipelinePlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(
-            app,
-            FULLSCREEN_SHADER_HANDLE,
-            "fullscreen_vertex_shader/fullscreen.wgsl",
-            Shader::from_wgsl
-        );
-
         app.register_type::<DepthPrepass>()
             .register_type::<NormalPrepass>()
             .register_type::<MotionVectorPrepass>()

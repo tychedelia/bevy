@@ -1,5 +1,5 @@
 use crate::{
-    fullscreen_vertex_shader::fullscreen_shader_vertex_state,
+    fullscreen::fullscreen_shader_vertex_state,
     prepass::{DeferredPrepass, ViewPrepassTextures},
 };
 use bevy_app::prelude::*;

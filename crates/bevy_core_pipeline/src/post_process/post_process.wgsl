@@ -1,6 +1,6 @@
 // Miscellaneous postprocessing effects, currently just chromatic aberration.
 
-#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import bevy_core_pipeline::fullscreen::FullscreenVertexOutput
 #import bevy_core_pipeline::post_processing::chromatic_aberration::chromatic_aberration
 
 @fragment

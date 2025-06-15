@@ -1,4 +1,4 @@
-use crate::fullscreen_vertex_shader::fullscreen_shader_vertex_state;
+use crate::fullscreen::fullscreen_shader_vertex_state;
 use bevy_app::prelude::*;
 use bevy_asset::{load_internal_asset, weak_handle, Assets, Handle};
 use bevy_ecs::prelude::*;

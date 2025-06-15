@@ -17,7 +17,7 @@
     view::View,
     maths::HALF_PI,
 }
-#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import bevy_core_pipeline::fullscreen::FullscreenVertexOutput
 
 @group(0) @binding(13) var sky_view_lut_out: texture_storage_2d<rgba16float, write>;
 

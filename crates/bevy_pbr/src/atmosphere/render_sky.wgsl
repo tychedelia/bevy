@@ -10,7 +10,7 @@
 };
 #import bevy_render::view::View;
 
-#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import bevy_core_pipeline::fullscreen::FullscreenVertexOutput
 
 #ifdef MULTISAMPLED
 @group(0) @binding(13) var depth_texture: texture_depth_multisampled_2d;

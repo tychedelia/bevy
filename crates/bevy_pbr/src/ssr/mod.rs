@@ -7,7 +7,7 @@ use bevy_core_pipeline::{
         graph::{Core3d, Node3d},
         DEPTH_TEXTURE_SAMPLING_SUPPORTED,
     },
-    fullscreen_vertex_shader,
+    fullscreen,
     prepass::{DeferredPrepass, DepthPrepass, MotionVectorPrepass, NormalPrepass},
 };
 use bevy_derive::{Deref, DerefMut};
@@ -540,7 +540,7 @@ impl SpecializedRenderPipeline for ScreenSpaceReflectionsPipeline {
         RenderPipelineDescriptor {
             label: Some("SSR pipeline".into()),
             layout: vec![mesh_view_layout.clone(), self.bind_group_layout.clone()],
-            vertex: fullscreen_vertex_shader::fullscreen_shader_vertex_state(),
+            vertex: fullscreen::fullscreen_shader_vertex_state(),
             fragment: Some(FragmentState {
                 shader: SSR_SHADER_HANDLE,
                 shader_defs,

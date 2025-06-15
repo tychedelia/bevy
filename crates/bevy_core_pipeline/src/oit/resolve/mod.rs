@@ -1,5 +1,5 @@
 use crate::{
-    fullscreen_vertex_shader::fullscreen_shader_vertex_state,
+    fullscreen::fullscreen_shader_vertex_state,
     oit::OrderIndependentTransparencySettings,
 };
 use bevy_app::Plugin;

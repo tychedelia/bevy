@@ -5,7 +5,7 @@
     maths::powsafe,
 }
 #import bevy_core_pipeline::{
-    fullscreen_vertex_shader::FullscreenVertexOutput,
+    fullscreen::FullscreenVertexOutput,
     tonemapping::{tone_mapping, screen_space_dither},
 }
 

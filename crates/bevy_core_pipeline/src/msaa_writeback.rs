@@ -1,7 +1,7 @@
 use crate::{
     blit::{BlitPipeline, BlitPipelineKey},
     core_2d::graph::{Core2d, Node2d},
-    core_3d::graph::{Core3d, Node3d},
+    core_3d::graph::{Core2d, Node3d},
 };
 use bevy_app::{App, Plugin};
 use bevy_color::LinearRgba;

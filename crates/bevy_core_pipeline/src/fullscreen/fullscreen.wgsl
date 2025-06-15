@@ -1,4 +1,4 @@
-#define_import_path bevy_core_pipeline::fullscreen_vertex_shader
+#define_import_path bevy_core_pipeline::fullscreen
 
 struct FullscreenVertexOutput {
     @builtin(position)

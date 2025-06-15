@@ -1,5 +1,5 @@
 use bevy_core_pipeline::{
-    core_3d::Camera3d, fullscreen_vertex_shader::fullscreen_shader_vertex_state,
+    core_3d::Camera3d, fullscreen::fullscreen_shader_vertex_state,
 };
 use bevy_ecs::{
     component::Component,

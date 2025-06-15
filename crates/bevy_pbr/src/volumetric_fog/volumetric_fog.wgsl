@@ -13,7 +13,7 @@
 //
 // [2]: http://www.alexandre-pestana.com/volumetric-lights/
 
-#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+#import bevy_core_pipeline::fullscreen::FullscreenVertexOutput
 #import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_clip}
 #import bevy_pbr::mesh_view_bindings::{globals, lights, view, clusterable_objects}
 #import bevy_pbr::mesh_view_types::{

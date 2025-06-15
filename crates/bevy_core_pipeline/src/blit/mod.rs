@@ -10,7 +10,7 @@ use bevy_render::{
     RenderApp,
 };
 
-use crate::fullscreen_vertex_shader::fullscreen_shader_vertex_state;
+use crate::fullscreen::fullscreen_shader_vertex_state;
 
 pub const BLIT_SHADER_HANDLE: Handle<Shader> = weak_handle!("59be3075-c34e-43e7-bf24-c8fe21a0192e");
 

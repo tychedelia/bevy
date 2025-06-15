@@ -66,7 +66,7 @@ use crate::{
         graph::{Core3d, Node3d},
         Camera3d, DEPTH_TEXTURE_SAMPLING_SUPPORTED,
     },
-    fullscreen_vertex_shader::fullscreen_shader_vertex_state,
+    fullscreen::fullscreen_shader_vertex_state,
 };
 
 const DOF_SHADER_HANDLE: Handle<Shader> = weak_handle!("c3580ddc-2cbc-4535-a02b-9a2959066b52");
