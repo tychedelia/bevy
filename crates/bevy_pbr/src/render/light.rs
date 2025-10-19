@@ -1749,7 +1749,7 @@ pub fn specialize_shadows(
     (render_meshes, render_mesh_instances, render_materials, render_material_instances): (
         Res<RenderAssets<RenderMesh>>,
         Res<RenderMeshInstances>,
-        Res<ErasedRenderAssets<PreparedMaterial>>,
+        Res<ErasedRenderAssets>,
         Res<RenderMaterialInstances>,
     ),
     shadow_render_phases: Res<ViewBinnedRenderPhases<Shadow>>,
@@ -1768,7 +1768,23 @@ pub fn specialize_shadows(
     mut specialized_material_pipeline_cache: ResMut<SpecializedShadowMaterialPipelineCache>,
     light_specialization_ticks: Res<LightSpecializationTicks>,
     entity_specialization_ticks: Res<EntitySpecializationTicks>,
-    ticks: SystemChangeTick,
+    (ticks, materials): (
+        SystemChangeTick,
+        Query<
+            (
+                &AlphaMode,
+                &ErasedMaterialKey,
+                &BindGroupLayoutDescriptor,
+                Option<&PrepassFragmentShader>,
+                Option<&PrepassVertexShader>,
+                Option<&DeferredFragmentShader>,
+                Option<&DeferredVertexShader>,
+                Option<&SpecializeFunction>,
+                Has<Bindless>,
+            ),
+            (With<ErasedMaterial>, With<ShadowsEnabled>),
+        >,
+    ),
 ) {
     // Record the retained IDs of all shadow views so that we can expire old
     // pipeline IDs.
@@ -1851,13 +1867,24 @@ pub fn specialize_shadows(
                 if !needs_specialization {
                     continue;
                 }
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                let Some(material) = render_materials.get(&material_instance.asset_id) else {
                     continue;
                 };
-                if !material.properties.shadows_enabled {
-                    // If the material is not a shadow caster, we don't need to specialize it.
+                let Ok((
+                    alpha_mode,
+                    material_key,
+                    material_layout,
+                    prepass_fragment_shader,
+                    prepass_vertex_shader,
+                    deferred_fragment_shader,
+                    deferred_vertex_shader,
+                    specialize,
+                    bindless,
+                )) = materials.get(*material)
+                else {
                     continue;
-                }
+                };
+
                 if !mesh_instance
                     .flags
                     .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
@@ -1883,7 +1910,7 @@ pub fn specialize_shadows(
                     mesh_key |= MeshPipelineKey::LIGHTMAPPED;
                 }
 
-                mesh_key |= match material.properties.alpha_mode {
+                mesh_key |= match alpha_mode {
                     AlphaMode::Mask(_)
                     | AlphaMode::Blend
                     | AlphaMode::Premultiplied
@@ -1893,12 +1920,18 @@ pub fn specialize_shadows(
                 };
                 let erased_key = ErasedMaterialPipelineKey {
                     mesh_key,
-                    material_key: material.properties.material_key.clone(),
+                    material_key: material_key.clone(),
                     type_id: material_instance.asset_id.type_id(),
                 };
                 let material_pipeline_specializer = PrepassPipelineSpecializer {
                     pipeline: prepass_pipeline.clone(),
-                    properties: material.properties.clone(),
+                    material_layout: material_layout.clone(),
+                    prepass_fragment_shader: prepass_fragment_shader.map(|s| (**s).clone()),
+                    prepass_vertex_shader: prepass_vertex_shader.map(|s| (**s).clone()),
+                    deferred_fragment_shader: deferred_fragment_shader.map(|s| (**s).clone()),
+                    deferred_vertex_shader: deferred_vertex_shader.map(|s| (**s).clone()),
+                    specialize: specialize.cloned(),
+                    bindless,
                 };
                 let pipeline_id = pipelines.specialize(
                     &pipeline_cache,
@@ -1929,7 +1962,7 @@ pub fn specialize_shadows(
 /// appropriate.
 pub fn queue_shadows(
     render_mesh_instances: Res<RenderMeshInstances>,
-    render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
+    render_materials: Res<ErasedRenderAssets>,
     render_material_instances: Res<RenderMaterialInstances>,
     mut shadow_render_phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
@@ -1943,6 +1976,10 @@ pub fn queue_shadows(
     >,
     spot_light_entities: Query<&RenderVisibleMeshEntities, With<ExtractedPointLight>>,
     specialized_material_pipeline_cache: Res<SpecializedShadowMaterialPipelineCache>,
+    materials: Query<
+        (&ShadowsDrawFunction, &MaterialBindingId),
+        (With<ErasedMaterial>, With<ShadowsEnabled>),
+    >,
 ) {
     for (entity, view_lights, camera_layers) in &view_lights {
         for view_light_entity in view_lights.lights.iter().copied() {
@@ -2026,12 +2063,10 @@ pub fn queue_shadows(
                 else {
                     continue;
                 };
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                let Some(material) = render_materials.get(&material_instance.asset_id) else {
                     continue;
                 };
-                let Some(draw_function) =
-                    material.properties.get_draw_function(ShadowsDrawFunction)
-                else {
+                let Ok((draw_function, material_binding)) = materials.get(*material) else {
                     continue;
                 };
 
@@ -2040,8 +2075,8 @@ pub fn queue_shadows(
 
                 let batch_set_key = ShadowBatchSetKey {
                     pipeline: *pipeline_id,
-                    draw_function,
-                    material_bind_group_index: Some(material.binding.group.0),
+                    draw_function: **draw_function,
+                    material_bind_group_index: Some(material_binding.group.0),
                     vertex_slab: vertex_slab.unwrap_or_default(),
                     index_slab,
                 };
@@ -2051,7 +2086,7 @@ pub fn queue_shadows(
                     ShadowBinKey {
                         asset_id: mesh_instance.mesh_asset_id.into(),
                     },
-                    (entity, main_entity),
+                    (*material, main_entity),
                     mesh_instance.current_uniform_index,
                     BinnedRenderPhaseType::mesh(
                         mesh_instance.should_batch(),

@@ -6,6 +6,7 @@
 
 use crate::Material;
 use bevy_derive::{Deref, DerefMut};
+use bevy_ecs::component::Component;
 use bevy_ecs::{
     resource::Resource,
     system::{Commands, Res},
@@ -255,7 +256,7 @@ enum BindingResourceArray<'a> {
 
 /// The location of a material (either bindless or non-bindless) within the
 /// slabs.
-#[derive(Clone, Copy, Debug, Default, Reflect)]
+#[derive(Component, Clone, Copy, Debug, Default, Reflect)]
 #[reflect(Clone, Default)]
 pub struct MaterialBindingId {
     /// The index of the bind group (slab) where the GPU data is located.

@@ -73,31 +73,6 @@ use core::{fmt::Debug, hash::Hash, iter, marker::PhantomData, ops::Range, slice:
 use smallvec::SmallVec;
 use tracing::warn;
 
-define_label!(
-    #[diagnostic::on_unimplemented(
-        note = "consider annotating `{Self}` with `#[derive(ShaderLabel)]`"
-    )]
-    /// Labels used to uniquely identify types of material shaders
-    ShaderLabel,
-    SHADER_LABEL_INTERNER
-);
-
-/// A shorthand for `Interned<dyn RenderSubGraph>`.
-pub type InternedShaderLabel = Interned<dyn ShaderLabel>;
-
-pub use bevy_render_macros::DrawFunctionLabel;
-
-define_label!(
-    #[diagnostic::on_unimplemented(
-        note = "consider annotating `{Self}` with `#[derive(DrawFunctionLabel)]`"
-    )]
-    /// Labels used to uniquely identify types of material shaders
-    DrawFunctionLabel,
-    DRAW_FUNCTION_LABEL_INTERNER
-);
-
-pub type InternedDrawFunctionLabel = Interned<dyn DrawFunctionLabel>;
-
 /// Stores the rendering instructions for a single phase that uses bins in all
 /// views.
 ///

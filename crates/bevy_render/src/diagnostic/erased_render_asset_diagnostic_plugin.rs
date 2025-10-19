@@ -73,7 +73,7 @@ fn add_erased_render_asset_measurement<A: ErasedRenderAsset>(
 
 fn measure_erased_render_asset<A: ErasedRenderAsset>(
     measurements: Extract<Res<ErasedRenderAssetMeasurements<A>>>,
-    assets: Res<ErasedRenderAssets<A::ErasedAsset>>,
+    assets: Res<ErasedRenderAssets>,
 ) {
     measurements
         .assets

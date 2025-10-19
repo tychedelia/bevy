@@ -2,6 +2,7 @@ use crate::define_atomic_id;
 use crate::renderer::WgpuWrapper;
 use alloc::borrow::Cow;
 use bevy_asset::Handle;
+use bevy_ecs::component::Component;
 use bevy_mesh::VertexBufferLayout;
 use bevy_shader::{Shader, ShaderDefVal};
 use core::iter;
@@ -87,7 +88,7 @@ impl Deref for ComputePipeline {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[derive(Component, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub struct BindGroupLayoutDescriptor {
     /// Debug label of the bind group layout descriptor. This will show up in graphics debuggers for easy identification.
     pub label: Cow<'static, str>,

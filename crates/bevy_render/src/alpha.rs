@@ -1,8 +1,9 @@
+use bevy_ecs::component::Component;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 
 // TODO: add discussion about performance.
 /// Sets how a material's base color alpha channel is used for transparency.
-#[derive(Debug, Default, Reflect, Copy, Clone, PartialEq)]
+#[derive(Component, Debug, Default, Reflect, Copy, Clone, PartialEq)]
 #[reflect(Default, Debug, Clone)]
 pub enum AlphaMode {
     /// Base color alpha values are overridden to be fully opaque (1.0).

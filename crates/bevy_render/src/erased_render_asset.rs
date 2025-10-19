@@ -5,12 +5,16 @@ use crate::{
 use bevy_app::{App, Plugin, SubApp};
 use bevy_asset::RenderAssetUsages;
 use bevy_asset::{Asset, AssetEvent, AssetId, Assets, UntypedAssetId};
+use bevy_derive::{Deref, DerefMut};
+use bevy_ecs::entity::Entity;
+use bevy_ecs::system::EntityCommands;
 use bevy_ecs::{
     prelude::{Commands, IntoScheduleConfigs, MessageReader, ResMut, Resource},
     schedule::{ScheduleConfigs, SystemSet},
     system::{ScheduleSystem, StaticSystemParam, SystemParam, SystemParamItem, SystemState},
     world::{FromWorld, Mut},
 };
+use bevy_platform::collections::hash_map::Entry;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::render_asset::RenderAssetBytesPerFrameLimiter;
 use core::marker::PhantomData;
@@ -43,8 +47,6 @@ pub type ExtractAssetsSet = AssetExtractionSystems;
 pub trait ErasedRenderAsset: Send + Sync + 'static {
     /// The representation of the asset in the "main world".
     type SourceAsset: Asset + Clone;
-    /// The target representation of the asset in the "render world".
-    type ErasedAsset: Send + Sync + 'static + Sized;
 
     /// Specifies all ECS data required by [`ErasedRenderAsset::prepare_asset`].
     ///
@@ -72,10 +74,11 @@ pub trait ErasedRenderAsset: Send + Sync + 'static {
     ///
     /// ECS data may be accessed via `param`.
     fn prepare_asset(
+        entity: EntityCommands,
         source_asset: Self::SourceAsset,
         asset_id: AssetId<Self::SourceAsset>,
         param: &mut SystemParamItem<Self::Param>,
-    ) -> Result<Self::ErasedAsset, PrepareAssetError<Self::SourceAsset>>;
+    ) -> Result<(), PrepareAssetError<Self::SourceAsset>>;
 
     /// Called whenever the [`ErasedRenderAsset::SourceAsset`] has been removed.
     ///
@@ -128,7 +131,7 @@ impl<A: ErasedRenderAsset, AFTER: ErasedRenderAssetDependency + 'static> Plugin
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<ExtractedAssets<A>>()
-                .init_resource::<ErasedRenderAssets<A::ErasedAsset>>()
+                .init_resource::<ErasedRenderAssets>()
                 .init_resource::<PrepareNextFrameAssets<A>>()
                 .add_systems(
                     ExtractSchedule,
@@ -192,40 +195,8 @@ impl<A: ErasedRenderAsset> Default for ExtractedAssets<A> {
 
 /// Stores all GPU representations ([`ErasedRenderAsset`])
 /// of [`ErasedRenderAsset::SourceAsset`] as long as they exist.
-#[derive(Resource)]
-pub struct ErasedRenderAssets<ERA>(HashMap<UntypedAssetId, ERA>);
-
-impl<ERA> Default for ErasedRenderAssets<ERA> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
-
-impl<ERA> ErasedRenderAssets<ERA> {
-    pub fn get(&self, id: impl Into<UntypedAssetId>) -> Option<&ERA> {
-        self.0.get(&id.into())
-    }
-
-    pub fn get_mut(&mut self, id: impl Into<UntypedAssetId>) -> Option<&mut ERA> {
-        self.0.get_mut(&id.into())
-    }
-
-    pub fn insert(&mut self, id: impl Into<UntypedAssetId>, value: ERA) -> Option<ERA> {
-        self.0.insert(id.into(), value)
-    }
-
-    pub fn remove(&mut self, id: impl Into<UntypedAssetId>) -> Option<ERA> {
-        self.0.remove(&id.into())
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (UntypedAssetId, &ERA)> {
-        self.0.iter().map(|(k, v)| (*k, v))
-    }
-
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (UntypedAssetId, &mut ERA)> {
-        self.0.iter_mut().map(|(k, v)| (*k, v))
-    }
-}
+#[derive(Resource, Default, Deref, DerefMut)]
+pub struct ErasedRenderAssets(HashMap<UntypedAssetId, Entity>);
 
 #[derive(Resource)]
 struct CachedExtractErasedRenderAssetSystemState<A: ErasedRenderAsset> {
@@ -333,8 +304,9 @@ impl<A: ErasedRenderAsset> Default for PrepareNextFrameAssets<A> {
 /// This system prepares all assets of the corresponding [`ErasedRenderAsset::SourceAsset`] type
 /// which where extracted this frame for the GPU.
 pub fn prepare_erased_assets<A: ErasedRenderAsset>(
+    mut commands: Commands,
     mut extracted_assets: ResMut<ExtractedAssets<A>>,
-    mut render_assets: ResMut<ErasedRenderAssets<A::ErasedAsset>>,
+    mut render_assets: ResMut<ErasedRenderAssets>,
     mut prepare_next_frame: ResMut<PrepareNextFrameAssets<A>>,
     param: StaticSystemParam<<A as ErasedRenderAsset>::Param>,
     bpf: Res<RenderAssetBytesPerFrameLimiter>,
@@ -363,9 +335,17 @@ pub fn prepare_erased_assets<A: ErasedRenderAsset>(
             0
         };
 
-        match A::prepare_asset(extracted_asset, id, &mut param) {
-            Ok(prepared_asset) => {
-                render_assets.insert(id, prepared_asset);
+        let entity = match render_assets.entry(id.untyped()) {
+            Entry::Occupied(entry) => commands.entity(*entry.get()),
+            Entry::Vacant(entry) => {
+                let entity = commands.spawn_empty();
+                *entry.insert(entity.id());
+                entity
+            }
+        };
+
+        match A::prepare_asset(entity, extracted_asset, id, &mut param) {
+            Ok(_) => {
                 bpf.write_bytes(write_bytes);
                 wrote_asset_count += 1;
             }
@@ -382,7 +362,7 @@ pub fn prepare_erased_assets<A: ErasedRenderAsset>(
     }
 
     for removed in extracted_assets.removed.drain() {
-        render_assets.remove(removed);
+        render_assets.remove(&removed.untyped());
         A::unload_asset(removed, &mut param);
     }
 
@@ -390,7 +370,7 @@ pub fn prepare_erased_assets<A: ErasedRenderAsset>(
         // we remove previous here to ensure that if we are updating the asset then
         // any users will not see the old asset after a new asset is extracted,
         // even if the new asset is not yet ready or we are out of bytes to write.
-        render_assets.remove(id);
+        render_assets.remove(&id.untyped());
 
         let write_bytes = if let Some(size) = A::byte_len(&extracted_asset) {
             if bpf.exhausted() {
@@ -402,9 +382,17 @@ pub fn prepare_erased_assets<A: ErasedRenderAsset>(
             0
         };
 
-        match A::prepare_asset(extracted_asset, id, &mut param) {
-            Ok(prepared_asset) => {
-                render_assets.insert(id, prepared_asset);
+        let entity = match render_assets.entry(id.untyped()) {
+            Entry::Occupied(entry) => commands.entity(*entry.get()),
+            Entry::Vacant(entry) => {
+                let entity = commands.spawn_empty();
+                *entry.insert(entity.id());
+                entity
+            }
+        };
+
+        match A::prepare_asset(entity, extracted_asset, id, &mut param) {
+            Ok(_) => {
                 bpf.write_bytes(write_bytes);
                 wrote_asset_count += 1;
             }
