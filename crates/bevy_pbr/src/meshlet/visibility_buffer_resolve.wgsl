@@ -173,7 +173,9 @@ fn resolve_vertex_output(frag_coord: vec4<f32>) -> VertexOutput {
         world_tangent,
         instance_uniform.flags,
         instance_id ^ meshlet_id,
-        instance_uniform.material_and_lightmap_bind_group_slot & 0xffffu,
+        // TODO(multi-material): Meshlet needs proper DrawData integration.
+        // For now, using lightmap field which may have material packed for meshlet path.
+        instance_uniform.lightmap_bind_group_slot,
 #ifdef PREPASS_FRAGMENT
 #ifdef MOTION_VECTOR_PREPASS
         motion_vector,

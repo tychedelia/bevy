@@ -110,9 +110,10 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
 
         for bin in phase.batchable_meshes.values_mut() {
             let mut batch_set: SmallVec<[BinnedRenderPhaseBatch; 1]> = smallvec![];
-            for main_entity in bin.entities().keys() {
+            for phase_item_id in bin.phase_items().keys() {
+                let main_entity = phase_item_id.main_entity;
                 let Some(buffer_data) =
-                    GFBD::get_binned_batch_data(&system_param_item, *main_entity)
+                    GFBD::get_binned_batch_data(&system_param_item, main_entity)
                 else {
                     continue;
                 };
@@ -129,7 +130,7 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                             == PhaseItemExtraIndex::maybe_dynamic_offset(instance.dynamic_offset)
                 }) {
                     batch_set.push(BinnedRenderPhaseBatch {
-                        representative_entity: (Entity::PLACEHOLDER, *main_entity),
+                        representative_entity: (Entity::PLACEHOLDER, main_entity),
                         instance_range: instance.index..instance.index,
                         extra_index: PhaseItemExtraIndex::maybe_dynamic_offset(
                             instance.dynamic_offset,
@@ -157,9 +158,9 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
 
         // Prepare unbatchables.
         for unbatchables in phase.unbatchable_meshes.values_mut() {
-            for main_entity in unbatchables.entities.keys() {
+            for phase_item_id in unbatchables.entities.keys() {
                 let Some(buffer_data) =
-                    GFBD::get_binned_batch_data(&system_param_item, *main_entity)
+                    GFBD::get_binned_batch_data(&system_param_item, phase_item_id.main_entity)
                 else {
                     continue;
                 };

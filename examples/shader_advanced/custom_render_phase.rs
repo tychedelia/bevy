@@ -369,7 +369,7 @@ impl GetBatchData for StencilPipeline {
                 flags: mesh_transforms.flags,
                 first_vertex_index,
                 current_skin_index: u32::MAX,
-                material_and_lightmap_bind_group_slot: 0,
+                lightmap_bind_group_slot: 0,
                 tag: 0,
                 pad: 0,
             }
@@ -433,19 +433,21 @@ impl GetFullBatchData for StencilPipeline {
         indexed: bool,
         base_output_index: u32,
         batch_set_index: Option<NonMaxU32>,
+        submesh_index: u16,
         indirect_parameters_buffers: &mut UntypedPhaseIndirectParametersBuffers,
         indirect_parameters_offset: u32,
     ) {
         // Note that `IndirectParameters` covers both of these structures, even
         // though they actually have distinct layouts. See the comment above that
         // type for more information.
-        let indirect_parameters = IndirectParametersCpuMetadata {
+        let indirect_parameters = IndirectParametersCpuMetadata::new(
             base_output_index,
-            batch_set_index: match batch_set_index {
+            match batch_set_index {
                 None => !0,
                 Some(batch_set_index) => u32::from(batch_set_index),
             },
-        };
+            submesh_index,
+        );
 
         if indexed {
             indirect_parameters_buffers

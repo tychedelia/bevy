@@ -39,8 +39,8 @@ use bevy_render::render_phase::PhaseItemBatchSetKey;
 use bevy_render::sync_world::MainEntity;
 use bevy_render::{
     render_phase::{
-        BinnedPhaseItem, CachedRenderPipelinePhaseItem, DrawFunctionId, PhaseItem,
-        PhaseItemExtraIndex,
+        BinKeySubmesh, BinnedPhaseItem, CachedRenderPipelinePhaseItem, DrawFunctionId,
+        PhaseItem, PhaseItemExtraIndex,
     },
     render_resource::{
         CachedRenderPipelineId, ColorTargetState, ColorWrites, DynamicUniformBuffer, Extent3d,
@@ -162,6 +162,10 @@ pub struct Opaque3dPrepass {
     pub representative_entity: (Entity, MainEntity),
     pub batch_range: Range<u32>,
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    pub submesh_index: u16,
 }
 
 /// Information that must be identical in order to place opaque meshes in the
@@ -206,6 +210,18 @@ impl PhaseItemBatchSetKey for OpaqueNoLightmap3dBatchSetKey {
 pub struct OpaqueNoLightmap3dBinKey {
     /// The ID of the asset.
     pub asset_id: UntypedAssetId,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    /// Different submesh indices must not batch together.
+    pub submesh_index: u16,
+}
+
+impl BinKeySubmesh for OpaqueNoLightmap3dBinKey {
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl PhaseItem for Opaque3dPrepass {
@@ -242,6 +258,11 @@ impl PhaseItem for Opaque3dPrepass {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for Opaque3dPrepass {
@@ -256,12 +277,14 @@ impl BinnedPhaseItem for Opaque3dPrepass {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Opaque3dPrepass {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }
@@ -289,6 +312,10 @@ pub struct AlphaMask3dPrepass {
     pub representative_entity: (Entity, MainEntity),
     pub batch_range: Range<u32>,
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    pub submesh_index: u16,
 }
 
 impl PhaseItem for AlphaMask3dPrepass {
@@ -325,6 +352,11 @@ impl PhaseItem for AlphaMask3dPrepass {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for AlphaMask3dPrepass {
@@ -339,12 +371,14 @@ impl BinnedPhaseItem for AlphaMask3dPrepass {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Self {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }

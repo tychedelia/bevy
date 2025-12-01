@@ -1,6 +1,6 @@
 #define_import_path bevy_pbr::lightmap
 
-#import bevy_pbr::mesh_bindings::mesh
+#import bevy_pbr::mesh_bindings::{mesh, draw_data}
 
 #ifdef MULTIPLE_LIGHTMAPS_IN_ARRAY
 @group(2) @binding(4) var lightmaps_textures: binding_array<texture_2d<f32>, 4>;
@@ -12,13 +12,14 @@
 
 // Samples the lightmap, if any, and returns indirect illumination from it.
 fn lightmap(uv: vec2<f32>, exposure: f32, instance_index: u32) -> vec3<f32> {
+    // mesh[] is indexed directly by instance_index (output position from Stage 1)
     let packed_uv_rect = mesh[instance_index].lightmap_uv_rect;
     let uv_rect = vec4<f32>(
         unpack2x16unorm(packed_uv_rect.x),
         unpack2x16unorm(packed_uv_rect.y),
     );
     let lightmap_uv = mix(uv_rect.xy, uv_rect.zw, uv);
-    let lightmap_slot = mesh[instance_index].material_and_lightmap_bind_group_slot >> 16u;
+    let lightmap_slot = mesh[instance_index].lightmap_bind_group_slot;
 
     // Bicubic 4-tap
     // https://developer.nvidia.com/gpugems/gpugems2/part-iii-high-quality-rendering/chapter-20-fast-third-order-texture-filtering

@@ -38,10 +38,11 @@ use bevy_render::{
     },
     render_graph::{NodeRunError, RenderGraphContext, RenderGraphExt, ViewNode, ViewNodeRunner},
     render_phase::{
-        AddRenderCommand, BinnedPhaseItem, BinnedRenderPhasePlugin, BinnedRenderPhaseType,
-        CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions, InputUniformIndex, PhaseItem,
-        PhaseItemBatchSetKey, PhaseItemExtraIndex, RenderCommand, RenderCommandResult,
-        SetItemPipeline, TrackedRenderPass, ViewBinnedRenderPhases,
+        AddRenderCommand, BinKeySubmesh, BinnedPhaseItem, BinnedRenderPhasePlugin,
+        BinnedRenderPhaseType, CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions,
+        InputUniformIndex, PhaseItem, PhaseItemBatchSetKey, PhaseItemExtraIndex, PhaseItemId,
+        RenderCommand, RenderCommandResult, SetItemPipeline, TrackedRenderPass,
+        ViewBinnedRenderPhases,
     },
     render_resource::*,
     renderer::RenderContext,
@@ -273,6 +274,8 @@ pub struct Wireframe2dBinKey {
     /// The wireframe mesh asset ID.
     pub asset_id: UntypedAssetId,
 }
+
+impl BinKeySubmesh for Wireframe2dBinKey {}
 
 pub struct SetWireframe2dPushConstants;
 
@@ -860,7 +863,8 @@ fn queue_wireframes(
             wireframe_phase.add(
                 batch_set_key,
                 bin_key,
-                (*render_entity, *visible_entity),
+                *render_entity,
+                PhaseItemId::new(*visible_entity),
                 InputUniformIndex::default(),
                 if mesh_instance.automatic_batching {
                     BinnedRenderPhaseType::BatchableMesh

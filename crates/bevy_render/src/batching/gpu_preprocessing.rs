@@ -26,7 +26,7 @@ use wgpu::{BindingResource, BufferUsages, DownlevelFlags, Features};
 use crate::{
     experimental::occlusion_culling::OcclusionCulling,
     render_phase::{
-        BinnedPhaseItem, BinnedRenderPhaseBatch, BinnedRenderPhaseBatchSet,
+        BinKeySubmesh, BinnedPhaseItem, BinnedRenderPhaseBatch, BinnedRenderPhaseBatchSet,
         BinnedRenderPhaseBatchSets, CachedRenderPipelinePhaseItem, PhaseItem,
         PhaseItemBatchSetKey as _, PhaseItemExtraIndex, RenderBin, SortedPhaseItem,
         SortedRenderPhase, UnbatchableBinnedEntityIndices, ViewBinnedRenderPhases,
@@ -262,6 +262,13 @@ where
     /// visible this frame.
     pub late_non_indexed_indirect_parameters_buffer:
         RawBufferVec<LatePreprocessWorkItemIndirectParameters>,
+
+    /// Material tracking info recorded alongside work items.
+    ///
+    /// Parallel to the work items in `work_item_buffers`. Used by bevy_pbr's
+    /// Stage 2 material expansion to create MaterialEntry buffers with the
+    /// correct output indices from batching. Keyed by view like work_item_buffers.
+    pub material_work_item_info: HashMap<RetainedViewEntity, Vec<MaterialWorkItemInfo>>,
 }
 
 /// Holds the GPU buffer of instance input data, which is the data about each
@@ -648,6 +655,27 @@ pub struct PreprocessWorkItem {
     pub output_or_indirect_parameters_index: u32,
 }
 
+/// Material tracking info recorded alongside each [`PreprocessWorkItem`].
+///
+/// Used by bevy_pbr's Stage 2 material expansion to create MaterialEntry
+/// buffers with correct indices. This parallel buffer is populated during
+/// batching when all information (input_index, submesh_index, output_index)
+/// is available.
+///
+/// Note: material_slot is looked up from MaterialDrawInfo during
+/// build_material_entries_from_work_items, not stored here.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct MaterialWorkItemInfo {
+    /// Index into MeshInputUniform buffer (identifies the mesh entity).
+    pub input_index: u32,
+    /// Submesh index within the mesh (0 for single-material meshes).
+    pub submesh_index: u16,
+    /// Whether this draw uses indexed geometry.
+    pub is_indexed: bool,
+    /// Output destination (direct: output index, indirect: indirect_parameters_index).
+    pub output_index: u32,
+}
+
 /// The `wgpu` indirect parameters structure that specifies a GPU draw command.
 ///
 /// This is the variant for indexed meshes. We generate the instances of this
@@ -708,6 +736,30 @@ pub struct IndirectParametersCpuMetadata {
     /// [`IndirectParametersGpuMetadata`] structures) can be part of the same
     /// batch set.
     pub batch_set_index: u32,
+
+    /// Submesh slot index (low 16 bits) within the mesh's submesh table.
+    /// High 16 bits are padding.
+    ///
+    /// Slot 0 = full mesh. Slots 1+ are 1-indexed into the submesh buffer.
+    pub submesh_index_and_pad: u32,
+}
+
+impl IndirectParametersCpuMetadata {
+    /// Creates a new metadata entry with the given submesh index.
+    #[inline]
+    pub fn new(base_output_index: u32, batch_set_index: u32, submesh_index: u16) -> Self {
+        Self {
+            base_output_index,
+            batch_set_index,
+            submesh_index_and_pad: submesh_index as u32,
+        }
+    }
+
+    /// Returns the submesh index.
+    #[inline]
+    pub fn submesh_index(&self) -> u16 {
+        (self.submesh_index_and_pad & 0xFFFF) as u16
+    }
 }
 
 /// A structure, written and read GPU, that records how many instances of each
@@ -738,6 +790,13 @@ pub struct IndirectParametersGpuMetadata {
     /// The CPU sets this value to 0, and the GPU mesh preprocessing shader
     /// increments it as it culls mesh instances.
     pub late_instance_count: u32,
+
+    /// The number of draws produced by Stage 2 (material expansion).
+    ///
+    /// This is separate from `early_instance_count` to avoid double-counting
+    /// when both Stage 1 (visibility culling) and Stage 2 (material expansion)
+    /// run. Stage 2 increments this counter for each visible material work item.
+    pub draw_count: u32,
 }
 
 /// A structure, shared between CPU and GPU, that holds the number of on-GPU
@@ -1180,6 +1239,7 @@ where
             late_non_indexed_indirect_parameters_buffer: RawBufferVec::new(
                 BufferUsages::STORAGE | BufferUsages::INDIRECT,
             ),
+            material_work_item_info: HashMap::default(),
         }
     }
 
@@ -1202,6 +1262,9 @@ where
         // table. We want to avoid reallocating these vectors every frame.
         for view_work_item_buffers in self.work_item_buffers.values_mut() {
             view_work_item_buffers.clear();
+        }
+        for view_material_work_item_info in self.material_work_item_info.values_mut() {
+            view_material_work_item_info.clear();
         }
     }
 }
@@ -1352,6 +1415,7 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
         ref mut work_item_buffers,
         ref mut late_indexed_indirect_parameters_buffer,
         ref mut late_non_indexed_indirect_parameters_buffer,
+        ref mut material_work_item_info,
     } = phase_batched_instance_buffers.buffers;
 
     for (extracted_view, no_indirect_drawing, gpu_occlusion_culling) in &mut views {
@@ -1374,6 +1438,11 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
             late_non_indexed_indirect_parameters_buffer,
         );
 
+        // Get or create the material work item info vec for this view.
+        let view_material_work_item_info = material_work_item_info
+            .entry(extracted_view.retained_view_entity)
+            .or_default();
+
         // Walk through the list of phase items, building up batches as we go.
         let mut batch: Option<SortedRenderBatch<GFBD>> = None;
 
@@ -1383,6 +1452,7 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
             let item = &phase.items[current_index];
             let entity = item.main_entity();
             let item_is_indexed = item.indexed();
+            let item_submesh_index = item.submesh_index();
             let current_batch_input_index =
                 GFBD::get_index_and_compare_data(&system_param_item, entity);
 
@@ -1453,6 +1523,7 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
                         item_is_indexed,
                         output_index,
                         None,
+                        item_submesh_index,
                         &mut phase_indirect_parameters_buffers.buffers,
                         indirect_parameters_index,
                     );
@@ -1470,22 +1541,29 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
             // Add a new preprocessing work item so that the preprocessing
             // shader will copy the per-instance data over.
             if let Some(batch) = batch.as_ref() {
+                let work_item_output_index = match (
+                    no_indirect_drawing,
+                    batch.indirect_parameters_index,
+                ) {
+                    (true, _) => output_index,
+                    (false, Some(indirect_parameters_index)) => {
+                        indirect_parameters_index.into()
+                    }
+                    (false, None) => 0,
+                };
                 work_item_buffer.push(
                     item_is_indexed,
                     PreprocessWorkItem {
                         input_index: current_input_index.into(),
-                        output_or_indirect_parameters_index: match (
-                            no_indirect_drawing,
-                            batch.indirect_parameters_index,
-                        ) {
-                            (true, _) => output_index,
-                            (false, Some(indirect_parameters_index)) => {
-                                indirect_parameters_index.into()
-                            }
-                            (false, None) => 0,
-                        },
+                        output_or_indirect_parameters_index: work_item_output_index,
                     },
                 );
+                view_material_work_item_info.push(MaterialWorkItemInfo {
+                    input_index: current_input_index.into(),
+                    submesh_index: item_submesh_index,
+                    is_indexed: item_is_indexed,
+                    output_index: work_item_output_index,
+                });
             }
         }
 
@@ -1527,6 +1605,7 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
         ref mut work_item_buffers,
         ref mut late_indexed_indirect_parameters_buffer,
         ref mut late_non_indexed_indirect_parameters_buffer,
+        ref mut material_work_item_info,
     } = phase_batched_instance_buffers.buffers;
 
     for (extracted_view, no_indirect_drawing, gpu_occlusion_culling) in &mut views {
@@ -1542,6 +1621,11 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
             no_indirect_drawing,
             gpu_occlusion_culling,
         );
+
+        // Get or create the material work item info vec for this view.
+        let view_material_work_item_info = material_work_item_info
+            .entry(extracted_view.retained_view_entity)
+            .or_default();
 
         // Initialize those work item buffers in preparation for this new frame.
         init_work_item_buffers(
@@ -1593,6 +1677,8 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         indexed_work_item_buffer,
                         &mut phase_indirect_parameters_buffers.buffers.indexed,
                         batch_sets,
+                        true,
+                        view_material_work_item_info,
                     );
                 } else {
                     non_indexed_preparer.prepare_multidrawable_binned_batch_set(
@@ -1602,6 +1688,8 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         non_indexed_work_item_buffer,
                         &mut phase_indirect_parameters_buffers.buffers.non_indexed,
                         batch_sets,
+                        false,
+                        view_material_work_item_info,
                     );
                 }
             }
@@ -1621,7 +1709,8 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
 
         for (key, bin) in &phase.batchable_meshes {
             let mut batch: Option<BinnedRenderPhaseBatch> = None;
-            for (&main_entity, &input_index) in bin.entities() {
+            for (&phase_item_id, &input_index) in bin.phase_items() {
+                let main_entity = phase_item_id.main_entity;
                 let output_index = data_buffer.add() as u32;
 
                 match batch {
@@ -1635,27 +1724,34 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         // tightly-packed buffer if GPU culling discards some of
                         // the instances. Otherwise, we can just write the
                         // output index directly.
+                        let work_item_output_index = match (
+                            no_indirect_drawing,
+                            &batch.extra_index,
+                        ) {
+                            (true, _) => output_index,
+                            (
+                                false,
+                                PhaseItemExtraIndex::IndirectParametersIndex {
+                                    range: indirect_parameters_range,
+                                    ..
+                                },
+                            ) => indirect_parameters_range.start,
+                            (false, &PhaseItemExtraIndex::DynamicOffset(_))
+                            | (false, &PhaseItemExtraIndex::None) => 0,
+                        };
                         work_item_buffer.push(
                             key.0.indexed(),
                             PreprocessWorkItem {
                                 input_index: *input_index,
-                                output_or_indirect_parameters_index: match (
-                                    no_indirect_drawing,
-                                    &batch.extra_index,
-                                ) {
-                                    (true, _) => output_index,
-                                    (
-                                        false,
-                                        PhaseItemExtraIndex::IndirectParametersIndex {
-                                            range: indirect_parameters_range,
-                                            ..
-                                        },
-                                    ) => indirect_parameters_range.start,
-                                    (false, &PhaseItemExtraIndex::DynamicOffset(_))
-                                    | (false, &PhaseItemExtraIndex::None) => 0,
-                                },
+                                output_or_indirect_parameters_index: work_item_output_index,
                             },
                         );
+                        view_material_work_item_info.push(MaterialWorkItemInfo {
+                            input_index: *input_index,
+                            submesh_index: key.1.submesh_index(),
+                                    is_indexed: key.0.indexed(),
+                            output_index: work_item_output_index,
+                        });
                     }
 
                     None if !no_indirect_drawing => {
@@ -1671,6 +1767,7 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                             key.0.indexed(),
                             output_index,
                             batch_set_index,
+                            key.1.submesh_index(),
                             &mut phase_indirect_parameters_buffers.buffers,
                             indirect_parameters_index,
                         );
@@ -1681,6 +1778,12 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                                 output_or_indirect_parameters_index: indirect_parameters_index,
                             },
                         );
+                        view_material_work_item_info.push(MaterialWorkItemInfo {
+                            input_index: *input_index,
+                            submesh_index: key.1.submesh_index(),
+                                    is_indexed: key.0.indexed(),
+                            output_index: indirect_parameters_index,
+                        });
                         batch = Some(BinnedRenderPhaseBatch {
                             representative_entity: (Entity::PLACEHOLDER, main_entity),
                             instance_range: output_index..output_index + 1,
@@ -1700,6 +1803,12 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                                 output_or_indirect_parameters_index: output_index,
                             },
                         );
+                        view_material_work_item_info.push(MaterialWorkItemInfo {
+                            input_index: *input_index,
+                            submesh_index: key.1.submesh_index(),
+                                    is_indexed: key.0.indexed(),
+                            output_index,
+                        });
                         batch = Some(BinnedRenderPhaseBatch {
                             representative_entity: (Entity::PLACEHOLDER, main_entity),
                             instance_range: output_index..output_index + 1,
@@ -1757,8 +1866,9 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                 )
             };
 
-            for main_entity in unbatchables.entities.keys() {
-                let Some(input_index) = GFBD::get_binned_index(&system_param_item, *main_entity)
+            for phase_item_id in unbatchables.entities.keys() {
+                let Some(input_index) =
+                    GFBD::get_binned_index(&system_param_item, phase_item_id.main_entity)
                 else {
                     continue;
                 };
@@ -1771,6 +1881,7 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         key.0.indexed(),
                         output_index,
                         None,
+                        key.1.submesh_index(),
                         &mut phase_indirect_parameters_buffers.buffers,
                         *indirect_parameters_index,
                     );
@@ -1781,6 +1892,12 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                             output_or_indirect_parameters_index: *indirect_parameters_index,
                         },
                     );
+                    view_material_work_item_info.push(MaterialWorkItemInfo {
+                        input_index: input_index.into(),
+                        submesh_index: key.1.submesh_index(),
+                            is_indexed: key.0.indexed(),
+                        output_index: *indirect_parameters_index,
+                    });
                     unbatchables
                         .buffer_indices
                         .add(UnbatchableBinnedEntityIndices {
@@ -1802,6 +1919,12 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                             output_or_indirect_parameters_index: output_index,
                         },
                     );
+                    view_material_work_item_info.push(MaterialWorkItemInfo {
+                        input_index: input_index.into(),
+                        submesh_index: key.1.submesh_index(),
+                            is_indexed: key.0.indexed(),
+                        output_index,
+                    });
                     unbatchables
                         .buffer_indices
                         .add(UnbatchableBinnedEntityIndices {
@@ -1864,6 +1987,8 @@ where
         indexed_work_item_buffer: &mut RawBufferVec<PreprocessWorkItem>,
         mesh_class_buffers: &mut MeshClassIndirectParametersBuffers<IP>,
         batch_sets: &mut Vec<BinnedRenderPhaseBatchSet<BPI::BinKey>>,
+        is_indexed: bool,
+        material_work_item_info: &mut Vec<MaterialWorkItemInfo>,
     ) where
         IP: Clone + ShaderSize + WriteInto,
     {
@@ -1877,37 +2002,44 @@ where
         let Some((first_bin_key, first_bin)) = bins.iter().next() else {
             return;
         };
-        let first_bin_len = first_bin.entities().len();
+        let first_bin_len = first_bin.phase_items().len();
         let first_bin_entity = first_bin
-            .entities()
+            .phase_items()
             .keys()
             .next()
-            .copied()
+            .map(|id| id.main_entity)
             .unwrap_or(MainEntity::from(Entity::PLACEHOLDER));
 
         // Traverse the batch set, processing each bin.
-        for bin in bins.values() {
+        for (bin_key, bin) in bins.iter() {
             // Record the first output index for this batch, as well as its own
-            // index.
+            // index. The submesh_index tells the GPU which submesh to draw.
             mesh_class_buffers
                 .cpu_metadata
-                .push(IndirectParametersCpuMetadata {
-                    base_output_index: *output_index,
-                    batch_set_index: self.batch_set_index,
-                });
+                .push(IndirectParametersCpuMetadata::new(
+                    *output_index,
+                    self.batch_set_index,
+                    bin_key.submesh_index(),
+                ));
 
-            // Traverse the bin, pushing `PreprocessWorkItem`s for each entity
+            // Traverse the bin, pushing `PreprocessWorkItem`s for each phase item
             // within it. This is a hot loop, so make it as fast as possible.
-            for &input_index in bin.entities().values() {
+            for &input_index in bin.phase_items().values() {
                 indexed_work_item_buffer.push(PreprocessWorkItem {
                     input_index: *input_index,
                     output_or_indirect_parameters_index: self.indirect_parameters_index,
                 });
+                material_work_item_info.push(MaterialWorkItemInfo {
+                    input_index: *input_index,
+                    submesh_index: bin_key.submesh_index(),
+                    is_indexed,
+                    output_index: self.indirect_parameters_index,
+                });
             }
 
-            // Reserve space for the appropriate number of entities in the data
+            // Reserve space for the appropriate number of phase items in the data
             // buffer. Also, advance the output index and work item count.
-            let bin_entity_count = bin.entities().len();
+            let bin_entity_count = bin.phase_items().len();
             data_buffer.add_multiple(bin_entity_count);
             *output_index += bin_entity_count as u32;
             self.work_item_count += bin_entity_count;
@@ -2030,6 +2162,7 @@ pub fn write_batched_instance_buffers<GFBD>(
             ref mut work_item_buffers,
             ref mut late_indexed_indirect_parameters_buffer,
             ref mut late_non_indexed_indirect_parameters_buffer,
+            ..  // material_work_item_info is CPU-only, not uploaded to GPU
         } = *phase_instance_buffers;
 
         data_buffer.write_buffer(&render_device);

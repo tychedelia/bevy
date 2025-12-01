@@ -6,7 +6,7 @@
     pbr_functions,
     pbr_functions::SampleBias,
     prepass_io,
-    mesh_bindings::mesh,
+    mesh_bindings::{mesh, draw_data},
     mesh_view_bindings::view,
 }
 
@@ -36,7 +36,8 @@ fn fragment(
 #else   // MESHLET_MESH_MATERIAL_PASS
 
 #ifdef BINDLESS
-    let slot = mesh[in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    // Material slot from DrawData (written by Stage 2 material expansion)
+    let slot = draw_data[in.instance_index].material_bind_group_slot;
     let flags = pbr_bindings::material_array[material_indices[slot].material].flags;
     let uv_transform = pbr_bindings::material_array[material_indices[slot].material].uv_transform;
 #else   // BINDLESS

@@ -97,9 +97,9 @@ use bevy_render::{
     prelude::Msaa,
     render_graph::{EmptyNode, RenderGraphExt, ViewNodeRunner},
     render_phase::{
-        sort_phase_system, BinnedPhaseItem, CachedRenderPipelinePhaseItem, DrawFunctionId,
-        DrawFunctions, PhaseItem, PhaseItemExtraIndex, SortedPhaseItem, ViewBinnedRenderPhases,
-        ViewSortedRenderPhases,
+        sort_phase_system, BinKeySubmesh, BinnedPhaseItem, CachedRenderPipelinePhaseItem,
+        DrawFunctionId, DrawFunctions, PhaseItem, PhaseItemExtraIndex,
+        SortedPhaseItem, ViewBinnedRenderPhases, ViewSortedRenderPhases,
     },
     render_resource::{
         CachedRenderPipelineId, FilterMode, Sampler, SamplerDescriptor, Texture, TextureDescriptor,
@@ -258,6 +258,10 @@ pub struct Opaque3d {
     /// An extra index, which is either a dynamic offset or an index in the
     /// indirect parameters list.
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Slots 1+ are 1-indexed into the submesh buffer.
+    pub submesh_index: u16,
 }
 
 /// Information that must be identical in order to place opaque meshes in the
@@ -310,6 +314,18 @@ pub struct Opaque3dBinKey {
     /// Normally, this is the ID of the mesh, but for non-mesh items it might be
     /// the ID of another type of asset.
     pub asset_id: UntypedAssetId,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    /// Different submesh indices must not batch together.
+    pub submesh_index: u16,
+}
+
+impl BinKeySubmesh for Opaque3dBinKey {
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl PhaseItem for Opaque3d {
@@ -345,6 +361,11 @@ impl PhaseItem for Opaque3d {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for Opaque3d {
@@ -359,12 +380,14 @@ impl BinnedPhaseItem for Opaque3d {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Opaque3d {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }
@@ -387,6 +410,10 @@ pub struct AlphaMask3d {
     pub representative_entity: (Entity, MainEntity),
     pub batch_range: Range<u32>,
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    pub submesh_index: u16,
 }
 
 impl PhaseItem for AlphaMask3d {
@@ -423,6 +450,11 @@ impl PhaseItem for AlphaMask3d {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for AlphaMask3d {
@@ -437,12 +469,14 @@ impl BinnedPhaseItem for AlphaMask3d {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Self {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }
@@ -464,6 +498,10 @@ pub struct Transmissive3d {
     /// Whether the mesh in question is indexed (uses an index buffer in
     /// addition to its vertex buffer).
     pub indexed: bool,
+    /// Material instance identifier for multi-material entities.
+    pub material_instance_id: u32,
+    /// Submesh slot index within the mesh's submesh table.
+    pub submesh_index: u16,
 }
 
 impl PhaseItem for Transmissive3d {
@@ -512,6 +550,16 @@ impl PhaseItem for Transmissive3d {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
+
+    #[inline]
+    fn material_instance_id(&self) -> u32 {
+        self.material_instance_id
+    }
 }
 
 impl SortedPhaseItem for Transmissive3d {
@@ -551,6 +599,10 @@ pub struct Transparent3d {
     /// Whether the mesh in question is indexed (uses an index buffer in
     /// addition to its vertex buffer).
     pub indexed: bool,
+    /// Material instance identifier for multi-material entities.
+    pub material_instance_id: u32,
+    /// Submesh slot index within the mesh's submesh table.
+    pub submesh_index: u16,
 }
 
 impl PhaseItem for Transparent3d {
@@ -586,6 +638,16 @@ impl PhaseItem for Transparent3d {
     #[inline]
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
+    }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
+
+    #[inline]
+    fn material_instance_id(&self) -> u32 {
+        self.material_instance_id
     }
 }
 

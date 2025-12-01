@@ -390,19 +390,22 @@ impl GetFullBatchData for Mesh2dPipeline {
         indexed: bool,
         base_output_index: u32,
         batch_set_index: Option<NonMaxU32>,
+        submesh_index: u16,
         indirect_parameters_buffer: &mut bevy_render::batching::gpu_preprocessing::UntypedPhaseIndirectParametersBuffers,
         indirect_parameters_offset: u32,
     ) {
         // Note that `IndirectParameters` covers both of these structures, even
         // though they actually have distinct layouts. See the comment above that
         // type for more information.
-        let indirect_parameters = IndirectParametersCpuMetadata {
+        // 2D meshes don't support submeshes yet, so submesh_index should always be 0.
+        let indirect_parameters = IndirectParametersCpuMetadata::new(
             base_output_index,
-            batch_set_index: match batch_set_index {
+            match batch_set_index {
                 None => !0,
                 Some(batch_set_index) => u32::from(batch_set_index),
             },
-        };
+            submesh_index,
+        );
 
         if indexed {
             indirect_parameters_buffer

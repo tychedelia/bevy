@@ -58,9 +58,9 @@ use bevy_render::{
     extract_component::ExtractComponentPlugin,
     render_graph::{EmptyNode, RenderGraphExt, ViewNodeRunner},
     render_phase::{
-        sort_phase_system, BinnedPhaseItem, CachedRenderPipelinePhaseItem, DrawFunctionId,
-        DrawFunctions, PhaseItem, PhaseItemExtraIndex, SortedPhaseItem, ViewBinnedRenderPhases,
-        ViewSortedRenderPhases,
+        sort_phase_system, BinKeySubmesh, BinnedPhaseItem, CachedRenderPipelinePhaseItem,
+        DrawFunctionId, DrawFunctions, PhaseItem, PhaseItemExtraIndex, SortedPhaseItem,
+        ViewBinnedRenderPhases, ViewSortedRenderPhases,
     },
     render_resource::{
         BindGroupId, CachedRenderPipelineId, TextureDescriptor, TextureDimension, TextureFormat,
@@ -173,6 +173,8 @@ pub struct Opaque2dBinKey {
     /// The ID of a bind group specific to the material.
     pub material_bind_group_id: Option<BindGroupId>,
 }
+
+impl BinKeySubmesh for Opaque2dBinKey {}
 
 impl PhaseItem for Opaque2d {
     #[inline]
@@ -287,6 +289,8 @@ pub struct AlphaMask2dBinKey {
     /// The ID of a bind group specific to the material.
     pub material_bind_group_id: Option<BindGroupId>,
 }
+
+impl BinKeySubmesh for AlphaMask2dBinKey {}
 
 impl PhaseItem for AlphaMask2d {
     #[inline]

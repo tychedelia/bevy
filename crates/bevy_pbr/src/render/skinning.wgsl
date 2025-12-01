@@ -1,7 +1,7 @@
 #define_import_path bevy_pbr::skinning
 
 #import bevy_pbr::mesh_types::SkinnedMesh
-#import bevy_pbr::mesh_bindings::mesh
+#import bevy_pbr::mesh_bindings::{mesh, draw_data}
 
 #ifdef SKINNED
 
@@ -34,6 +34,7 @@ fn skin_model(
         + weights.z * joint_matrices.data[indexes.z]
         + weights.w * joint_matrices.data[indexes.w];
 #else   // SKINS_USE_UNIFORM_BUFFERS
+    // mesh[] is indexed directly by instance_index (output position from Stage 1)
     var skin_index = mesh[instance_index].current_skin_index;
     return weights.x * joint_matrices[skin_index + indexes.x]
         + weights.y * joint_matrices[skin_index + indexes.y]
@@ -57,6 +58,7 @@ fn skin_prev_model(
         + weights.z * prev_joint_matrices.data[indexes.z]
         + weights.w * prev_joint_matrices.data[indexes.w];
 #else   // SKINS_USE_UNIFORM_BUFFERS
+    // mesh[] is indexed directly by instance_index (output position from Stage 1)
     let skin_index = mesh[instance_index].current_skin_index;
     return weights.x * prev_joint_matrices[skin_index + indexes.x]
         + weights.y * prev_joint_matrices[skin_index + indexes.y]

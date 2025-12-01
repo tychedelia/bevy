@@ -39,10 +39,10 @@ use bevy_render::{
     },
     render_graph::{NodeRunError, RenderGraphContext, RenderGraphExt, ViewNode, ViewNodeRunner},
     render_phase::{
-        AddRenderCommand, BinnedPhaseItem, BinnedRenderPhasePlugin, BinnedRenderPhaseType,
-        CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions, PhaseItem,
-        PhaseItemBatchSetKey, PhaseItemExtraIndex, RenderCommand, RenderCommandResult,
-        SetItemPipeline, TrackedRenderPass, ViewBinnedRenderPhases,
+        AddRenderCommand, BinKeySubmesh, BinnedPhaseItem, BinnedRenderPhasePlugin,
+        BinnedRenderPhaseType, CachedRenderPipelinePhaseItem, DrawFunctionId, DrawFunctions,
+        PhaseItem, PhaseItemBatchSetKey, PhaseItemExtraIndex, PhaseItemId, RenderCommand,
+        RenderCommandResult, SetItemPipeline, TrackedRenderPass, ViewBinnedRenderPhases,
     },
     render_resource::*,
     renderer::{RenderContext, RenderDevice},
@@ -283,6 +283,22 @@ impl PhaseItemBatchSetKey for Wireframe3dBatchSetKey {
 pub struct Wireframe3dBinKey {
     /// The wireframe mesh asset ID.
     pub asset_id: UntypedAssetId,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    /// Different submesh indices must not batch together.
+    ///
+    /// Note: Wireframe currently always draws the full mesh (submesh_index = 0).
+    /// To support per-submesh wireframe on multi-material meshes, the queue
+    /// system would need to iterate material instances like opaque/transparent phases do.
+    pub submesh_index: u16,
+}
+
+impl BinKeySubmesh for Wireframe3dBinKey {
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 pub struct SetWireframe3dPushConstants;
@@ -904,6 +920,8 @@ fn queue_wireframes(
             let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
             let bin_key = Wireframe3dBinKey {
                 asset_id: mesh_instance.mesh_asset_id.untyped(),
+                // Wireframe always draws the full mesh (submesh_index 0)
+                submesh_index: 0,
             };
             let batch_set_key = Wireframe3dBatchSetKey {
                 pipeline: pipeline_id,
@@ -915,7 +933,8 @@ fn queue_wireframes(
             wireframe_phase.add(
                 batch_set_key,
                 bin_key,
-                (*render_entity, *visible_entity),
+                *render_entity,
+                PhaseItemId::new(*visible_entity),
                 mesh_instance.current_uniform_index,
                 BinnedRenderPhaseType::mesh(
                     mesh_instance.should_batch(),

@@ -120,6 +120,10 @@ struct PushConstants {
 var<push_constant> push_constants: PushConstants;
 #endif  // OCCLUSION_CULLING
 
+// Per-mesh visibility flags written by Stage 1, read by Stage 2.
+// Value of 1 = visible, 0 = culled. Indexed by mesh input index.
+@group(0) @binding(13) var<storage, read_write> visibility_flags: array<u32>;
+
 #ifdef FRUSTUM_CULLING
 // Returns true if the view frustum intersects an oriented bounding box (OBB).
 //
@@ -360,6 +364,9 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
 
 #endif  // INDIRECT
 
+    // Mark this mesh as visible for Stage 2 material expansion.
+    visibility_flags[input_index] = 1u;
+
     // Write the output.
     output[mesh_output_index].world_from_local = world_from_local_affine_transpose;
     output[mesh_output_index].previous_world_from_local =
@@ -370,7 +377,8 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     output[mesh_output_index].lightmap_uv_rect = current_input[input_index].lightmap_uv_rect;
     output[mesh_output_index].first_vertex_index = current_input[input_index].first_vertex_index;
     output[mesh_output_index].current_skin_index = current_input[input_index].current_skin_index;
-    output[mesh_output_index].material_and_lightmap_bind_group_slot =
-        current_input[input_index].material_and_lightmap_bind_group_slot;
+    // Lightmap slot from MeshInput. Material slot is now in DrawData (Stage 2).
+    output[mesh_output_index].lightmap_bind_group_slot =
+        current_input[input_index].lightmap_bind_group_slot;
     output[mesh_output_index].tag = current_input[input_index].tag;
 }

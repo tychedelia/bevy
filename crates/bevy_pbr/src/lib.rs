@@ -123,6 +123,9 @@ pub mod graph {
         /// rendering pass, containing all meshes that are visible this frame.
         MainBuildIndirectParameters,
         ClearIndirectParametersMetadata,
+        /// Label for the Stage 2 material expansion node that writes DrawData
+        /// with material slots for each visible mesh.
+        MaterialExpand,
     }
 }
 

@@ -6,7 +6,7 @@
         visibility_ranges,
         VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE
     },
-    mesh_bindings::mesh,
+    mesh_bindings::{mesh, draw_data},
     mesh_types::MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT,
     view_transformations::position_world_to_clip,
 }
@@ -14,21 +14,31 @@
 
 #ifndef MESHLET_MESH_MATERIAL_PASS
 
+// Get the mesh index for a given draw instance.
+// In GPU preprocessing mode, mesh[] is indexed directly by instance_index
+// (which equals first_instance + gl_InstanceIndex from the draw command).
+// Stage 1 writes transforms to mesh[output_index], and the draw command's
+// first_instance is set to match.
+fn get_mesh_index(instance_index: u32) -> u32 {
+    return instance_index;
+}
+
 fn get_world_from_local(instance_index: u32) -> mat4x4<f32> {
-    return affine3_to_square(mesh[instance_index].world_from_local);
+    return affine3_to_square(mesh[get_mesh_index(instance_index)].world_from_local);
 }
 
 fn get_previous_world_from_local(instance_index: u32) -> mat4x4<f32> {
-    return affine3_to_square(mesh[instance_index].previous_world_from_local);
+    return affine3_to_square(mesh[get_mesh_index(instance_index)].previous_world_from_local);
 }
 
 fn get_local_from_world(instance_index: u32) -> mat4x4<f32> {
     // the model matrix is translation * rotation * scale
-    // the inverse is then scale^-1 * rotation ^-1 * translation^-1        
+    // the inverse is then scale^-1 * rotation ^-1 * translation^-1
     // the 3x3 matrix only contains the information for the rotation and scale
+    let mesh_index = get_mesh_index(instance_index);
     let inverse_model_3x3 = transpose(mat2x4_f32_to_mat3x3_unpack(
-        mesh[instance_index].local_from_world_transpose_a,
-        mesh[instance_index].local_from_world_transpose_b,
+        mesh[mesh_index].local_from_world_transpose_a,
+        mesh[mesh_index].local_from_world_transpose_b,
     ));
     // construct scale^-1 * rotation^-1 from the 3x3
     let inverse_model_4x4_no_trans = mat4x4<f32>(
@@ -73,11 +83,12 @@ fn mesh_normal_local_to_world(vertex_normal: vec3<f32>, instance_index: u32) -> 
     // We only skip normalization for invalid normals so that they don't become NaN.
     // Do not change this code unless you really know what you are doing.
     // http://www.mikktspace.com/
+    let mesh_index = get_mesh_index(instance_index);
     if any(vertex_normal != vec3<f32>(0.0)) {
         return normalize(
             mat2x4_f32_to_mat3x3_unpack(
-                mesh[instance_index].local_from_world_transpose_a,
-                mesh[instance_index].local_from_world_transpose_b,
+                mesh[mesh_index].local_from_world_transpose_a,
+                mesh[mesh_index].local_from_world_transpose_b,
             ) * vertex_normal
         );
     } else {
@@ -117,7 +128,7 @@ fn mesh_tangent_local_to_world(world_from_local: mat4x4<f32>, vertex_tangent: ve
             ),
             // NOTE: Multiplying by the sign of the determinant of the 3x3 model matrix accounts for
             // situations such as negative scaling.
-            vertex_tangent.w * sign_determinant_model_3x3m(mesh[instance_index].flags)
+            vertex_tangent.w * sign_determinant_model_3x3m(mesh[get_mesh_index(instance_index)].flags)
         );
     } else {
         return vertex_tangent;
@@ -140,7 +151,7 @@ fn get_visibility_range_dither_level(instance_index: u32, world_position: vec4<f
     let visibility_buffer_array_len = VISIBILITY_RANGE_UNIFORM_BUFFER_SIZE;
 #endif  // AVAILABLE_STORAGE_BUFFER_BINDINGS >= 6
 
-    let visibility_buffer_index = mesh[instance_index].flags & 0xffffu;
+    let visibility_buffer_index = mesh[get_mesh_index(instance_index)].flags & 0xffffu;
     if (visibility_buffer_index > visibility_buffer_array_len) {
         return -16;
     }
@@ -163,6 +174,6 @@ fn get_visibility_range_dither_level(instance_index: u32, world_position: vec4<f
 
 #ifndef MESHLET_MESH_MATERIAL_PASS
 fn get_tag(instance_index: u32) -> u32 {
-    return mesh[instance_index].tag;
+    return mesh[get_mesh_index(instance_index)].tag;
 }
 #endif

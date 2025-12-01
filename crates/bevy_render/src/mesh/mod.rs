@@ -92,6 +92,13 @@ pub struct RenderMesh {
     /// Combined with [`RenderMesh::buffer_info`], this specifies the complete
     /// layout of the buffers associated with this mesh.
     pub layout: MeshVertexBufferLayoutRef,
+
+    /// Submeshes for multi-material rendering.
+    ///
+    /// When `Some`, each submesh defines a portion of the mesh's geometry
+    /// that should be drawn with a specific material slot. When `None`,
+    /// the entire mesh is treated as a single submesh using material slot 0.
+    pub submeshes: Option<Vec<SubMesh>>,
 }
 
 impl RenderMesh {
@@ -187,6 +194,7 @@ impl RenderAsset for RenderMesh {
             layout: mesh_vertex_buffer_layout,
             #[cfg(feature = "morph")]
             morph_targets,
+            submeshes: mesh.submeshes().map(|s| s.to_vec()),
         })
     }
 }

@@ -35,7 +35,6 @@ use bevy_render::erased_render_asset::ErasedRenderAssets;
 use bevy_render::experimental::occlusion_culling::{
     OcclusionCulling, OcclusionCullingSubview, OcclusionCullingSubviewEntities,
 };
-use bevy_render::sync_world::MainEntityHashMap;
 use bevy_render::{
     batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport},
     camera::SortedCameras,
@@ -1716,8 +1715,9 @@ pub struct SpecializedShadowMaterialPipelineCache {
 
 #[derive(Deref, DerefMut, Default)]
 pub struct SpecializedShadowMaterialViewPipelineCache {
+    // phase_item_id -> (tick, pipeline_id)
     #[deref]
-    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
+    map: HashMap<PhaseItemId, (Tick, CachedRenderPipelineId)>,
 }
 
 pub fn check_views_lights_need_specialization(
@@ -1842,7 +1842,7 @@ pub fn specialize_shadows(
                 .or_default();
 
             for (_, visible_entity) in visible_entities.iter().copied() {
-                let Some(material_instance) =
+                let Some(material_instances) =
                     render_material_instances.instances.get(&visible_entity)
                 else {
                     continue;
@@ -1854,25 +1854,7 @@ pub fn specialize_shadows(
                     continue;
                 };
                 let entity_tick = entity_specialization_ticks.get(&visible_entity).unwrap();
-                let last_specialized_tick = view_specialized_material_pipeline_cache
-                    .get(&visible_entity)
-                    .map(|(tick, _)| *tick);
-                let needs_specialization = last_specialized_tick.is_none_or(|tick| {
-                    view_tick.is_newer_than(tick, ticks.this_run())
-                        || entity_tick
-                            .system_tick
-                            .is_newer_than(tick, ticks.this_run())
-                });
-                if !needs_specialization {
-                    continue;
-                }
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
-                    continue;
-                };
-                if !material.properties.shadows_enabled {
-                    // If the material is not a shadow caster, we don't need to specialize it.
-                    continue;
-                }
+
                 if !mesh_instance
                     .flags
                     .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
@@ -1883,54 +1865,82 @@ pub fn specialize_shadows(
                     continue;
                 };
 
-                let mut mesh_key =
-                    *light_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
-
-                // Even though we don't use the lightmap in the shadow map, the
-                // `SetMeshBindGroup` render command will bind the data for it. So
-                // we need to include the appropriate flag in the mesh pipeline key
-                // to ensure that the necessary bind group layout entries are
-                // present.
-                if render_lightmaps
-                    .render_lightmaps
-                    .contains_key(&visible_entity)
-                {
-                    mesh_key |= MeshPipelineKey::LIGHTMAPPED;
-                }
-
-                mesh_key |= match material.properties.alpha_mode {
-                    AlphaMode::Mask(_)
-                    | AlphaMode::Blend
-                    | AlphaMode::Premultiplied
-                    | AlphaMode::Add
-                    | AlphaMode::AlphaToCoverage => MeshPipelineKey::MAY_DISCARD,
-                    _ => MeshPipelineKey::NONE,
-                };
-                let erased_key = ErasedMaterialPipelineKey {
-                    mesh_key,
-                    material_key: material.properties.material_key.clone(),
-                    type_id: material_instance.asset_id.type_id(),
-                };
-                let material_pipeline_specializer = PrepassPipelineSpecializer {
-                    pipeline: prepass_pipeline.clone(),
-                    properties: material.properties.clone(),
-                };
-                let pipeline_id = pipelines.specialize(
-                    &pipeline_cache,
-                    &material_pipeline_specializer,
-                    erased_key,
-                    &mesh.layout,
-                );
-                let pipeline_id = match pipeline_id {
-                    Ok(id) => id,
-                    Err(err) => {
-                        error!("{}", err);
+                // Iterate over all material instances for multi-material support.
+                for material_instance in material_instances.iter() {
+                    let phase_item_id = PhaseItemId::with_material_instance(
+                        visible_entity,
+                        material_instance.instance_id.0,
+                        material_instance.submesh_index,
+                    );
+                    let last_specialized_tick = view_specialized_material_pipeline_cache
+                        .get(&phase_item_id)
+                        .map(|(tick, _)| *tick);
+                    let needs_specialization = last_specialized_tick.is_none_or(|tick| {
+                        view_tick.is_newer_than(tick, ticks.this_run())
+                            || entity_tick
+                                .system_tick
+                                .is_newer_than(tick, ticks.this_run())
+                    });
+                    if !needs_specialization {
                         continue;
                     }
-                };
+                    let Some(material) = render_materials.get(material_instance.asset_id) else {
+                        continue;
+                    };
+                    if !material.properties.shadows_enabled {
+                        // If the material is not a shadow caster, we don't need to specialize it.
+                        continue;
+                    }
 
-                view_specialized_material_pipeline_cache
-                    .insert(visible_entity, (ticks.this_run(), pipeline_id));
+                    let mut mesh_key =
+                        *light_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+
+                    // Even though we don't use the lightmap in the shadow map, the
+                    // `SetMeshBindGroup` render command will bind the data for it. So
+                    // we need to include the appropriate flag in the mesh pipeline key
+                    // to ensure that the necessary bind group layout entries are
+                    // present.
+                    if render_lightmaps
+                        .render_lightmaps
+                        .contains_key(&visible_entity)
+                    {
+                        mesh_key |= MeshPipelineKey::LIGHTMAPPED;
+                    }
+
+                    mesh_key |= match material.properties.alpha_mode {
+                        AlphaMode::Mask(_)
+                        | AlphaMode::Blend
+                        | AlphaMode::Premultiplied
+                        | AlphaMode::Add
+                        | AlphaMode::AlphaToCoverage => MeshPipelineKey::MAY_DISCARD,
+                        _ => MeshPipelineKey::NONE,
+                    };
+                    let erased_key = ErasedMaterialPipelineKey {
+                        mesh_key,
+                        material_key: material.properties.material_key.clone(),
+                        type_id: material_instance.asset_id.type_id(),
+                    };
+                    let material_pipeline_specializer = PrepassPipelineSpecializer {
+                        pipeline: prepass_pipeline.clone(),
+                        properties: material.properties.clone(),
+                    };
+                    let pipeline_id = pipelines.specialize(
+                        &pipeline_cache,
+                        &material_pipeline_specializer,
+                        erased_key,
+                        &mesh.layout,
+                    );
+                    let pipeline_id = match pipeline_id {
+                        Ok(id) => id,
+                        Err(err) => {
+                            error!("{}", err);
+                            continue;
+                        }
+                    };
+
+                    view_specialized_material_pipeline_cache
+                        .insert(phase_item_id, (ticks.this_run(), pipeline_id));
+                }
             }
         }
     }
@@ -2003,12 +2013,11 @@ pub fn queue_shadows(
             };
 
             for (entity, main_entity) in visible_entities.iter().copied() {
-                let Some((current_change_tick, pipeline_id)) =
-                    view_specialized_material_pipeline_cache.get(&main_entity)
+                let Some(material_instances) =
+                    render_material_instances.instances.get(&main_entity)
                 else {
                     continue;
                 };
-
                 let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(main_entity)
                 else {
                     continue;
@@ -2032,48 +2041,61 @@ pub fn queue_shadows(
                     continue;
                 }
 
-                // Skip the entity if it's cached in a bin and up to date.
-                if shadow_phase.validate_cached_entity(main_entity, *current_change_tick) {
-                    continue;
-                }
-
-                let Some(material_instance) = render_material_instances.instances.get(&main_entity)
-                else {
-                    continue;
-                };
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
-                    continue;
-                };
-                let Some(draw_function) =
-                    material.properties.get_draw_function(ShadowsDrawFunction)
-                else {
-                    continue;
-                };
-
                 let (vertex_slab, index_slab) =
                     mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
 
-                let batch_set_key = ShadowBatchSetKey {
-                    pipeline: *pipeline_id,
-                    draw_function,
-                    material_bind_group_index: Some(material.binding.group.0),
-                    vertex_slab: vertex_slab.unwrap_or_default(),
-                    index_slab,
-                };
+                // Iterate over all material instances for multi-material support.
+                for material_instance in material_instances.iter() {
+                    let phase_item_id = PhaseItemId::with_material_instance(
+                        main_entity,
+                        material_instance.instance_id.0,
+                        material_instance.submesh_index,
+                    );
 
-                shadow_phase.add(
-                    batch_set_key,
-                    ShadowBinKey {
-                        asset_id: mesh_instance.mesh_asset_id.into(),
-                    },
-                    (entity, main_entity),
-                    mesh_instance.current_uniform_index,
-                    BinnedRenderPhaseType::mesh(
-                        mesh_instance.should_batch(),
-                        &gpu_preprocessing_support,
-                    ),
-                    *current_change_tick,
-                );
+                    let Some((current_change_tick, pipeline_id)) =
+                        view_specialized_material_pipeline_cache.get(&phase_item_id)
+                    else {
+                        continue;
+                    };
+
+                    // Skip the phase item if it's cached in a bin and up to date.
+                    if shadow_phase.validate_cached_phase_item(phase_item_id, *current_change_tick) {
+                        continue;
+                    }
+
+                    let Some(material) = render_materials.get(material_instance.asset_id) else {
+                        continue;
+                    };
+                    let Some(draw_function) =
+                        material.properties.get_draw_function(ShadowsDrawFunction)
+                    else {
+                        continue;
+                    };
+
+                    let batch_set_key = ShadowBatchSetKey {
+                        pipeline: *pipeline_id,
+                        draw_function,
+                        material_bind_group_index: Some(material.binding.group.0),
+                        vertex_slab: vertex_slab.unwrap_or_default(),
+                        index_slab,
+                    };
+
+                    shadow_phase.add(
+                        batch_set_key,
+                        ShadowBinKey {
+                            asset_id: mesh_instance.mesh_asset_id.into(),
+                            submesh_index: material_instance.submesh_index,
+                        },
+                        entity,
+                        phase_item_id,
+                        mesh_instance.current_uniform_index,
+                        BinnedRenderPhaseType::mesh(
+                            mesh_instance.should_batch(),
+                            &gpu_preprocessing_support,
+                        ),
+                        *current_change_tick,
+                    );
+                }
             }
         }
     }
@@ -2090,6 +2112,10 @@ pub struct Shadow {
     pub representative_entity: (Entity, MainEntity),
     pub batch_range: Range<u32>,
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    pub submesh_index: u16,
 }
 
 /// Information that must be identical in order to place opaque meshes in the
@@ -2133,6 +2159,18 @@ impl PhaseItemBatchSetKey for ShadowBatchSetKey {
 pub struct ShadowBinKey {
     /// The object.
     pub asset_id: UntypedAssetId,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    /// Different submesh indices must not batch together.
+    pub submesh_index: u16,
+}
+
+impl BinKeySubmesh for ShadowBinKey {
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl PhaseItem for Shadow {
@@ -2169,6 +2207,11 @@ impl PhaseItem for Shadow {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for Shadow {
@@ -2183,12 +2226,14 @@ impl BinnedPhaseItem for Shadow {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Shadow {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }

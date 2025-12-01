@@ -545,7 +545,18 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMaterialBindGroup<I> 
         let material_instances = material_instances.into_inner();
         let material_bind_group_allocators = material_bind_group_allocator.into_inner();
 
-        let Some(material_instance) = material_instances.instances.get(&item.main_entity()) else {
+        let Some(material_instances) = material_instances.instances.get(&item.main_entity()) else {
+            return RenderCommandResult::Skip;
+        };
+        // Find the material instance matching this phase item's submesh_index.
+        // For single-material entities, there's only one instance (submesh_index = 0).
+        // For multi-material, we match by submesh_index to get the correct material.
+        let item_submesh_index = item.submesh_index();
+        let Some(material_instance) = material_instances
+            .iter()
+            .find(|inst| inst.submesh_index == item_submesh_index)
+            .or_else(|| material_instances.first())
+        else {
             return RenderCommandResult::Skip;
         };
         let Some(material_bind_group_allocator) =
@@ -568,43 +579,111 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMaterialBindGroup<I> 
     }
 }
 
+/// A stable identifier for a material instance within an entity.
+///
+/// Unlike slot indices, this ID remains stable across frames even if the
+/// order of materials changes (e.g., due to additions/removals).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct MaterialInstanceId(pub u32);
+
+impl MaterialInstanceId {
+    /// The placeholder ID used when no material instance ID is assigned.
+    pub const PLACEHOLDER: Self = Self(u32::MAX);
+}
+
+impl Default for MaterialInstanceId {
+    fn default() -> Self {
+        Self::PLACEHOLDER
+    }
+}
+
 /// Stores all extracted instances of all [`Material`]s in the render world.
+///
+/// Each entity can have multiple material instances for heterogeneous material
+/// types (multiple `MeshMaterial3d<T>` of different types on the same entity).
 #[derive(Resource, Default)]
 pub struct RenderMaterialInstances {
-    /// Maps from each entity in the main world to the
-    /// [`RenderMaterialInstance`] associated with it.
-    pub instances: MainEntityHashMap<RenderMaterialInstance>,
+    /// Maps from each entity in the main world to its material instances.
+    ///
+    /// An entity may have multiple instances for heterogeneous materials
+    /// (multiple `MeshMaterial3d<T>` of different types).
+    pub instances: MainEntityHashMap<SmallVec<[RenderMaterialInstance; 4]>>,
     /// A monotonically-increasing counter, which we use to sweep
     /// [`RenderMaterialInstances::instances`] when the entities and/or required
     /// components are removed.
     pub current_change_tick: Tick,
+    /// Counter for generating stable [`MaterialInstanceId`]s.
+    next_material_instance_id: u32,
 }
 
 impl RenderMaterialInstances {
     /// Returns the mesh material ID for the entity with the given mesh, or a
     /// dummy mesh material ID if the mesh has no material ID.
     ///
+    /// For backward compatibility, returns the first material.
     /// Meshes almost always have materials, but in very specific circumstances
     /// involving custom pipelines they won't. (See the
     /// `specialized_mesh_pipelines` example.)
     pub(crate) fn mesh_material(&self, entity: MainEntity) -> UntypedAssetId {
         match self.instances.get(&entity) {
-            Some(render_instance) => render_instance.asset_id,
+            Some(instances) => instances
+                .first()
+                .map(|inst| inst.asset_id)
+                .unwrap_or_else(|| DUMMY_MESH_MATERIAL.into()),
             None => DUMMY_MESH_MATERIAL.into(),
         }
     }
+
+    /// Returns all material instances for an entity.
+    pub(crate) fn get(&self, entity: MainEntity) -> Option<&SmallVec<[RenderMaterialInstance; 4]>> {
+        self.instances.get(&entity)
+    }
+
+    /// Returns the material instance for a specific material type on an entity.
+    pub(crate) fn get_for_type<M: Material>(
+        &self,
+        entity: MainEntity,
+    ) -> Option<&RenderMaterialInstance> {
+        let material_type_id = TypeId::of::<M>();
+        self.instances.get(&entity).and_then(|instances| {
+            instances
+                .iter()
+                .find(|inst| inst.asset_id.type_id() == material_type_id)
+        })
+    }
+
+    /// Allocates a new stable [`MaterialInstanceId`].
+    ///
+    /// Each call returns a unique ID that remains stable for the lifetime of
+    /// the material instance.
+    pub fn allocate_instance_id(&mut self) -> MaterialInstanceId {
+        let id = MaterialInstanceId(self.next_material_instance_id);
+        self.next_material_instance_id += 1;
+        id
+    }
 }
 
-/// The material associated with a single mesh instance in the main world.
+/// A material draw for a mesh entity.
 ///
+/// Each instance represents one draw call: a material applied to a geometry slice.
 /// Note that this uses an [`UntypedAssetId`] and isn't generic over the
 /// material type, for simplicity.
+#[derive(Clone)]
 pub struct RenderMaterialInstance {
     /// The material asset.
     pub asset_id: UntypedAssetId,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Slots 1+ are 1-indexed into the submesh buffer.
+    pub submesh_index: u16,
     /// The [`RenderMaterialInstances::current_change_tick`] at which this
     /// material instance was last modified.
     pub last_change_tick: Tick,
+    /// Stable identifier for this material instance.
+    ///
+    /// This ID remains constant for the lifetime of the instance, even if other
+    /// instances are added or removed from the same entity.
+    pub instance_id: MaterialInstanceId,
 }
 
 /// A [`SystemSet`] that contains all `extract_mesh_materials` systems.
@@ -694,7 +773,10 @@ fn mark_meshes_as_changed_if_their_materials_changed<M>(
 }
 
 /// Fills the [`RenderMaterialInstances`] resources from the meshes in the
-/// scene.
+/// scene for entities with [`MeshMaterial3d<M>`].
+///
+/// This handles the single-material case. For multi-material meshes, see
+/// [`extract_mesh_multi_materials`].
 fn extract_mesh_materials<M: Material>(
     mut material_instances: ResMut<RenderMaterialInstances>,
     changed_meshes_query: Extract<
@@ -705,20 +787,43 @@ fn extract_mesh_materials<M: Material>(
     >,
 ) {
     let last_change_tick = material_instances.current_change_tick;
+    let material_type_id = TypeId::of::<M>();
 
     for (entity, view_visibility, material) in &changed_meshes_query {
+        let main_entity = MainEntity::from(entity);
+        let asset_id = material.id().untyped();
+
         if view_visibility.get() {
-            material_instances.instances.insert(
-                entity.into(),
-                RenderMaterialInstance {
-                    asset_id: material.id().untyped(),
+            // Allocate instance_id upfront before borrowing instances,
+            // to avoid double mutable borrow. Only used if we need to create a new entry.
+            let new_instance_id = material_instances.allocate_instance_id();
+            let instances = material_instances.instances.entry(main_entity).or_default();
+
+            // Find existing entry for this material type
+            if let Some(existing) = instances
+                .iter_mut()
+                .find(|inst| inst.asset_id.type_id() == material_type_id)
+            {
+                existing.asset_id = asset_id;
+                existing.last_change_tick = last_change_tick;
+                // Keep the existing instance_id for stability
+            } else {
+                instances.push(RenderMaterialInstance {
+                    asset_id,
+                    submesh_index: 0, // Default to full mesh (slot 0)
                     last_change_tick,
-                },
-            );
+                    instance_id: new_instance_id,
+                });
+            }
         } else {
-            material_instances
-                .instances
-                .remove(&MainEntity::from(entity));
+            // Entity is invisible - remove entries for this material type
+            if let Some(instances) = material_instances.instances.get_mut(&main_entity) {
+                instances.retain(|inst| inst.asset_id.type_id() != material_type_id);
+                // Clean up empty entries
+                if instances.is_empty() {
+                    material_instances.instances.remove(&main_entity);
+                }
+            }
         }
     }
 }
@@ -744,19 +849,30 @@ fn early_sweep_material_instances<M>(
     M: Material,
 {
     let last_change_tick = material_instances.current_change_tick;
+    let material_type_id = TypeId::of::<M>();
 
     for entity in removed_materials_query.read() {
-        if let Entry::Occupied(occupied_entry) = material_instances.instances.entry(entity.into()) {
-            // Only sweep the entry if it wasn't updated this frame.
-            if occupied_entry.get().last_change_tick != last_change_tick {
-                occupied_entry.remove();
+        let main_entity = MainEntity::from(entity);
+        if let Some(instances) = material_instances.instances.get_mut(&main_entity) {
+            // Remove entries for this material type that weren't updated this frame
+            instances.retain(|inst| {
+                // Keep entries that are either:
+                // - Not of this material type
+                // - Were updated this frame (material type changed)
+                inst.asset_id.type_id() != material_type_id
+                    || inst.last_change_tick == last_change_tick
+            });
+
+            // Clean up empty entries
+            if instances.is_empty() {
+                material_instances.instances.remove(&main_entity);
             }
         }
     }
 }
 
 /// Removes mesh materials from [`RenderMaterialInstances`] when their
-/// [`ViewVisibility`] components are removed.
+/// [`Mesh3d`] components are removed.
 ///
 /// This runs after all invocations of `early_sweep_material_instances` and is
 /// responsible for bumping [`RenderMaterialInstances::current_change_tick`] in
@@ -768,12 +884,14 @@ pub fn late_sweep_material_instances(
     let last_change_tick = material_instances.current_change_tick;
 
     for entity in removed_meshes_query.read() {
-        if let Entry::Occupied(occupied_entry) = material_instances.instances.entry(entity.into()) {
-            // Only sweep the entry if it wasn't updated this frame. It's
-            // possible that a `ViewVisibility` component was removed and
-            // re-added in the same frame.
-            if occupied_entry.get().last_change_tick != last_change_tick {
-                occupied_entry.remove();
+        let main_entity = MainEntity::from(entity);
+        if let Some(instances) = material_instances.instances.get_mut(&main_entity) {
+            // Remove all entries that weren't updated this frame.
+            // It's possible that a mesh was removed and re-added in the same frame.
+            instances.retain(|inst| inst.last_change_tick == last_change_tick);
+
+            if instances.is_empty() {
+                material_instances.instances.remove(&main_entity);
             }
         }
     }
@@ -856,24 +974,25 @@ pub fn sweep_entities_needing_specialization<M>(
             continue;
         }
 
-        entity_specialization_ticks.remove(&MainEntity::from(entity));
+        let main_entity = MainEntity::from(entity);
+        entity_specialization_ticks.remove(&main_entity);
         for view in views {
             if let Some(cache) =
                 specialized_material_pipeline_cache.get_mut(&view.retained_view_entity)
             {
-                cache.remove(&MainEntity::from(entity));
+                cache.retain(|phase_item_id, _| phase_item_id.main_entity != main_entity);
             }
             if let Some(cache) = specialized_prepass_material_pipeline_cache
                 .as_mut()
                 .and_then(|c| c.get_mut(&view.retained_view_entity))
             {
-                cache.remove(&MainEntity::from(entity));
+                cache.retain(|phase_item_id, _| phase_item_id.main_entity != main_entity);
             }
             if let Some(cache) = specialized_shadow_material_pipeline_cache
                 .as_mut()
                 .and_then(|c| c.get_mut(&view.retained_view_entity))
             {
-                cache.remove(&MainEntity::from(entity));
+                cache.retain(|phase_item_id, _| phase_item_id.main_entity != main_entity);
             }
         }
     }
@@ -957,13 +1076,13 @@ pub struct SpecializedMaterialPipelineCache {
     map: HashMap<RetainedViewEntity, SpecializedMaterialViewPipelineCache>,
 }
 
-/// Stores the cached render pipeline ID for each entity in a single view, as
-/// well as the last time it was changed.
+/// Stores the cached render pipeline ID for each phase item (entity + material instance)
+/// in a single view, as well as the last time it was changed.
 #[derive(Deref, DerefMut, Default)]
 pub struct SpecializedMaterialViewPipelineCache {
-    // material entity -> (tick, pipeline_id)
+    // phase_item_id -> (tick, pipeline_id)
     #[deref]
-    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
+    map: HashMap<PhaseItemId, (Tick, CachedRenderPipelineId)>,
 }
 
 pub fn check_entities_needing_specialization<M>(
@@ -1048,7 +1167,7 @@ pub fn specialize_material_meshes(
             .or_default();
 
         for (_, visible_entity) in visible_entities.iter::<Mesh3d>() {
-            let Some(material_instance) = render_material_instances.instances.get(visible_entity)
+            let Some(material_instances) = render_material_instances.instances.get(visible_entity)
             else {
                 continue;
             };
@@ -1060,85 +1179,95 @@ pub fn specialize_material_meshes(
                 .get(visible_entity)
                 .unwrap()
                 .system_tick;
-            let last_specialized_tick = view_specialized_material_pipeline_cache
-                .get(visible_entity)
-                .map(|(tick, _)| *tick);
-            let needs_specialization = last_specialized_tick.is_none_or(|tick| {
-                view_tick.is_newer_than(tick, ticks.this_run())
-                    || entity_tick.is_newer_than(tick, ticks.this_run())
-            });
-            if !needs_specialization {
-                continue;
-            }
-            let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id) else {
-                continue;
-            };
-            let Some(material) = render_materials.get(material_instance.asset_id) else {
-                continue;
-            };
 
-            let mut mesh_pipeline_key_bits = material.properties.mesh_pipeline_key_bits;
-            mesh_pipeline_key_bits.insert(alpha_mode_pipeline_key(
-                material.properties.alpha_mode,
-                &Msaa::from_samples(view_key.msaa_samples()),
-            ));
-            let mut mesh_key = *view_key
-                | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits())
-                | mesh_pipeline_key_bits;
-
-            if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
-                mesh_key |= MeshPipelineKey::LIGHTMAPPED;
-
-                if lightmap.bicubic_sampling {
-                    mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
-                }
-            }
-
-            if render_visibility_ranges.entity_has_crossfading_visibility_ranges(*visible_entity) {
-                mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
-            }
-
-            if view_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS) {
-                // If the previous frame have skins or morph targets, note that.
-                if mesh_instance
-                    .flags
-                    .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
-                {
-                    mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
-                }
-                if mesh_instance
-                    .flags
-                    .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
-                {
-                    mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
-                }
-            }
-
-            let erased_key = ErasedMaterialPipelineKey {
-                type_id: material_instance.asset_id.type_id(),
-                mesh_key,
-                material_key: material.properties.material_key.clone(),
-            };
-            let material_pipeline_specializer = MaterialPipelineSpecializer {
-                pipeline: pipeline.clone(),
-                properties: material.properties.clone(),
-            };
-            let pipeline_id = pipelines.specialize(
-                &pipeline_cache,
-                &material_pipeline_specializer,
-                erased_key,
-                &mesh.layout,
-            );
-            let pipeline_id = match pipeline_id {
-                Ok(id) => id,
-                Err(err) => {
-                    error!("{}", err);
+            // Iterate over all material instances for multi-material support.
+            for material_instance in material_instances.iter() {
+                let phase_item_id = PhaseItemId::with_material_instance(
+                    *visible_entity,
+                    material_instance.instance_id.0,
+                    material_instance.submesh_index,
+                );
+                let last_specialized_tick = view_specialized_material_pipeline_cache
+                    .get(&phase_item_id)
+                    .map(|(tick, _)| *tick);
+                let needs_specialization = last_specialized_tick.is_none_or(|tick| {
+                    view_tick.is_newer_than(tick, ticks.this_run())
+                        || entity_tick.is_newer_than(tick, ticks.this_run())
+                });
+                if !needs_specialization {
                     continue;
                 }
-            };
+                let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id) else {
+                    continue;
+                };
+                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                    continue;
+                };
 
-            view_specialized_material_pipeline_cache
-                .insert(*visible_entity, (ticks.this_run(), pipeline_id));
+                let mut mesh_pipeline_key_bits = material.properties.mesh_pipeline_key_bits;
+                mesh_pipeline_key_bits.insert(alpha_mode_pipeline_key(
+                    material.properties.alpha_mode,
+                    &Msaa::from_samples(view_key.msaa_samples()),
+                ));
+                let mut mesh_key = *view_key
+                    | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits())
+                    | mesh_pipeline_key_bits;
+
+                if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
+                    mesh_key |= MeshPipelineKey::LIGHTMAPPED;
+
+                    if lightmap.bicubic_sampling {
+                        mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
+                    }
+                }
+
+                if render_visibility_ranges.entity_has_crossfading_visibility_ranges(*visible_entity)
+                {
+                    mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
+                }
+
+                if view_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS) {
+                    // If the previous frame have skins or morph targets, note that.
+                    if mesh_instance
+                        .flags
+                        .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
+                    {
+                        mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
+                    }
+                    if mesh_instance
+                        .flags
+                        .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
+                    {
+                        mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
+                    }
+                }
+
+                let erased_key = ErasedMaterialPipelineKey {
+                    type_id: material_instance.asset_id.type_id(),
+                    mesh_key,
+                    material_key: material.properties.material_key.clone(),
+                };
+                let material_pipeline_specializer = MaterialPipelineSpecializer {
+                    pipeline: pipeline.clone(),
+                    properties: material.properties.clone(),
+                };
+                let pipeline_id = pipelines.specialize(
+                    &pipeline_cache,
+                    &material_pipeline_specializer,
+                    erased_key,
+                    &mesh.layout,
+                );
+                let pipeline_id = match pipeline_id {
+                    Ok(id) => id,
+                    Err(err) => {
+                        error!("{}", err);
+                        continue;
+                    }
+                };
+
+                view_specialized_material_pipeline_cache
+                    .insert(phase_item_id, (ticks.this_run(), pipeline_id));
+            }
         }
     }
 
@@ -1186,21 +1315,7 @@ pub fn queue_material_meshes(
 
         let rangefinder = view.rangefinder3d();
         for (render_entity, visible_entity) in visible_entities.iter::<Mesh3d>() {
-            let Some((current_change_tick, pipeline_id)) = view_specialized_material_pipeline_cache
-                .get(visible_entity)
-                .map(|(current_change_tick, pipeline_id)| (*current_change_tick, *pipeline_id))
-            else {
-                continue;
-            };
-
-            // Skip the entity if it's cached in a bin and up to date.
-            if opaque_phase.validate_cached_entity(*visible_entity, current_change_tick)
-                || alpha_mask_phase.validate_cached_entity(*visible_entity, current_change_tick)
-            {
-                continue;
-            }
-
-            let Some(material_instance) = render_material_instances.instances.get(visible_entity)
+            let Some(material_instances) = render_material_instances.instances.get(visible_entity)
             else {
                 continue;
             };
@@ -1208,119 +1323,157 @@ pub fn queue_material_meshes(
             else {
                 continue;
             };
-            let Some(material) = render_materials.get(material_instance.asset_id) else {
-                continue;
-            };
 
             // Fetch the slabs that this mesh resides in.
             let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
 
-            match material.properties.render_phase_type {
-                RenderPhaseType::Transmissive => {
-                    let distance = rangefinder.distance_translation(&mesh_instance.translation)
-                        + material.properties.depth_bias;
-                    let Some(draw_function) = material
-                        .properties
-                        .get_draw_function(MainPassTransmissiveDrawFunction)
-                    else {
-                        continue;
-                    };
-                    transmissive_phase.add(Transmissive3d {
-                        entity: (*render_entity, *visible_entity),
-                        draw_function,
-                        pipeline: pipeline_id,
-                        distance,
-                        batch_range: 0..1,
-                        extra_index: PhaseItemExtraIndex::None,
-                        indexed: index_slab.is_some(),
-                    });
+            // Iterate over all material instances for multi-material support.
+            for material_instance in material_instances.iter() {
+                let phase_item_id = PhaseItemId::with_material_instance(
+                    *visible_entity,
+                    material_instance.instance_id.0,
+                    material_instance.submesh_index,
+                );
+
+                let Some((current_change_tick, pipeline_id)) =
+                    view_specialized_material_pipeline_cache
+                        .get(&phase_item_id)
+                        .map(|(current_change_tick, pipeline_id)| {
+                            (*current_change_tick, *pipeline_id)
+                        })
+                else {
+                    continue;
+                };
+
+                // Skip the phase item if it's cached in a bin and up to date.
+                if opaque_phase.validate_cached_phase_item(phase_item_id, current_change_tick)
+                    || alpha_mask_phase.validate_cached_phase_item(phase_item_id, current_change_tick)
+                {
+                    continue;
                 }
-                RenderPhaseType::Opaque => {
-                    if material.properties.render_method == OpaqueRendererMethod::Deferred {
-                        // Even though we aren't going to insert the entity into
-                        // a bin, we still want to update its cache entry. That
-                        // way, we know we don't need to re-examine it in future
-                        // frames.
-                        opaque_phase.update_cache(*visible_entity, None, current_change_tick);
-                        continue;
+
+                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                    continue;
+                };
+
+                match material.properties.render_phase_type {
+                    RenderPhaseType::Transmissive => {
+                        let distance = rangefinder.distance_translation(&mesh_instance.translation)
+                            + material.properties.depth_bias;
+                        let Some(draw_function) = material
+                            .properties
+                            .get_draw_function(MainPassTransmissiveDrawFunction)
+                        else {
+                            continue;
+                        };
+                        transmissive_phase.add(Transmissive3d {
+                            entity: (*render_entity, *visible_entity),
+                            draw_function,
+                            pipeline: pipeline_id,
+                            distance,
+                            batch_range: 0..1,
+                            extra_index: PhaseItemExtraIndex::None,
+                            indexed: index_slab.is_some(),
+                            material_instance_id: material_instance.instance_id.0,
+                            submesh_index: material_instance.submesh_index,
+                        });
                     }
-                    let Some(draw_function) = material
-                        .properties
-                        .get_draw_function(MainPassOpaqueDrawFunction)
-                    else {
-                        continue;
-                    };
-                    let batch_set_key = Opaque3dBatchSetKey {
-                        pipeline: pipeline_id,
-                        draw_function,
-                        material_bind_group_index: Some(material.binding.group.0),
-                        vertex_slab: vertex_slab.unwrap_or_default(),
-                        index_slab,
-                        lightmap_slab: mesh_instance.shared.lightmap_slab_index.map(|index| *index),
-                    };
-                    let bin_key = Opaque3dBinKey {
-                        asset_id: mesh_instance.mesh_asset_id.into(),
-                    };
-                    opaque_phase.add(
-                        batch_set_key,
-                        bin_key,
-                        (*render_entity, *visible_entity),
-                        mesh_instance.current_uniform_index,
-                        BinnedRenderPhaseType::mesh(
-                            mesh_instance.should_batch(),
-                            &gpu_preprocessing_support,
-                        ),
-                        current_change_tick,
-                    );
-                }
-                // Alpha mask
-                RenderPhaseType::AlphaMask => {
-                    let Some(draw_function) = material
-                        .properties
-                        .get_draw_function(MainPassAlphaMaskDrawFunction)
-                    else {
-                        continue;
-                    };
-                    let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                        draw_function,
-                        pipeline: pipeline_id,
-                        material_bind_group_index: Some(material.binding.group.0),
-                        vertex_slab: vertex_slab.unwrap_or_default(),
-                        index_slab,
-                    };
-                    let bin_key = OpaqueNoLightmap3dBinKey {
-                        asset_id: mesh_instance.mesh_asset_id.into(),
-                    };
-                    alpha_mask_phase.add(
-                        batch_set_key,
-                        bin_key,
-                        (*render_entity, *visible_entity),
-                        mesh_instance.current_uniform_index,
-                        BinnedRenderPhaseType::mesh(
-                            mesh_instance.should_batch(),
-                            &gpu_preprocessing_support,
-                        ),
-                        current_change_tick,
-                    );
-                }
-                RenderPhaseType::Transparent => {
-                    let distance = rangefinder.distance_translation(&mesh_instance.translation)
-                        + material.properties.depth_bias;
-                    let Some(draw_function) = material
-                        .properties
-                        .get_draw_function(MainPassTransparentDrawFunction)
-                    else {
-                        continue;
-                    };
-                    transparent_phase.add(Transparent3d {
-                        entity: (*render_entity, *visible_entity),
-                        draw_function,
-                        pipeline: pipeline_id,
-                        distance,
-                        batch_range: 0..1,
-                        extra_index: PhaseItemExtraIndex::None,
-                        indexed: index_slab.is_some(),
-                    });
+                    RenderPhaseType::Opaque => {
+                        if material.properties.render_method == OpaqueRendererMethod::Deferred {
+                            // Even though we aren't going to insert the entity into
+                            // a bin, we still want to update its cache entry. That
+                            // way, we know we don't need to re-examine it in future
+                            // frames.
+                            opaque_phase.update_cache(phase_item_id, None, current_change_tick);
+                            continue;
+                        }
+                        let Some(draw_function) = material
+                            .properties
+                            .get_draw_function(MainPassOpaqueDrawFunction)
+                        else {
+                            continue;
+                        };
+                        let batch_set_key = Opaque3dBatchSetKey {
+                            pipeline: pipeline_id,
+                            draw_function,
+                            material_bind_group_index: Some(material.binding.group.0),
+                            vertex_slab: vertex_slab.unwrap_or_default(),
+                            index_slab,
+                            lightmap_slab: mesh_instance
+                                .shared
+                                .lightmap_slab_index
+                                .map(|index| *index),
+                        };
+                        let bin_key = Opaque3dBinKey {
+                            asset_id: mesh_instance.mesh_asset_id.into(),
+                            submesh_index: material_instance.submesh_index,
+                        };
+                        opaque_phase.add(
+                            batch_set_key,
+                            bin_key,
+                            *render_entity,
+                            phase_item_id,
+                            mesh_instance.current_uniform_index,
+                            BinnedRenderPhaseType::mesh(
+                                mesh_instance.should_batch(),
+                                &gpu_preprocessing_support,
+                            ),
+                            current_change_tick,
+                        );
+                    }
+                    // Alpha mask
+                    RenderPhaseType::AlphaMask => {
+                        let Some(draw_function) = material
+                            .properties
+                            .get_draw_function(MainPassAlphaMaskDrawFunction)
+                        else {
+                            continue;
+                        };
+                        let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
+                            draw_function,
+                            pipeline: pipeline_id,
+                            material_bind_group_index: Some(material.binding.group.0),
+                            vertex_slab: vertex_slab.unwrap_or_default(),
+                            index_slab,
+                        };
+                        let bin_key = OpaqueNoLightmap3dBinKey {
+                            asset_id: mesh_instance.mesh_asset_id.into(),
+                            submesh_index: material_instance.submesh_index,
+                        };
+                        alpha_mask_phase.add(
+                            batch_set_key,
+                            bin_key,
+                            *render_entity,
+                            phase_item_id,
+                            mesh_instance.current_uniform_index,
+                            BinnedRenderPhaseType::mesh(
+                                mesh_instance.should_batch(),
+                                &gpu_preprocessing_support,
+                            ),
+                            current_change_tick,
+                        );
+                    }
+                    RenderPhaseType::Transparent => {
+                        let distance = rangefinder.distance_translation(&mesh_instance.translation)
+                            + material.properties.depth_bias;
+                        let Some(draw_function) = material
+                            .properties
+                            .get_draw_function(MainPassTransparentDrawFunction)
+                        else {
+                            continue;
+                        };
+                        transparent_phase.add(Transparent3d {
+                            entity: (*render_entity, *visible_entity),
+                            draw_function,
+                            pipeline: pipeline_id,
+                            distance,
+                            batch_range: 0..1,
+                            extra_index: PhaseItemExtraIndex::None,
+                            indexed: index_slab.is_some(),
+                            material_instance_id: material_instance.instance_id.0,
+                            submesh_index: material_instance.submesh_index,
+                        });
+                    }
                 }
             }
         }

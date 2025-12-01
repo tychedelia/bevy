@@ -31,8 +31,8 @@ mod rangefinder;
 use bevy_app::{App, Plugin};
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::change_detection::Tick;
-use bevy_ecs::entity::EntityHash;
 use bevy_platform::collections::{hash_map::Entry, HashMap};
+use bevy_platform::hash::FixedHasher;
 use bevy_utils::default;
 pub use draw::*;
 pub use draw_state::*;
@@ -48,7 +48,7 @@ use crate::batching::gpu_preprocessing::{
     PhaseIndirectParametersBuffers,
 };
 use crate::renderer::RenderDevice;
-use crate::sync_world::{MainEntity, MainEntityHashMap};
+use crate::sync_world::MainEntity;
 use crate::view::RetainedViewEntity;
 use crate::RenderDebugFlags;
 use crate::{
@@ -97,6 +97,61 @@ define_label!(
 );
 
 pub type InternedDrawFunctionLabel = Interned<dyn DrawFunctionLabel>;
+
+/// Identifies a unique phase item within a render phase.
+///
+/// This is used as a cache key for retained bins and pipeline caches.
+/// All fields must match for two phase items to be considered the same.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct PhaseItemId {
+    /// The main entity this phase item belongs to.
+    pub main_entity: MainEntity,
+    /// Stable identifier for the material instance.
+    ///
+    /// This corresponds to `MaterialInstanceId::0` from bevy_pbr. Using raw u32
+    /// here to avoid a dependency on bevy_pbr from bevy_render.
+    ///
+    /// For single-material entities using backward-compatible paths, this is 0.
+    pub material_instance_id: u32,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh (default). Additional slots reference subsets
+    /// for multi-material rendering.
+    ///
+    /// This ensures cache keys distinguish between draws targeting different
+    /// geometry subsets of the same mesh.
+    pub submesh_index: u16,
+    // TODO: add vis class id here when we support multiple vis classes per entity
+}
+
+impl PhaseItemId {
+    /// Creates a new phase item ID for the first (or only) material on an entity.
+    ///
+    /// Uses material_instance_id = 0 and submesh_index = 0 for backward compatibility
+    /// with single-material paths.
+    #[inline]
+    pub fn new(main_entity: MainEntity) -> Self {
+        Self {
+            main_entity,
+            material_instance_id: 0,
+            submesh_index: 0,
+        }
+    }
+
+    /// Creates a new phase item ID for a specific material instance and submesh.
+    #[inline]
+    pub fn with_material_instance(
+        main_entity: MainEntity,
+        material_instance_id: u32,
+        submesh_index: u16,
+    ) -> Self {
+        Self {
+            main_entity,
+            material_instance_id,
+            submesh_index,
+        }
+    }
+}
 
 /// Stores the rendering instructions for a single phase that uses bins in all
 /// views.
@@ -173,51 +228,55 @@ where
     /// unbatchable entities.
     pub(crate) batch_sets: BinnedRenderPhaseBatchSets<BPI::BinKey>,
 
-    /// The batch and bin key for each entity.
+    /// The batch and bin key for each phase item.
     ///
-    /// We retain these so that, when the entity changes,
+    /// We retain these so that, when the entity or material changes,
     /// [`Self::sweep_old_entities`] can quickly find the bin it was located in
     /// and remove it.
-    cached_entity_bin_keys: IndexMap<MainEntity, CachedBinnedEntity<BPI>, EntityHash>,
+    ///
+    /// Keyed by [`PhaseItemId`] to support multiple materials per entity.
+    cached_phase_item_bin_keys: IndexMap<PhaseItemId, CachedBinnedEntity<BPI>, FixedHasher>,
 
-    /// The set of indices in [`Self::cached_entity_bin_keys`] that are
+    /// The set of indices in [`Self::cached_phase_item_bin_keys`] that are
     /// confirmed to be up to date.
     ///
     /// Note that each bit in this bit set refers to an *index* in the
     /// [`IndexMap`] (i.e. a bucket in the hash table). They aren't entity IDs.
-    valid_cached_entity_bin_keys: FixedBitSet,
+    valid_cached_phase_item_bin_keys: FixedBitSet,
 
-    /// The set of entities that changed bins this frame.
+    /// The set of phase items that changed bins this frame.
     ///
-    /// An entity will only be present in this list if it was in one bin on the
-    /// previous frame and is in a new bin on this frame. Each list entry
-    /// specifies the bin the entity used to be in. We use this in order to
-    /// remove the entity from the old bin during
+    /// A phase item will only be present in this list if it was in one bin on
+    /// the previous frame and is in a new bin on this frame. Each list entry
+    /// specifies the bin it used to be in. We use this in order to
+    /// remove the item from the old bin during
     /// [`BinnedRenderPhase::sweep_old_entities`].
-    entities_that_changed_bins: Vec<EntityThatChangedBins<BPI>>,
+    phase_items_that_changed_bins: Vec<PhaseItemThatChangedBins<BPI>>,
     /// The gpu preprocessing mode configured for the view this phase is associated
     /// with.
     gpu_preprocessing_mode: GpuPreprocessingMode,
 }
 
-/// All entities that share a mesh and a material and can be batched as part of
-/// a [`BinnedRenderPhase`].
+/// All phase items that share a mesh and a material and can be batched as part
+/// of a [`BinnedRenderPhase`].
 #[derive(Default)]
 pub struct RenderBin {
-    /// A list of the entities in each bin, along with their cached
+    /// A list of the phase items in each bin, along with their cached
     /// [`InputUniformIndex`].
-    entities: IndexMap<MainEntity, InputUniformIndex, EntityHash>,
+    ///
+    /// Keyed by [`PhaseItemId`] to support multiple materials per entity.
+    phase_items: IndexMap<PhaseItemId, InputUniformIndex, FixedHasher>,
 }
 
-/// Information that we track about an entity that was in one bin on the
+/// Information that we track about a phase item that was in one bin on the
 /// previous frame and is in a different bin this frame.
-struct EntityThatChangedBins<BPI>
+struct PhaseItemThatChangedBins<BPI>
 where
     BPI: BinnedPhaseItem,
 {
-    /// The entity.
-    main_entity: MainEntity,
-    /// The key that identifies the bin that this entity used to be in.
+    /// The phase item identifier.
+    phase_item_id: PhaseItemId,
+    /// The key that identifies the bin that this phase item used to be in.
     old_cached_binned_entity: CachedBinnedEntity<BPI>,
 }
 
@@ -348,8 +407,8 @@ pub struct BinnedRenderPhaseBatch {
 
 /// Information about the unbatchable entities in a bin.
 pub struct UnbatchableBinnedEntities {
-    /// The entities.
-    pub entities: MainEntityHashMap<Entity>,
+    /// The entities, keyed by [`PhaseItemId`] to support multiple materials per entity.
+    pub entities: IndexMap<PhaseItemId, Entity, FixedHasher>,
 
     /// The GPU array buffer indices of each unbatchable binned entity.
     pub(crate) buffer_indices: UnbatchableBinnedEntityIndexSet,
@@ -357,8 +416,8 @@ pub struct UnbatchableBinnedEntities {
 
 /// Information about [`BinnedRenderPhaseType::NonMesh`] entities.
 pub struct NonMeshEntities {
-    /// The entities.
-    pub entities: MainEntityHashMap<Entity>,
+    /// The entities, keyed by [`PhaseItemId`] to support multiple materials per entity.
+    pub entities: IndexMap<PhaseItemId, Entity, FixedHasher>,
 }
 
 /// Stores instance indices and dynamic offsets for unbatchable entities in a
@@ -497,7 +556,8 @@ where
         &mut self,
         batch_set_key: BPI::BatchSetKey,
         bin_key: BPI::BinKey,
-        (entity, main_entity): (Entity, MainEntity),
+        entity: Entity,
+        phase_item_id: PhaseItemId,
         input_uniform_index: InputUniformIndex,
         mut phase_type: BinnedRenderPhaseType,
         change_tick: Tick,
@@ -518,13 +578,13 @@ where
                             .get_mut()
                             .entry(bin_key.clone())
                             .or_default()
-                            .insert(main_entity, input_uniform_index);
+                            .insert(phase_item_id, input_uniform_index);
                     }
                     indexmap::map::Entry::Vacant(entry) => {
                         let mut new_batch_set = IndexMap::default();
                         new_batch_set.insert(
                             bin_key.clone(),
-                            RenderBin::from_entity(main_entity, input_uniform_index),
+                            RenderBin::from_phase_item(phase_item_id, input_uniform_index),
                         );
                         entry.insert(new_batch_set);
                     }
@@ -537,10 +597,10 @@ where
                     .entry((batch_set_key.clone(), bin_key.clone()).clone())
                 {
                     indexmap::map::Entry::Occupied(mut entry) => {
-                        entry.get_mut().insert(main_entity, input_uniform_index);
+                        entry.get_mut().insert(phase_item_id, input_uniform_index);
                     }
                     indexmap::map::Entry::Vacant(entry) => {
-                        entry.insert(RenderBin::from_entity(main_entity, input_uniform_index));
+                        entry.insert(RenderBin::from_phase_item(phase_item_id, input_uniform_index));
                     }
                 }
             }
@@ -551,11 +611,11 @@ where
                     .entry((batch_set_key.clone(), bin_key.clone()))
                 {
                     indexmap::map::Entry::Occupied(mut entry) => {
-                        entry.get_mut().entities.insert(main_entity, entity);
+                        entry.get_mut().entities.insert(phase_item_id, entity);
                     }
                     indexmap::map::Entry::Vacant(entry) => {
-                        let mut entities = MainEntityHashMap::default();
-                        entities.insert(main_entity, entity);
+                        let mut entities = IndexMap::default();
+                        entities.insert(phase_item_id, entity);
                         entry.insert(UnbatchableBinnedEntities {
                             entities,
                             buffer_indices: default(),
@@ -571,11 +631,11 @@ where
                     .entry((batch_set_key.clone(), bin_key.clone()).clone())
                 {
                     indexmap::map::Entry::Occupied(mut entry) => {
-                        entry.get_mut().entities.insert(main_entity, entity);
+                        entry.get_mut().entities.insert(phase_item_id, entity);
                     }
                     indexmap::map::Entry::Vacant(entry) => {
-                        let mut entities = MainEntityHashMap::default();
-                        entities.insert(main_entity, entity);
+                        let mut entities = IndexMap::default();
+                        entities.insert(phase_item_id, entity);
                         entry.insert(NonMeshEntities { entities });
                     }
                 }
@@ -584,7 +644,7 @@ where
 
         // Update the cache.
         self.update_cache(
-            main_entity,
+            phase_item_id,
             Some(CachedBinKey {
                 batch_set_key,
                 bin_key,
@@ -594,10 +654,10 @@ where
         );
     }
 
-    /// Inserts an entity into the cache with the given change tick.
+    /// Inserts a phase item into the cache with the given change tick.
     pub fn update_cache(
         &mut self,
-        main_entity: MainEntity,
+        phase_item_id: PhaseItemId,
         cached_bin_key: Option<CachedBinKey<BPI>>,
         change_tick: Tick,
     ) {
@@ -607,22 +667,23 @@ where
         };
 
         let (index, old_cached_binned_entity) = self
-            .cached_entity_bin_keys
-            .insert_full(main_entity, new_cached_binned_entity.clone());
+            .cached_phase_item_bin_keys
+            .insert_full(phase_item_id, new_cached_binned_entity.clone());
 
-        // If the entity changed bins, record its old bin so that we can remove
-        // the entity from it.
+        // If the phase item changed bins, record its old bin so that we can remove
+        // it from the old bin.
         if let Some(old_cached_binned_entity) = old_cached_binned_entity
             && old_cached_binned_entity.cached_bin_key != new_cached_binned_entity.cached_bin_key
         {
-            self.entities_that_changed_bins.push(EntityThatChangedBins {
-                main_entity,
-                old_cached_binned_entity,
-            });
+            self.phase_items_that_changed_bins
+                .push(PhaseItemThatChangedBins {
+                    phase_item_id,
+                    old_cached_binned_entity,
+                });
         }
 
-        // Mark the entity as valid.
-        self.valid_cached_entity_bin_keys.grow_and_insert(index);
+        // Mark the phase item as valid.
+        self.valid_cached_phase_item_bin_keys.grow_and_insert(index);
     }
 
     /// Encodes the GPU commands needed to render all entities in this phase.
@@ -782,7 +843,9 @@ where
         for (batch_set_key, bin_key) in self.unbatchable_meshes.keys() {
             let unbatchable_entities =
                 &self.unbatchable_meshes[&(batch_set_key.clone(), bin_key.clone())];
-            for (entity_index, entity) in unbatchable_entities.entities.iter().enumerate() {
+            for (entity_index, (phase_item_id, entity)) in
+                unbatchable_entities.entities.iter().enumerate()
+            {
                 let unbatchable_dynamic_offset = match &unbatchable_entities.buffer_indices {
                     UnbatchableBinnedEntityIndexSet::NoEntities => {
                         // Shouldn't happen…
@@ -815,7 +878,7 @@ where
                 let binned_phase_item = BPI::new(
                     batch_set_key.clone(),
                     bin_key.clone(),
-                    (*entity.1, *entity.0),
+                    (*entity, phase_item_id.main_entity),
                     unbatchable_dynamic_offset.instance_index
                         ..(unbatchable_dynamic_offset.instance_index + 1),
                     unbatchable_dynamic_offset.extra_index,
@@ -846,13 +909,13 @@ where
         let mut draw_functions = draw_functions.write();
 
         for ((batch_set_key, bin_key), non_mesh_entities) in &self.non_mesh_items {
-            for (main_entity, entity) in non_mesh_entities.entities.iter() {
+            for (phase_item_id, entity) in non_mesh_entities.entities.iter() {
                 // Come up with a fake batch range and extra index. The draw
                 // function is expected to manage any sort of batching logic itself.
                 let binned_phase_item = BPI::new(
                     batch_set_key.clone(),
                     bin_key.clone(),
-                    (*entity, *main_entity),
+                    (*entity, phase_item_id.main_entity),
                     0..1,
                     PhaseItemExtraIndex::None,
                 );
@@ -879,60 +942,71 @@ where
     pub fn prepare_for_new_frame(&mut self) {
         self.batch_sets.clear();
 
-        self.valid_cached_entity_bin_keys.clear();
-        self.valid_cached_entity_bin_keys
-            .grow(self.cached_entity_bin_keys.len());
-        self.valid_cached_entity_bin_keys
-            .set_range(self.cached_entity_bin_keys.len().., true);
+        self.valid_cached_phase_item_bin_keys.clear();
+        self.valid_cached_phase_item_bin_keys
+            .grow(self.cached_phase_item_bin_keys.len());
+        self.valid_cached_phase_item_bin_keys
+            .set_range(self.cached_phase_item_bin_keys.len().., true);
 
-        self.entities_that_changed_bins.clear();
+        self.phase_items_that_changed_bins.clear();
 
         for unbatchable_bin in self.unbatchable_meshes.values_mut() {
             unbatchable_bin.buffer_indices.clear();
         }
     }
 
-    /// Checks to see whether the entity is in a bin and returns true if it's
+    /// Checks to see whether the phase item is in a bin and returns true if it's
     /// both in a bin and up to date.
     ///
     /// If this function returns true, we also add the entry to the
-    /// `valid_cached_entity_bin_keys` list.
-    pub fn validate_cached_entity(
+    /// `valid_cached_phase_item_bin_keys` list.
+    pub fn validate_cached_phase_item(
         &mut self,
-        visible_entity: MainEntity,
+        phase_item_id: PhaseItemId,
         current_change_tick: Tick,
     ) -> bool {
         if let indexmap::map::Entry::Occupied(entry) =
-            self.cached_entity_bin_keys.entry(visible_entity)
+            self.cached_phase_item_bin_keys.entry(phase_item_id)
             && entry.get().change_tick == current_change_tick
         {
-            self.valid_cached_entity_bin_keys.insert(entry.index());
+            self.valid_cached_phase_item_bin_keys.insert(entry.index());
             return true;
         }
 
         false
     }
 
-    /// Removes all entities not marked as clean from the bins.
+    /// Convenience method that validates a cached entity with material_instance_id = 0.
+    ///
+    /// This is for backward compatibility with single-material code paths.
+    pub fn validate_cached_entity(
+        &mut self,
+        visible_entity: MainEntity,
+        current_change_tick: Tick,
+    ) -> bool {
+        self.validate_cached_phase_item(PhaseItemId::new(visible_entity), current_change_tick)
+    }
+
+    /// Removes all phase items not marked as clean from the bins.
     ///
     /// During `queue_material_meshes`, we process all visible entities and mark
     /// each as clean as we come to it. Then, in [`sweep_old_entities`], we call
-    /// this method, which removes entities that aren't marked as clean from the
-    /// bins.
+    /// this method, which removes phase items that aren't marked as clean from
+    /// the bins.
     pub fn sweep_old_entities(&mut self) {
-        // Search for entities not marked as valid. We have to do this in
+        // Search for phase items not marked as valid. We have to do this in
         // reverse order because `swap_remove_index` will potentially invalidate
         // all indices after the one we remove.
-        for index in ReverseFixedBitSetZeroesIterator::new(&self.valid_cached_entity_bin_keys) {
-            let Some((entity, cached_binned_entity)) =
-                self.cached_entity_bin_keys.swap_remove_index(index)
+        for index in ReverseFixedBitSetZeroesIterator::new(&self.valid_cached_phase_item_bin_keys) {
+            let Some((phase_item_id, cached_binned_entity)) =
+                self.cached_phase_item_bin_keys.swap_remove_index(index)
             else {
                 continue;
             };
 
             if let Some(ref cached_bin_key) = cached_binned_entity.cached_bin_key {
-                remove_entity_from_bin(
-                    entity,
+                remove_phase_item_from_bin(
+                    phase_item_id,
                     cached_bin_key,
                     &mut self.multidrawable_meshes,
                     &mut self.batchable_meshes,
@@ -942,16 +1016,16 @@ where
             }
         }
 
-        // If an entity changed bins, we need to remove it from its old bin.
-        for entity_that_changed_bins in self.entities_that_changed_bins.drain(..) {
-            let Some(ref old_cached_bin_key) = entity_that_changed_bins
+        // If a phase item changed bins, we need to remove it from its old bin.
+        for phase_item_that_changed_bins in self.phase_items_that_changed_bins.drain(..) {
+            let Some(ref old_cached_bin_key) = phase_item_that_changed_bins
                 .old_cached_binned_entity
                 .cached_bin_key
             else {
                 continue;
             };
-            remove_entity_from_bin(
-                entity_that_changed_bins.main_entity,
+            remove_phase_item_from_bin(
+                phase_item_that_changed_bins.phase_item_id,
                 old_cached_bin_key,
                 &mut self.multidrawable_meshes,
                 &mut self.batchable_meshes,
@@ -962,15 +1036,15 @@ where
     }
 }
 
-/// Removes an entity from a bin.
+/// Removes a phase item from a bin.
 ///
 /// If this makes the bin empty, this function removes the bin as well.
 ///
 /// This is a standalone function instead of a method on [`BinnedRenderPhase`]
 /// for borrow check reasons.
-fn remove_entity_from_bin<BPI>(
-    entity: MainEntity,
-    entity_bin_key: &CachedBinKey<BPI>,
+fn remove_phase_item_from_bin<BPI>(
+    phase_item_id: PhaseItemId,
+    cached_bin_key: &CachedBinKey<BPI>,
     multidrawable_meshes: &mut IndexMap<BPI::BatchSetKey, IndexMap<BPI::BinKey, RenderBin>>,
     batchable_meshes: &mut IndexMap<(BPI::BatchSetKey, BPI::BinKey), RenderBin>,
     unbatchable_meshes: &mut IndexMap<(BPI::BatchSetKey, BPI::BinKey), UnbatchableBinnedEntities>,
@@ -978,16 +1052,16 @@ fn remove_entity_from_bin<BPI>(
 ) where
     BPI: BinnedPhaseItem,
 {
-    match entity_bin_key.phase_type {
+    match cached_bin_key.phase_type {
         BinnedRenderPhaseType::MultidrawableMesh => {
             if let indexmap::map::Entry::Occupied(mut batch_set_entry) =
-                multidrawable_meshes.entry(entity_bin_key.batch_set_key.clone())
+                multidrawable_meshes.entry(cached_bin_key.batch_set_key.clone())
             {
                 if let indexmap::map::Entry::Occupied(mut bin_entry) = batch_set_entry
                     .get_mut()
-                    .entry(entity_bin_key.bin_key.clone())
+                    .entry(cached_bin_key.bin_key.clone())
                 {
-                    bin_entry.get_mut().remove(entity);
+                    bin_entry.get_mut().remove(phase_item_id);
 
                     // If the bin is now empty, remove the bin.
                     if bin_entry.get_mut().is_empty() {
@@ -1006,10 +1080,10 @@ fn remove_entity_from_bin<BPI>(
 
         BinnedRenderPhaseType::BatchableMesh => {
             if let indexmap::map::Entry::Occupied(mut bin_entry) = batchable_meshes.entry((
-                entity_bin_key.batch_set_key.clone(),
-                entity_bin_key.bin_key.clone(),
+                cached_bin_key.batch_set_key.clone(),
+                cached_bin_key.bin_key.clone(),
             )) {
-                bin_entry.get_mut().remove(entity);
+                bin_entry.get_mut().remove(phase_item_id);
 
                 // If the bin is now empty, remove the bin.
                 if bin_entry.get_mut().is_empty() {
@@ -1020,10 +1094,10 @@ fn remove_entity_from_bin<BPI>(
 
         BinnedRenderPhaseType::UnbatchableMesh => {
             if let indexmap::map::Entry::Occupied(mut bin_entry) = unbatchable_meshes.entry((
-                entity_bin_key.batch_set_key.clone(),
-                entity_bin_key.bin_key.clone(),
+                cached_bin_key.batch_set_key.clone(),
+                cached_bin_key.bin_key.clone(),
             )) {
-                bin_entry.get_mut().entities.remove(&entity);
+                bin_entry.get_mut().entities.swap_remove(&phase_item_id);
 
                 // If the bin is now empty, remove the bin.
                 if bin_entry.get_mut().entities.is_empty() {
@@ -1034,10 +1108,10 @@ fn remove_entity_from_bin<BPI>(
 
         BinnedRenderPhaseType::NonMesh => {
             if let indexmap::map::Entry::Occupied(mut bin_entry) = non_mesh_items.entry((
-                entity_bin_key.batch_set_key.clone(),
-                entity_bin_key.bin_key.clone(),
+                cached_bin_key.batch_set_key.clone(),
+                cached_bin_key.bin_key.clone(),
             )) {
-                bin_entry.get_mut().entities.remove(&entity);
+                bin_entry.get_mut().entities.swap_remove(&phase_item_id);
 
                 // If the bin is now empty, remove the bin.
                 if bin_entry.get_mut().entities.is_empty() {
@@ -1067,9 +1141,9 @@ where
                 }
                 GpuPreprocessingMode::None => BinnedRenderPhaseBatchSets::DynamicUniforms(vec![]),
             },
-            cached_entity_bin_keys: IndexMap::default(),
-            valid_cached_entity_bin_keys: FixedBitSet::new(),
-            entities_that_changed_bins: vec![],
+            cached_phase_item_bin_keys: IndexMap::default(),
+            valid_cached_phase_item_bin_keys: FixedBitSet::new(),
+            phase_items_that_changed_bins: vec![],
             gpu_preprocessing_mode: gpu_preprocessing,
         }
     }
@@ -1545,6 +1619,23 @@ pub trait PhaseItem: Sized + Send + Sync + 'static {
     /// Returns a pair of mutable references to both the batch range and extra
     /// index.
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex);
+
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh (default). Slots 1+ are 1-indexed into the submesh buffer.
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        0
+    }
+
+    /// Material instance identifier for multi-material entities.
+    ///
+    /// Defaults to 0 for single-material entities. Used to ensure that different
+    /// materials on the same entity don't batch together.
+    #[inline]
+    fn material_instance_id(&self) -> u32 {
+        0
+    }
 }
 
 /// The "extra index" associated with some [`PhaseItem`]s, alongside the
@@ -1624,6 +1715,21 @@ impl PhaseItemExtraIndex {
 /// same bin are eligible to be batched together. The elements within the bins
 /// aren't themselves sorted.
 ///
+/// Trait for bin keys that provide a submesh index for multi-material support.
+///
+/// Bin keys should include `submesh_index` so that different submeshes don't
+/// batch together. The submesh index is used by the GPU to look up geometry
+/// from the submesh buffer.
+pub trait BinKeySubmesh {
+    /// Returns the submesh slot index for this bin key.
+    ///
+    /// Slot 0 = full mesh (default). Additional slots reference subsets
+    /// for multi-material rendering.
+    fn submesh_index(&self) -> u16 {
+        0
+    }
+}
+
 /// An example of a binned phase item is `Opaque3d`, for which the rendering
 /// order isn't critical.
 pub trait BinnedPhaseItem: PhaseItem {
@@ -1633,7 +1739,7 @@ pub trait BinnedPhaseItem: PhaseItem {
     /// lowest variable bind group id such as the material bind group id, and
     /// its dynamic offsets if any, next bind group and offsets, etc. This
     /// reduces the need for rebinding between bins and improves performance.
-    type BinKey: Clone + Send + Sync + PartialEq + Eq + Ord + Hash;
+    type BinKey: Clone + Send + Sync + PartialEq + Eq + Ord + Hash + BinKeySubmesh;
 
     /// The key used to combine batches into batch sets.
     ///
@@ -1667,6 +1773,7 @@ pub trait PhaseItemBatchSetKey: Clone + Send + Sync + PartialEq + Eq + Ord + Has
     /// parameters to use, if indirect drawing is enabled.
     fn indexed(&self) -> bool;
 }
+
 
 /// Represents phase items that must be sorted. The `SortKey` specifies the
 /// order that these items are drawn in. These are placed into a single array,
@@ -1786,33 +1893,33 @@ impl BinnedRenderPhaseType {
 }
 
 impl RenderBin {
-    /// Creates a [`RenderBin`] containing a single entity.
-    fn from_entity(entity: MainEntity, uniform_index: InputUniformIndex) -> RenderBin {
-        let mut entities = IndexMap::default();
-        entities.insert(entity, uniform_index);
-        RenderBin { entities }
+    /// Creates a [`RenderBin`] containing a single phase item.
+    fn from_phase_item(phase_item_id: PhaseItemId, uniform_index: InputUniformIndex) -> RenderBin {
+        let mut phase_items = IndexMap::default();
+        phase_items.insert(phase_item_id, uniform_index);
+        RenderBin { phase_items }
     }
 
-    /// Inserts an entity into the bin.
-    fn insert(&mut self, entity: MainEntity, uniform_index: InputUniformIndex) {
-        self.entities.insert(entity, uniform_index);
+    /// Inserts a phase item into the bin.
+    fn insert(&mut self, phase_item_id: PhaseItemId, uniform_index: InputUniformIndex) {
+        self.phase_items.insert(phase_item_id, uniform_index);
     }
 
-    /// Removes an entity from the bin.
-    fn remove(&mut self, entity_to_remove: MainEntity) {
-        self.entities.swap_remove(&entity_to_remove);
+    /// Removes a phase item from the bin.
+    fn remove(&mut self, phase_item_id: PhaseItemId) {
+        self.phase_items.swap_remove(&phase_item_id);
     }
 
-    /// Returns true if the bin contains no entities.
+    /// Returns true if the bin contains no phase items.
     fn is_empty(&self) -> bool {
-        self.entities.is_empty()
+        self.phase_items.is_empty()
     }
 
-    /// Returns the [`IndexMap`] containing all the entities in the bin, along
+    /// Returns the [`IndexMap`] containing all the phase items in the bin, along
     /// with the cached [`InputUniformIndex`] of each.
     #[inline]
-    pub fn entities(&self) -> &IndexMap<MainEntity, InputUniformIndex, EntityHash> {
-        &self.entities
+    pub fn phase_items(&self) -> &IndexMap<PhaseItemId, InputUniformIndex, FixedHasher> {
+        &self.phase_items
     }
 }
 

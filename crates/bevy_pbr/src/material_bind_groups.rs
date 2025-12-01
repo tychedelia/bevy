@@ -255,8 +255,8 @@ enum BindingResourceArray<'a> {
 
 /// The location of a material (either bindless or non-bindless) within the
 /// slabs.
-#[derive(Clone, Copy, Debug, Default, Reflect)]
-#[reflect(Clone, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Reflect)]
+#[reflect(Clone, Default, PartialEq)]
 pub struct MaterialBindingId {
     /// The index of the bind group (slab) where the GPU data is located.
     pub group: MaterialBindGroupIndex,
@@ -286,7 +286,7 @@ impl From<u32> for MaterialBindGroupIndex {
 /// In bindless mode, this slot is needed to locate the material data in each
 /// bind group, since multiple materials are packed into a single slab. In
 /// non-bindless mode, this slot is always 0.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Reflect, Deref, DerefMut)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Reflect, Deref, DerefMut)]
 #[reflect(Default, Clone, PartialEq)]
 pub struct MaterialBindGroupSlot(pub u32);
 

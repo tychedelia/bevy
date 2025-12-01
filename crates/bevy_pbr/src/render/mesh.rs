@@ -1,8 +1,8 @@
 use crate::{
-    material_bind_groups::{MaterialBindGroupIndex, MaterialBindGroupSlot},
+    material_bind_groups::MaterialBindGroupSlot,
     resources::write_atmosphere_buffer,
 };
-use bevy_asset::{embedded_asset, load_embedded_asset, AssetId};
+use bevy_asset::{embedded_asset, load_embedded_asset, prelude::AssetChanged, AssetId};
 use bevy_camera::{
     primitives::Aabb,
     visibility::{NoFrustumCulling, RenderLayers, ViewVisibility, VisibilityRange},
@@ -42,7 +42,7 @@ use bevy_render::{
         no_gpu_preprocessing, GetBatchData, GetFullBatchData, NoAutomaticBatching,
     },
     mesh::{allocator::MeshAllocator, RenderMesh, RenderMeshBufferInfo},
-    render_asset::RenderAssets,
+    render_asset::{ExtractedAssets, RenderAssets},
     render_phase::{
         BinnedRenderPhasePlugin, InputUniformIndex, PhaseItem, PhaseItemExtraIndex, RenderCommand,
         RenderCommandResult, SortedRenderPhasePlugin, TrackedRenderPass,
@@ -68,6 +68,10 @@ use tracing::{error, warn};
 use self::irradiance_volume::IRRADIANCE_VOLUMES_ARE_USABLE;
 use crate::{
     render::{
+        gpu_preprocess::{
+            build_material_work_items_system, populate_draw_data_for_cpu_path,
+            MaterialDrawInfo, MaterialExpansionBuffers,
+        },
         morph::{
             extract_morphs, no_automatic_morph_batching, prepare_morphs, MorphIndices,
             MorphUniforms,
@@ -172,7 +176,12 @@ impl Plugin for MeshRenderPlugin {
                 .init_resource::<MorphUniforms>()
                 .init_resource::<MorphIndices>()
                 .init_resource::<MeshCullingDataBuffer>()
+                .init_resource::<SubMeshBuffer>()
+                .init_resource::<SubMeshOffsets>()
                 .init_resource::<RenderMaterialInstances>()
+                // Initialize MaterialExpansionBuffers for both GPU and CPU paths
+                // since shaders always use draw_data indirection
+                .init_resource::<MaterialExpansionBuffers>()
                 .configure_sets(
                     ExtractSchedule,
                     MeshExtractionSystems
@@ -254,6 +263,12 @@ impl Plugin for MeshRenderPlugin {
                                 // `set_mesh_motion_vector_flags` so it doesn't
                                 // overwrite those flags.
                                 .before(set_mesh_motion_vector_flags),
+                            // Build MaterialEntry entries for Stage 2 material expansion.
+                            // This runs in PrepareResourcesFlush (after batching) so we have
+                            // access to the real output indices from PreprocessWorkItems.
+                            build_material_work_items_system
+                                .in_set(RenderSystems::PrepareResourcesFlush)
+                                .before(gpu_preprocessing::write_batched_instance_buffers::<MeshPipeline>),
                         ),
                     );
             } else {
@@ -269,8 +284,14 @@ impl Plugin for MeshRenderPlugin {
                     )
                     .add_systems(
                         Render,
-                        no_gpu_preprocessing::write_batched_instance_buffer::<MeshPipeline>
-                            .in_set(RenderSystems::PrepareResourcesFlush),
+                        (
+                            no_gpu_preprocessing::write_batched_instance_buffer::<MeshPipeline>
+                                .in_set(RenderSystems::PrepareResourcesFlush),
+                            // Populate draw_data for CPU path (identity mapping)
+                            populate_draw_data_for_cpu_path
+                                .in_set(RenderSystems::PrepareResources)
+                                .before(RenderSystems::PrepareBindGroups),
+                        ),
                     );
             };
 
@@ -480,11 +501,11 @@ pub struct MeshUniform {
     pub first_vertex_index: u32,
     /// The current skin index, or `u32::MAX` if there's no skin.
     pub current_skin_index: u32,
-    /// The material and lightmap indices, packed into 32 bits.
+    /// Index of the lightmap in the binding array.
     ///
-    /// Low 16 bits: index of the material inside the bind group data.
-    /// High 16 bits: index of the lightmap in the binding array.
-    pub material_and_lightmap_bind_group_slot: u32,
+    /// For GPU preprocessing, material slot is in DrawData (written by Stage 2).
+    /// For CPU/meshlet paths, material may still be packed here.
+    pub lightmap_bind_group_slot: u32,
     /// User supplied tag to identify this mesh instance.
     pub tag: u32,
     /// Padding.
@@ -538,11 +559,13 @@ pub struct MeshInputUniform {
     pub index_count: u32,
     /// The current skin index, or `u32::MAX` if there's no skin.
     pub current_skin_index: u32,
-    /// The material and lightmap indices, packed into 32 bits.
+    /// Index of the lightmap in the binding array.
     ///
-    /// Low 16 bits: index of the material inside the bind group data.
-    /// High 16 bits: index of the lightmap in the binding array.
-    pub material_and_lightmap_bind_group_slot: u32,
+    /// The material slot is NOT stored in [`MeshInputUniform`] - it's provided
+    /// separately via [`MaterialEntry`] during Stage 2 (material expansion).
+    /// This allows the same mesh to be drawn with multiple materials without
+    /// duplicating visibility/culling work.
+    pub lightmap_bind_group_slot: u32,
     /// The number of the frame on which this [`MeshInputUniform`] was built.
     ///
     /// This is used to validate the previous transform and skin. If this
@@ -553,8 +576,139 @@ pub struct MeshInputUniform {
     pub timestamp: u32,
     /// User supplied tag to identify this mesh instance.
     pub tag: u32,
-    /// Padding.
+    /// Packed submesh offset (low 16 bits) and count (high 16 bits).
+    ///
+    /// Slot 0 always means "full mesh" and uses geometry from this struct directly.
+    /// Slots 1+ are 1-indexed into [`SubMeshBuffer`] at `buffer[offset + slot - 1]`.
+    /// A count of 0 means single-material (only slot 0, no buffer allocation).
+    ///
+    /// Use [`pack_submesh_offset_count`] and [`unpack_submesh_offset_count`] to work with this.
+    pub submesh_offset_count: u32,
+}
+
+/// Maximum value for submesh offset (fits in 16 bits).
+pub const MAX_SUBMESH_OFFSET: usize = u16::MAX as usize;
+
+/// Maximum value for submesh count (fits in 16 bits).
+pub const MAX_SUBMESH_COUNT: usize = u16::MAX as usize;
+
+/// Packs submesh offset and count into a single u32.
+///
+/// Count is the number of submeshes stored in [`SubMeshBuffer`] (slots 1+).
+/// A count of 0 means single-material (only slot 0, no buffer allocation).
+///
+/// # Limits
+/// Both offset and count must fit in 16 bits (max 65535).
+/// Use [`try_pack_submesh_offset_count`] for checked packing from larger types.
+#[inline]
+pub const fn pack_submesh_offset_count(offset: u16, count: u16) -> u32 {
+    (offset as u32) | ((count as u32) << 16)
+}
+
+/// Attempts to pack submesh offset and count into a single u32.
+///
+/// Returns `None` if either value exceeds 16 bits (65535).
+/// Logs a warning on overflow.
+#[inline]
+pub fn try_pack_submesh_offset_count(offset: usize, count: usize) -> Option<u32> {
+    if offset > MAX_SUBMESH_OFFSET {
+        warn!(
+            "Submesh offset {} exceeds maximum {} - mesh has too many submeshes",
+            offset,
+            MAX_SUBMESH_OFFSET
+        );
+        return None;
+    }
+    if count > MAX_SUBMESH_COUNT {
+        warn!(
+            "Submesh count {} exceeds maximum {} - mesh has too many submeshes",
+            count,
+            MAX_SUBMESH_COUNT
+        );
+        return None;
+    }
+    Some(pack_submesh_offset_count(offset as u16, count as u16))
+}
+
+/// Unpacks submesh offset and count from a packed u32.
+///
+/// Returns (offset, count). Count is the number of submeshes in [`SubMeshBuffer`].
+/// A count of 0 means single-material (only slot 0).
+#[inline]
+pub const fn unpack_submesh_offset_count(packed: u32) -> (u16, u16) {
+    ((packed & 0xFFFF) as u16, (packed >> 16) as u16)
+}
+
+/// Per-draw data written by Stage 2 (material expansion).
+///
+/// This small struct is written by the material expansion compute shader and
+/// read by draw shaders to get the material binding. Keyed by output/instance index.
+///
+/// This decouples material binding from mesh uniform data, allowing the same
+/// mesh to be drawn with multiple materials without duplicating transform work.
+///
+/// Note: mesh[] (MeshUniform array) is indexed directly by instance_index,
+/// so no mesh indirection is needed here.
+#[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
+#[repr(C)]
+pub struct DrawData {
+    /// Index of the material inside the bind group data.
+    ///
+    /// Lightmaps are per-mesh and stay in MeshUniform.lightmap_bind_group_slot.
+    pub material_bind_group_slot: u32,
+}
+
+/// GPU-side submesh descriptor for multi-material mesh rendering.
+///
+/// Meshes can have multiple submeshes, each representing a portion of the mesh's
+/// geometry. These are packed into a global submesh buffer, and each mesh's
+/// [`MeshInputUniform`] contains an offset and count into this buffer.
+///
+/// Slot 0 is always the full mesh geometry. Additional slots reference subsets.
+///
+/// Interpretation depends on whether the mesh is indexed or non-indexed (known
+/// from the pipeline/phase context):
+/// - Indexed: `first` = first_index, `count` = index_count, `base_vertex` used
+/// - Non-indexed: `first` = first_vertex, `count` = vertex_count, `base_vertex` = 0
+#[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default, Debug)]
+#[repr(C)]
+pub struct SubMeshDescriptor {
+    /// For indexed: first index (relative to mesh's first_index_index).
+    /// For non-indexed: first vertex (relative to mesh's first_vertex_index).
+    pub first: u32,
+    /// For indexed: number of indices. For non-indexed: number of vertices.
+    pub count: u32,
+    /// For indexed: offset added to index values before vertex lookup.
+    /// For non-indexed: unused (0).
+    pub base_vertex: i32,
+    /// Padding to align to 16 bytes.
     pub pad: u32,
+}
+
+impl SubMeshDescriptor {
+    /// Creates a submesh descriptor for the full mesh (slot 0).
+    ///
+    /// `count` is the index_count for indexed meshes, or vertex_count for non-indexed.
+    #[inline]
+    pub fn full(count: u32) -> Self {
+        Self {
+            first: 0,
+            count,
+            base_vertex: 0,
+            pad: 0,
+        }
+    }
+
+    /// Creates a submesh descriptor for a slice of geometry.
+    #[inline]
+    pub fn slice(first: u32, count: u32, base_vertex: i32) -> Self {
+        Self {
+            first,
+            count,
+            base_vertex,
+            pad: 0,
+        }
+    }
 }
 
 /// Information about each mesh instance needed to cull it on GPU.
@@ -580,11 +734,143 @@ pub struct MeshCullingData {
 #[derive(Resource, Deref, DerefMut)]
 pub struct MeshCullingDataBuffer(RawBufferVec<MeshCullingData>);
 
+/// Global GPU buffer holding submesh descriptors for multi-material rendering.
+///
+/// Slot 0 always means "full mesh" and uses geometry from [`MeshInputUniform`] directly.
+/// Slots 1+ are stored here at `buffer[offset + slot - 1]` (1-indexed).
+///
+/// Single-material meshes have `count=0` and no allocation in this buffer.
+/// Multi-material meshes have `count` submeshes stored contiguously starting at `offset`.
+#[derive(Resource, Deref, DerefMut)]
+pub struct SubMeshBuffer(RawBufferVec<SubMeshDescriptor>);
+
+impl Default for SubMeshBuffer {
+    #[inline]
+    fn default() -> Self {
+        Self(RawBufferVec::new(BufferUsages::STORAGE))
+    }
+}
+
+impl SubMeshBuffer {
+    /// Allocates submesh entries for a mesh and returns the (offset, count).
+    ///
+    /// Slot 0 is not stored here; it uses geometry from [`MeshInputUniform`] directly.
+    /// Slots 1+ are stored at `buffer[offset + slot - 1]` (1-indexed).
+    ///
+    /// Returns `(0, 0)` for single-material meshes (no allocation needed).
+    /// Returns `None` if the allocation would overflow the 16-bit offset/count limits.
+    pub fn allocate(
+        &mut self,
+        submeshes: Option<&[bevy_mesh::SubMesh]>,
+        is_indexed: bool,
+    ) -> Option<(u16, u16)> {
+        // Single-material: no allocation needed, count=0 means only slot 0
+        let Some(submeshes) = submeshes else {
+            return Some((0, 0));
+        };
+
+        // Empty submeshes slice: treat as single-material
+        if submeshes.is_empty() {
+            return Some((0, 0));
+        }
+
+        let offset = self.0.len();
+        let count = submeshes.len();
+
+        // Check for overflow before allocating
+        if offset > MAX_SUBMESH_OFFSET
+            || count > MAX_SUBMESH_COUNT
+            || offset + count > MAX_SUBMESH_OFFSET
+        {
+            warn!(
+                "Submesh allocation overflow: offset={}, count={} (max offset={}, max count={})",
+                offset, count, MAX_SUBMESH_OFFSET, MAX_SUBMESH_COUNT
+            );
+            return None;
+        }
+
+        for submesh in submeshes {
+            let vertex_count = submesh.index_range.end - submesh.index_range.start;
+            // base_vertex is i32 in SubMeshDescriptor (signed for GPU), but u32 in SubMesh
+            let base_vertex = if is_indexed {
+                submesh.base_vertex as i32
+            } else {
+                0
+            };
+            self.0.push(SubMeshDescriptor::slice(
+                submesh.index_range.start,
+                vertex_count,
+                base_vertex,
+            ));
+        }
+
+        Some((offset as u16, count as u16))
+    }
+
+    /// Writes the buffer to the GPU.
+    pub fn write_buffer(&mut self, render_device: &RenderDevice, render_queue: &RenderQueue) {
+        // Ensure the buffer is non-empty (GPU shaders may require at least one element)
+        if self.0.is_empty() {
+            self.0.push(SubMeshDescriptor::full(0));
+        }
+        self.0.write_buffer(render_device, render_queue);
+    }
+
+    /// Returns the underlying GPU buffer, if it exists.
+    #[inline]
+    pub fn buffer(&self) -> Option<&Buffer> {
+        self.0.buffer()
+    }
+}
+
+/// Maps mesh asset IDs to their submesh buffer allocations.
+///
+/// This is persistent across frames - allocations are only made when a mesh
+/// asset is first seen or modified. The offset/count pair can be packed into
+/// [`MeshInputUniform::submesh_offset_count`] using [`pack_submesh_offset_count`].
+///
+/// A count of 0 means single-material (only slot 0, no [`SubMeshBuffer`] allocation).
+#[derive(Resource, Default)]
+pub struct SubMeshOffsets {
+    /// Map from mesh asset ID to (offset, count) in [`SubMeshBuffer`].
+    offsets: HashMap<AssetId<Mesh>, (u16, u16)>,
+}
+
+impl SubMeshOffsets {
+    /// Gets the submesh offset and count for a mesh asset.
+    #[inline]
+    pub fn get(&self, mesh_id: AssetId<Mesh>) -> Option<(u16, u16)> {
+        self.offsets.get(&mesh_id).copied()
+    }
+
+    /// Inserts a submesh offset and count for a mesh asset.
+    #[inline]
+    pub fn insert(&mut self, mesh_id: AssetId<Mesh>, offset: u16, count: u16) {
+        self.offsets.insert(mesh_id, (offset, count));
+    }
+
+    /// Removes a submesh allocation for a mesh asset.
+    ///
+    /// This should be called when a mesh asset is removed or modified,
+    /// so that the next time the mesh is processed it will get a fresh
+    /// allocation in the submesh buffer.
+    #[inline]
+    pub fn remove(&mut self, mesh_id: &AssetId<Mesh>) {
+        self.offsets.remove(mesh_id);
+    }
+
+    /// Checks if a mesh asset has a submesh allocation.
+    #[inline]
+    pub fn contains(&self, mesh_id: AssetId<Mesh>) -> bool {
+        self.offsets.contains_key(&mesh_id)
+    }
+}
+
 impl MeshUniform {
     pub fn new(
         mesh_transforms: &MeshTransforms,
         first_vertex_index: u32,
-        material_bind_group_slot: MaterialBindGroupSlot,
+        _material_bind_group_slot: MaterialBindGroupSlot, // TODO: CPU path needs to populate DrawData
         maybe_lightmap: Option<(LightmapSlotIndex, Rect)>,
         current_skin_index: Option<u32>,
         tag: Option<u32>,
@@ -605,8 +891,9 @@ impl MeshUniform {
             flags: mesh_transforms.flags,
             first_vertex_index,
             current_skin_index: current_skin_index.unwrap_or(u32::MAX),
-            material_and_lightmap_bind_group_slot: u32::from(material_bind_group_slot)
-                | ((lightmap_bind_group_slot as u32) << 16),
+            // Material slot is now in DrawData for GPU path.
+            // TODO: CPU path needs to populate DrawData separately.
+            lightmap_bind_group_slot: lightmap_bind_group_slot as u32,
             tag: tag.unwrap_or(0),
             pad: 0,
         }
@@ -1106,6 +1393,7 @@ impl RenderMeshInstanceGpuQueue {
 impl RenderMeshInstanceGpuBuilder {
     /// Flushes this mesh instance to the [`RenderMeshInstanceGpu`] and
     /// [`MeshInputUniform`] tables, replacing the existing entry if applicable.
+    #[allow(clippy::too_many_arguments)]
     fn update(
         mut self,
         entity: MainEntity,
@@ -1119,15 +1407,20 @@ impl RenderMeshInstanceGpuBuilder {
         skin_uniforms: &SkinUniforms,
         timestamp: FrameCount,
         meshes_to_reextract_next_frame: &mut MeshesToReextractNextFrame,
+        material_expansion_buffers: &mut MaterialExpansionBuffers,
+        render_meshes: &RenderAssets<RenderMesh>,
+        submesh_buffer: &mut SubMeshBuffer,
+        submesh_offsets: &mut SubMeshOffsets,
     ) -> Option<u32> {
-        let (first_vertex_index, vertex_count) =
-            match mesh_allocator.mesh_vertex_slice(&self.shared.mesh_asset_id) {
-                Some(mesh_vertex_slice) => (
-                    mesh_vertex_slice.range.start,
-                    mesh_vertex_slice.range.end - mesh_vertex_slice.range.start,
-                ),
-                None => (0, 0),
-            };
+        // Check if the mesh has been allocated. If not, defer to next frame.
+        let Some(mesh_vertex_slice) = mesh_allocator.mesh_vertex_slice(&self.shared.mesh_asset_id)
+        else {
+            meshes_to_reextract_next_frame.insert(entity);
+            return None;
+        };
+        let first_vertex_index = mesh_vertex_slice.range.start;
+        let vertex_count = mesh_vertex_slice.range.end - mesh_vertex_slice.range.start;
+
         let (mesh_is_indexed, first_index_index, index_count) =
             match mesh_allocator.mesh_index_slice(&self.shared.mesh_asset_id) {
                 Some(mesh_index_slice) => (
@@ -1137,6 +1430,11 @@ impl RenderMeshInstanceGpuBuilder {
                 ),
                 None => (false, 0, 0),
             };
+
+        // Look up submeshes early, before self.shared is moved
+        let render_mesh = render_meshes.get(self.shared.mesh_asset_id);
+        let submeshes: Option<&[bevy_mesh::SubMesh]> = render_mesh.and_then(|m| m.submeshes.as_deref());
+
         let current_skin_index = match skin_uniforms.skin_byte_offset(entity) {
             Some(skin_index) => skin_index.index(),
             None => u32::MAX,
@@ -1171,6 +1469,37 @@ impl RenderMeshInstanceGpuBuilder {
             .map(|lightmap| lightmap.slab_index);
         self.shared.lightmap_slab_index = lightmap_slab_index;
 
+        // Look up or allocate submesh entries in the global submesh buffer.
+        // Submesh allocations are persistent per mesh asset - we only allocate
+        // once when a mesh is first seen.
+        let full_mesh_count = if mesh_is_indexed {
+            index_count
+        } else {
+            vertex_count
+        };
+        let submesh_offset_count = if let Some((offset, count)) =
+            submesh_offsets.get(self.shared.mesh_asset_id)
+        {
+            // Already allocated for this mesh asset
+            pack_submesh_offset_count(offset, count)
+        } else {
+            // New mesh asset - allocate submesh entries
+            match submesh_buffer.allocate(submeshes, mesh_is_indexed) {
+                Some((offset, count)) => {
+                    submesh_offsets.insert(self.shared.mesh_asset_id, offset, count);
+                    pack_submesh_offset_count(offset, count)
+                }
+                None => {
+                    // Overflow - skip this mesh instance
+                    warn!(
+                        "Skipping mesh {:?} due to submesh buffer overflow",
+                        self.shared.mesh_asset_id
+                    );
+                    return None;
+                }
+            }
+        };
+
         // Create the mesh input uniform.
         let mut mesh_input_uniform = MeshInputUniform {
             world_from_local: self.world_from_local.to_transpose(),
@@ -1180,17 +1509,13 @@ impl RenderMeshInstanceGpuBuilder {
             timestamp: timestamp.0,
             first_vertex_index,
             first_index_index,
-            index_count: if mesh_is_indexed {
-                index_count
-            } else {
-                vertex_count
-            },
+            index_count: full_mesh_count,
             current_skin_index,
-            material_and_lightmap_bind_group_slot: u32::from(
-                self.shared.material_bindings_index.slot,
-            ) | ((lightmap_slot as u32) << 16),
+            // Material slot is now provided via MaterialEntry in Stage 2.
+            // MeshInputUniform only carries the lightmap slot.
+            lightmap_bind_group_slot: lightmap_slot as u32,
             tag: self.shared.tag,
-            pad: 0,
+            submesh_offset_count,
         };
 
         // Did the last frame contain this entity as well?
@@ -1233,6 +1558,53 @@ impl RenderMeshInstanceGpuBuilder {
                         .unwrap_or_default(),
                 });
             }
+        }
+
+        // Record material draw(s) for MaterialEntry creation.
+        // For meshes with submeshes, record one draw per submesh.
+        // For simple meshes, record a single draw covering the entire mesh.
+        //
+        // Get all material instances for this entity to look up per-submesh materials.
+        let material_instances = mesh_material_ids.instances.get(&entity);
+
+        if let Some(submeshes) = submeshes {
+            // Multi-material mesh: always emit slot 0 (full mesh) with the primary material.
+            material_expansion_buffers.record_material_draw(MaterialDrawInfo {
+                input_index: current_uniform_index,
+                submesh_index: 0, // Slot 0 = full mesh
+                material_slot: mesh_material_binding_id.slot.into(),
+                is_indexed: mesh_is_indexed,
+            });
+
+            // Only emit draws for submeshes that have an explicit material instance.
+            if let Some(instances) = material_instances {
+                for (submesh_index, _submesh) in submeshes.iter().enumerate() {
+                    let submesh_slot = (submesh_index + 1) as u16;
+                    let Some(binding_slot) = instances
+                        .iter()
+                        .find(|inst| inst.submesh_index == submesh_slot)
+                        .and_then(|inst| render_material_bindings.get(&inst.asset_id))
+                        .map(|binding| binding.slot.into())
+                    else {
+                        continue;
+                    };
+
+                    material_expansion_buffers.record_material_draw(MaterialDrawInfo {
+                        input_index: current_uniform_index,
+                        submesh_index: submesh_slot,
+                        material_slot: binding_slot,
+                        is_indexed: mesh_is_indexed,
+                    });
+                }
+            }
+        } else {
+            // Simple mesh: single draw covering the entire mesh (slot 0)
+            material_expansion_buffers.record_material_draw(MaterialDrawInfo {
+                input_index: current_uniform_index,
+                submesh_index: 0,
+                material_slot: mesh_material_binding_id.slot.into(),
+                is_indexed: mesh_is_indexed,
+            });
         }
 
         Some(current_uniform_index)
@@ -1469,6 +1841,7 @@ pub fn extract_meshes_for_gpu_building(
                 Changed<Lightmap>,
                 Changed<Aabb>,
                 Changed<Mesh3d>,
+                AssetChanged<Mesh3d>,
                 Changed<MeshTag>,
                 Changed<NoFrustumCulling>,
                 Changed<NotShadowReceiver>,
@@ -1666,6 +2039,8 @@ pub fn collect_meshes_for_gpu_building(
         gpu_preprocessing::BatchedInstanceBuffers<MeshUniform, MeshInputUniform>,
     >,
     mut mesh_culling_data_buffer: ResMut<MeshCullingDataBuffer>,
+    mut submesh_buffer: ResMut<SubMeshBuffer>,
+    mut submesh_offsets: ResMut<SubMeshOffsets>,
     mut render_mesh_instance_queues: ResMut<RenderMeshInstanceGpuQueues>,
     mesh_allocator: Res<MeshAllocator>,
     mesh_material_ids: Res<RenderMaterialInstances>,
@@ -1674,6 +2049,8 @@ pub fn collect_meshes_for_gpu_building(
     skin_uniforms: Res<SkinUniforms>,
     frame_count: Res<FrameCount>,
     mut meshes_to_reextract_next_frame: ResMut<MeshesToReextractNextFrame>,
+    mut material_expansion_buffers: ResMut<MaterialExpansionBuffers>,
+    render_meshes: Res<RenderAssets<RenderMesh>>,
 ) {
     let RenderMeshInstances::GpuBuilding(render_mesh_instances) =
         render_mesh_instances.into_inner()
@@ -1681,8 +2058,12 @@ pub fn collect_meshes_for_gpu_building(
         return;
     };
 
-    // We're going to rebuild `meshes_to_reextract_next_frame`.
+    // Clear per-frame state.
     meshes_to_reextract_next_frame.clear();
+    material_expansion_buffers.clear();
+
+    // Note: SubMeshBuffer is NOT cleared each frame. Submesh allocations are
+    // persistent per mesh asset. SubMeshOffsets tracks which assets have allocations.
 
     // Collect render mesh instances. Build up the uniform buffer.
     let gpu_preprocessing::BatchedInstanceBuffers {
@@ -1718,6 +2099,10 @@ pub fn collect_meshes_for_gpu_building(
                         &skin_uniforms,
                         *frame_count,
                         &mut meshes_to_reextract_next_frame,
+                        &mut material_expansion_buffers,
+                        &render_meshes,
+                        &mut submesh_buffer,
+                        &mut submesh_offsets,
                     );
                 }
 
@@ -1747,6 +2132,10 @@ pub fn collect_meshes_for_gpu_building(
                         &skin_uniforms,
                         *frame_count,
                         &mut meshes_to_reextract_next_frame,
+                        &mut material_expansion_buffers,
+                        &render_meshes,
+                        &mut submesh_buffer,
+                        &mut submesh_offsets,
                     ) else {
                         continue;
                     };
@@ -1767,6 +2156,36 @@ pub fn collect_meshes_for_gpu_building(
 
     // Buffers can't be empty. Make sure there's something in the previous input buffer.
     previous_input_buffer.ensure_nonempty();
+}
+
+/// Writes the submesh buffer to the GPU.
+pub fn write_submesh_buffer(
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    mut submesh_buffer: ResMut<SubMeshBuffer>,
+) {
+    submesh_buffer.write_buffer(&render_device, &render_queue);
+}
+
+/// Invalidates submesh offset entries for meshes that were removed or modified.
+///
+/// This must run alongside [`allocate_and_free_meshes`](bevy_render::mesh::allocator::allocate_and_free_meshes)
+/// so that when a mesh asset is removed or modified, we remove its cached
+/// submesh offset. The next time the mesh is processed, it will get a fresh
+/// allocation in the submesh buffer with correct geometry data.
+pub fn invalidate_submesh_offsets(
+    mut submesh_offsets: ResMut<SubMeshOffsets>,
+    extracted_meshes: Res<ExtractedAssets<RenderMesh>>,
+) {
+    // Remove entries for meshes that were removed or modified.
+    // This mirrors what MeshAllocator::free_meshes does.
+    for mesh_id in extracted_meshes
+        .removed
+        .iter()
+        .chain(extracted_meshes.modified.iter())
+    {
+        submesh_offsets.remove(mesh_id);
+    }
 }
 
 /// All data needed to construct a pipeline for rendering 3D meshes.
@@ -1908,10 +2327,11 @@ impl GetBatchData for MeshPipeline {
         SRes<MeshAllocator>,
         SRes<SkinUniforms>,
     );
-    // The material bind group ID, the mesh ID, and the lightmap ID,
-    // respectively.
+    // The material binding ID (group + slot), the mesh ID, and the lightmap ID,
+    // respectively. We use the full MaterialBindingId (not just the group) to
+    // prevent incorrect batching of materials that share a bindless slab.
     type CompareData = (
-        MaterialBindGroupIndex,
+        MaterialBindingId,
         AssetId<Mesh>,
         Option<LightmapSlabIndex>,
     );
@@ -1952,7 +2372,7 @@ impl GetBatchData for MeshPipeline {
                 Some(mesh_instance.tag),
             ),
             mesh_instance.should_batch().then_some((
-                material_bind_group_index.group,
+                material_bind_group_index,
                 mesh_instance.mesh_asset_id,
                 maybe_lightmap.map(|lightmap| lightmap.slab_index),
             )),
@@ -1982,7 +2402,7 @@ impl GetFullBatchData for MeshPipeline {
         Some((
             mesh_instance.current_uniform_index,
             mesh_instance.should_batch().then_some((
-                mesh_instance.material_bindings_index.group,
+                mesh_instance.material_bindings_index,
                 mesh_instance.mesh_asset_id,
                 maybe_lightmap.map(|lightmap| lightmap.slab_index),
             )),
@@ -2043,16 +2463,18 @@ impl GetFullBatchData for MeshPipeline {
         indexed: bool,
         base_output_index: u32,
         batch_set_index: Option<NonMaxU32>,
+        submesh_index: u16,
         phase_indirect_parameters_buffers: &mut UntypedPhaseIndirectParametersBuffers,
         indirect_parameters_offset: u32,
     ) {
-        let indirect_parameters = IndirectParametersCpuMetadata {
+        let indirect_parameters = IndirectParametersCpuMetadata::new(
             base_output_index,
-            batch_set_index: match batch_set_index {
+            match batch_set_index {
                 Some(batch_set_index) => u32::from(batch_set_index),
                 None => !0,
             },
-        };
+            submesh_index,
+        );
 
         if indexed {
             phase_indirect_parameters_buffers
@@ -2686,9 +3108,9 @@ pub enum MeshBindGroups {
     /// The bind groups for the meshes for the entire scene, if GPU mesh
     /// preprocessing isn't in use.
     CpuPreprocessing(MeshPhaseBindGroups),
-    /// A mapping from the type ID of a phase (e.g. [`Opaque3d`]) to the mesh
-    /// bind groups for that phase.
-    GpuPreprocessing(TypeIdMap<MeshPhaseBindGroups>),
+    /// A mapping from phase type ID to per-view mesh bind groups.
+    /// Each view needs its own bind groups because draw_data is per-view.
+    GpuPreprocessing(TypeIdMap<HashMap<RetainedViewEntity, MeshPhaseBindGroups>>),
 }
 
 impl MeshPhaseBindGroups {
@@ -2749,6 +3171,7 @@ pub fn prepare_mesh_bind_groups(
     skins_uniform: Res<SkinUniforms>,
     weights_uniform: Res<MorphUniforms>,
     mut render_lightmaps: ResMut<RenderLightmaps>,
+    material_expansion_buffers: Res<MaterialExpansionBuffers>,
 ) {
     // CPU mesh preprocessing path.
     if let Some(cpu_batched_instance_buffer) = cpu_batched_instance_buffer
@@ -2757,6 +3180,9 @@ pub fn prepare_mesh_bind_groups(
             .instance_data_binding()
     {
         // In this path, we only have a single set of bind groups for all phases.
+        let Some(draw_data_buffer) = material_expansion_buffers.draw_data.buffer() else {
+            return;
+        };
         let cpu_preprocessing_mesh_bind_groups = prepare_mesh_bind_groups_for_phase(
             instance_data_binding,
             &meshes,
@@ -2766,6 +3192,7 @@ pub fn prepare_mesh_bind_groups(
             &skins_uniform,
             &weights_uniform,
             &mut render_lightmaps,
+            draw_data_buffer,
         );
 
         commands.insert_resource(MeshBindGroups::CpuPreprocessing(
@@ -2776,7 +3203,7 @@ pub fn prepare_mesh_bind_groups(
 
     // GPU mesh preprocessing path.
     if let Some(gpu_batched_instance_buffers) = gpu_batched_instance_buffers {
-        let mut gpu_preprocessing_mesh_bind_groups = TypeIdMap::default();
+        let mut gpu_preprocessing_mesh_bind_groups: TypeIdMap<HashMap<RetainedViewEntity, MeshPhaseBindGroups>> = TypeIdMap::default();
 
         // Loop over each phase.
         for (phase_type_id, batched_phase_instance_buffers) in
@@ -2788,18 +3215,36 @@ pub fn prepare_mesh_bind_groups(
                 continue;
             };
 
-            let mesh_phase_bind_groups = prepare_mesh_bind_groups_for_phase(
-                instance_data_binding,
-                &meshes,
-                &mesh_pipeline,
-                &render_device,
-                &pipeline_cache,
-                &skins_uniform,
-                &weights_uniform,
-                &mut render_lightmaps,
-            );
+            // Loop over each view within this phase
+            for (&view_entity, _) in &batched_phase_instance_buffers.work_item_buffers {
+                // Get per-(phase, view) draw_data buffer, falling back to legacy global buffer
+                let draw_data_buffer = material_expansion_buffers
+                    .per_phase_view
+                    .get(&(*phase_type_id, view_entity))
+                    .and_then(|p| p.draw_data.buffer())
+                    .or_else(|| material_expansion_buffers.draw_data.buffer());
 
-            gpu_preprocessing_mesh_bind_groups.insert(*phase_type_id, mesh_phase_bind_groups);
+                let Some(draw_data_buffer) = draw_data_buffer else {
+                    continue;
+                };
+
+                let mesh_phase_bind_groups = prepare_mesh_bind_groups_for_phase(
+                    instance_data_binding.clone(),
+                    &meshes,
+                    &mesh_pipeline,
+                    &render_device,
+                    &pipeline_cache,
+                    &skins_uniform,
+                    &weights_uniform,
+                    &mut render_lightmaps,
+                    draw_data_buffer,
+                );
+
+                gpu_preprocessing_mesh_bind_groups
+                    .entry(*phase_type_id)
+                    .or_default()
+                    .insert(view_entity, mesh_phase_bind_groups);
+            }
         }
 
         commands.insert_resource(MeshBindGroups::GpuPreprocessing(
@@ -2818,12 +3263,13 @@ fn prepare_mesh_bind_groups_for_phase(
     skins_uniform: &SkinUniforms,
     weights_uniform: &MorphUniforms,
     render_lightmaps: &mut RenderLightmaps,
+    draw_data: &Buffer,
 ) -> MeshPhaseBindGroups {
     let layouts = &mesh_pipeline.mesh_layouts;
 
     // TODO: Reuse allocations.
     let mut groups = MeshPhaseBindGroups {
-        model_only: Some(layouts.model_only(render_device, pipeline_cache, &model)),
+        model_only: Some(layouts.model_only(render_device, pipeline_cache, &model, draw_data)),
         ..default()
     };
 
@@ -2837,8 +3283,9 @@ fn prepare_mesh_bind_groups_for_phase(
             &model,
             skin,
             prev_skin,
+            draw_data,
         ),
-        no_motion_vectors: layouts.skinned(render_device, pipeline_cache, &model, skin),
+        no_motion_vectors: layouts.skinned(render_device, pipeline_cache, &model, skin, draw_data),
     });
 
     // Create the morphed bind groups just like we did for the skinned bind
@@ -2859,6 +3306,7 @@ fn prepare_mesh_bind_groups_for_phase(
                             targets,
                             prev_skin,
                             prev_weights,
+                            draw_data,
                         ),
                         no_motion_vectors: layouts.morphed_skinned(
                             render_device,
@@ -2867,6 +3315,7 @@ fn prepare_mesh_bind_groups_for_phase(
                             skin,
                             weights,
                             targets,
+                            draw_data,
                         ),
                     }
                 } else {
@@ -2878,6 +3327,7 @@ fn prepare_mesh_bind_groups_for_phase(
                             weights,
                             targets,
                             prev_weights,
+                            draw_data,
                         ),
                         no_motion_vectors: layouts.morphed(
                             render_device,
@@ -2885,6 +3335,7 @@ fn prepare_mesh_bind_groups_for_phase(
                             &model,
                             weights,
                             targets,
+                            draw_data,
                         ),
                     }
                 };
@@ -2904,6 +3355,7 @@ fn prepare_mesh_bind_groups_for_phase(
                 &model,
                 lightmap_slab,
                 bindless_supported,
+                draw_data,
             ),
         );
     }
@@ -3010,13 +3462,13 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
         SRes<MorphIndices>,
         SRes<RenderLightmaps>,
     );
-    type ViewQuery = Has<MotionVectorPrepass>;
+    type ViewQuery = (Has<MotionVectorPrepass>, &'static ExtractedView);
     type ItemQuery = ();
 
     #[inline]
     fn render<'w>(
         item: &P,
-        has_motion_vector_prepass: bool,
+        (has_motion_vector_prepass, extracted_view): ROQueryItem<Self::ViewQuery>,
         _item_query: Option<()>,
         (
             render_device,
@@ -3055,8 +3507,10 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             MeshBindGroups::CpuPreprocessing(ref mesh_phase_bind_groups) => {
                 Some(mesh_phase_bind_groups)
             }
-            MeshBindGroups::GpuPreprocessing(ref mesh_phase_bind_groups) => {
-                mesh_phase_bind_groups.get(&TypeId::of::<P>())
+            MeshBindGroups::GpuPreprocessing(ref phase_view_bind_groups) => {
+                phase_view_bind_groups
+                    .get(&TypeId::of::<P>())
+                    .and_then(|view_map| view_map.get(&extracted_view.retained_view_entity))
             }
         }) else {
             // This is harmless if e.g. we're rendering the `Shadow` phase and
@@ -3200,10 +3654,32 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
                 match item.extra_index() {
                     PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {
+                        // Resolve geometry from submesh. submesh_index 0 means full mesh.
+                        let submesh_index = item.submesh_index() as usize;
+                        let (indices, base_vertex) = if submesh_index > 0 {
+                            // Look up submesh from mesh asset (1-indexed: slot 1 = submeshes[0])
+                            if let Some(submeshes) = &gpu_mesh.submeshes {
+                                if let Some(submesh) = submeshes.get(submesh_index - 1) {
+                                    let first = index_buffer_slice.range.start + submesh.index_range.start;
+                                    let end = index_buffer_slice.range.start + submesh.index_range.end;
+                                    (first..end, vertex_buffer_slice.range.start as i32 + submesh.base_vertex as i32)
+                                } else {
+                                    // Invalid submesh index - silently skip to avoid log spam
+                                    // This can happen transiently with stale data during mesh changes.
+                                    return RenderCommandResult::Skip;
+                                }
+                            } else {
+                                // No submeshes defined but submesh_index > 0 - silently skip
+                                return RenderCommandResult::Skip;
+                            }
+                        } else {
+                            // submesh_index 0 = full mesh
+                            (index_buffer_slice.range.start..(index_buffer_slice.range.start + *count),
+                             vertex_buffer_slice.range.start as i32)
+                        };
                         pass.draw_indexed(
-                            index_buffer_slice.range.start
-                                ..(index_buffer_slice.range.start + *count),
-                            vertex_buffer_slice.range.start as i32,
+                            indices,
+                            base_vertex,
                             batch_range.clone(),
                         );
                     }
@@ -3273,7 +3749,29 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
             RenderMeshBufferInfo::NonIndexed => match item.extra_index() {
                 PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {
-                    pass.draw(vertex_buffer_slice.range, batch_range.clone());
+                    // Resolve geometry from submesh. submesh_index 0 means full mesh.
+                    let submesh_index = item.submesh_index() as usize;
+                    let vertices = if submesh_index > 0 {
+                        // Look up submesh from mesh asset (1-indexed: slot 1 = submeshes[0])
+                        if let Some(submeshes) = &gpu_mesh.submeshes {
+                            if let Some(submesh) = submeshes.get(submesh_index - 1) {
+                                // For non-indexed, index_range is actually vertex range
+                                let first = vertex_buffer_slice.range.start + submesh.index_range.start;
+                                let end = vertex_buffer_slice.range.start + submesh.index_range.end;
+                                first..end
+                            } else {
+                                // Invalid submesh index - silently skip to avoid log spam
+                                // This can happen transiently with stale data during mesh changes.
+                                return RenderCommandResult::Skip;
+                            }
+                        } else {
+                            // No submeshes defined but submesh_index > 0 - silently skip
+                            return RenderCommandResult::Skip;
+                        }
+                    } else {
+                        vertex_buffer_slice.range
+                    };
+                    pass.draw(vertices, batch_range.clone());
                 }
                 PhaseItemExtraIndex::IndirectParametersIndex {
                     range: indirect_parameters_range,

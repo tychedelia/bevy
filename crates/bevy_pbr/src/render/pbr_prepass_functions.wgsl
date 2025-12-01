@@ -5,7 +5,7 @@
 #import bevy_pbr::{
     prepass_io::VertexOutput,
     prepass_bindings::previous_view_uniforms,
-    mesh_bindings::mesh,
+    mesh_bindings::{mesh, draw_data},
     mesh_view_bindings::view,
     pbr_bindings,
     pbr_types,
@@ -23,7 +23,8 @@ fn prepass_alpha_discard(in: VertexOutput) {
 
 #ifdef MAY_DISCARD
 #ifdef BINDLESS
-    let slot = mesh[in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    // Material slot from DrawData (written by Stage 2 material expansion)
+    let slot = draw_data[in.instance_index].material_bind_group_slot;
     var output_color: vec4<f32> = pbr_bindings::material_array[material_indices[slot].material].base_color;
     let flags = pbr_bindings::material_array[material_indices[slot].material].flags;
 #else   // BINDLESS

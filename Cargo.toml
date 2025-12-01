@@ -3091,6 +3091,17 @@ category = "Shader Advanced"
 wasm = true
 
 [[example]]
+name = "manual_multi_material"
+path = "examples/shader_advanced/manual_multi_material.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.manual_multi_material]
+name = "Manual Multi-Material Extraction"
+description = "Demonstrates manual multi-material extraction with custom index ranges (infrastructure for future multi-material support)"
+category = "Shader Advanced"
+wasm = true
+
+[[example]]
 name = "texture_binding_array"
 path = "examples/shader_advanced/texture_binding_array.rs"
 doc-scrape-examples = true

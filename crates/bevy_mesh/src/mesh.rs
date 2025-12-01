@@ -118,6 +118,73 @@ pub const VERTEX_ATTRIBUTE_BUFFER_ID: u64 = 10;
 ///
 /// To transmit a [`Mesh`] between two running Bevy apps, e.g. through BRP, use [`SerializedMesh`].
 /// This type is only meant for short-term transmission between same versions and should not be stored anywhere.
+
+/// A submesh defines a portion of a mesh's geometry that can be drawn with a specific material.
+///
+/// For meshes with multiple materials (multi-material meshes), each submesh references a
+/// contiguous range of indices (or vertices for non-indexed meshes) and specifies which
+/// material slot should be used for rendering that portion.
+///
+/// # Fields
+///
+/// - `index_range`: For indexed meshes, the range of indices to draw. For non-indexed meshes,
+///   this represents the range of vertices instead.
+/// - `base_vertex`: Offset added to each index value before indexing into the vertex buffer.
+///   Only meaningful for indexed meshes.
+/// - `material_slot`: Which material slot (index into `MeshMaterials<M>`) to use for this submesh.
+///
+/// # Example
+///
+/// A mesh with two submeshes using different materials:
+/// ```ignore
+/// // First submesh: indices 0-99, material slot 0
+/// SubMesh {
+///     index_range: 0..100,
+///     base_vertex: 0,
+///     material_slot: 0,
+/// }
+/// // Second submesh: indices 100-199, material slot 1
+/// SubMesh {
+///     index_range: 100..200,
+///     base_vertex: 0,
+///     material_slot: 1,
+/// }
+/// ```
+#[derive(Debug, Clone, Reflect, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(Serialize, Deserialize))]
+pub struct SubMesh {
+    /// For indexed meshes: the range of indices in the index buffer.
+    /// For non-indexed meshes: the range of vertices in the vertex buffer.
+    pub index_range: core::ops::Range<u32>,
+    /// Offset added to index values before indexing into vertex buffer.
+    /// Only meaningful for indexed meshes; typically 0.
+    pub base_vertex: u32,
+    /// Material slot index - which material from `MeshMaterials<M>` to use.
+    pub material_slot: u32,
+}
+
+impl SubMesh {
+    /// Creates a new submesh with the given index range and material slot.
+    pub fn new(index_range: core::ops::Range<u32>, material_slot: u32) -> Self {
+        Self {
+            index_range,
+            base_vertex: 0,
+            material_slot,
+        }
+    }
+
+    /// Creates a new submesh with a base vertex offset.
+    pub fn with_base_vertex(mut self, base_vertex: u32) -> Self {
+        self.base_vertex = base_vertex;
+        self
+    }
+
+    /// Returns the number of indices (or vertices for non-indexed) in this submesh.
+    pub fn count(&self) -> u32 {
+        self.index_range.end - self.index_range.start
+    }
+}
+
 #[derive(Asset, Debug, Clone, Reflect, PartialEq)]
 #[reflect(Clone)]
 pub struct Mesh {
@@ -150,6 +217,20 @@ pub struct Mesh {
     /// Does nothing if not used with `bevy_solari`, or if the mesh is not compatible
     /// with `bevy_solari` (see `bevy_solari`'s docs).
     pub enable_raytracing: bool,
+    /// Optional submeshes for multi-material rendering.
+    ///
+    /// When `Some`, each [`SubMesh`] defines a portion of the mesh's geometry
+    /// that should be drawn with a specific material slot. This enables rendering
+    /// a single mesh with multiple materials.
+    ///
+    /// When `None`, the entire mesh is treated as a single submesh using material slot 0.
+    /// This is the default for simple single-material meshes.
+    ///
+    /// # glTF Compatibility
+    ///
+    /// In glTF, a "mesh" can contain multiple "primitives", each with its own
+    /// material. When importing glTF, each primitive becomes a [`SubMesh`].
+    submeshes: Option<Vec<SubMesh>>,
 }
 
 impl Mesh {
@@ -241,6 +322,7 @@ impl Mesh {
             morph_target_names: None,
             asset_usage,
             enable_raytracing: true,
+            submeshes: None,
         }
     }
 
@@ -411,6 +493,71 @@ impl Mesh {
     pub fn with_removed_indices(mut self) -> Self {
         self.remove_indices();
         self
+    }
+
+    /// Sets the submeshes for multi-material rendering.
+    ///
+    /// Each [`SubMesh`] defines a portion of the mesh's geometry that should be
+    /// drawn with a specific material slot. Use this for meshes that need to be
+    /// rendered with multiple materials.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use bevy_mesh::{Mesh, SubMesh, PrimitiveTopology};
+    /// # use bevy_asset::RenderAssetUsages;
+    /// let mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+    ///     .with_inserted_submeshes(vec![
+    ///         SubMesh::new(0..100, 0),   // First 100 indices use material slot 0
+    ///         SubMesh::new(100..200, 1), // Next 100 indices use material slot 1
+    ///     ]);
+    /// ```
+    #[must_use]
+    #[inline]
+    pub fn with_inserted_submeshes(mut self, submeshes: Vec<SubMesh>) -> Self {
+        self.insert_submeshes(submeshes);
+        self
+    }
+
+    /// Sets the submeshes for multi-material rendering.
+    ///
+    /// See [`Mesh::with_inserted_submeshes`] for more details.
+    #[inline]
+    pub fn insert_submeshes(&mut self, submeshes: Vec<SubMesh>) {
+        self.submeshes = if submeshes.is_empty() {
+            None
+        } else {
+            Some(submeshes)
+        };
+    }
+
+    /// Retrieves the submeshes, if any.
+    ///
+    /// Returns `None` if no submeshes have been set (single-material mesh).
+    #[inline]
+    pub fn submeshes(&self) -> Option<&[SubMesh]> {
+        self.submeshes.as_deref()
+    }
+
+    /// Retrieves the submeshes mutably.
+    #[inline]
+    pub fn submeshes_mut(&mut self) -> Option<&mut Vec<SubMesh>> {
+        self.submeshes.as_mut()
+    }
+
+    /// Removes and returns the submeshes from the mesh.
+    #[inline]
+    pub fn remove_submeshes(&mut self) -> Option<Vec<SubMesh>> {
+        self.submeshes.take()
+    }
+
+    /// Returns the number of submeshes, or 1 if no submeshes are defined.
+    ///
+    /// A mesh without explicit submeshes is treated as having one implicit
+    /// submesh covering the entire mesh with material slot 0.
+    #[inline]
+    pub fn submesh_count(&self) -> usize {
+        self.submeshes.as_ref().map_or(1, |s| s.len().max(1))
     }
 
     /// Returns the size of a vertex in bytes.

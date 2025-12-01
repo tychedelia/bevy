@@ -249,21 +249,40 @@ fn extract_image_materials(
         >,
     >,
 ) {
+    use std::any::TypeId;
     let last_change_tick = material_instances.current_change_tick;
+    let material_type_id = TypeId::of::<ImageMaterial>();
 
     for (entity, view_visibility, material) in &changed_meshes_query {
+        let main_entity = MainEntity::from(entity);
+        let asset_id = material.0.id().untyped();
+
         if view_visibility.get() {
-            material_instances.instances.insert(
-                entity.into(),
-                RenderMaterialInstance {
-                    asset_id: material.0.id().untyped(),
+            let instances = material_instances.instances.entry(main_entity).or_default();
+
+            // Find existing entry for this material type
+            if let Some(existing) = instances
+                .iter_mut()
+                .find(|inst| inst.asset_id.type_id() == material_type_id)
+            {
+                existing.asset_id = asset_id;
+                existing.last_change_tick = last_change_tick;
+            } else {
+                instances.push(RenderMaterialInstance {
+                    asset_id,
+                    index_range: None,
                     last_change_tick,
-                },
-            );
+                    instance_id: 0,
+                });
+            }
         } else {
-            material_instances
-                .instances
-                .remove(&MainEntity::from(entity));
+            // Entity is invisible - remove entries for this material type
+            if let Some(instances) = material_instances.instances.get_mut(&main_entity) {
+                instances.retain(|inst| inst.asset_id.type_id() != material_type_id);
+                if instances.is_empty() {
+                    material_instances.instances.remove(&main_entity);
+                }
+            }
         }
     }
 }

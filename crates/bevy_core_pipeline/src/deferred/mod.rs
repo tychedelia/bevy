@@ -35,6 +35,10 @@ pub struct Opaque3dDeferred {
     pub representative_entity: (Entity, MainEntity),
     pub batch_range: Range<u32>,
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    pub submesh_index: u16,
 }
 
 impl PhaseItem for Opaque3dDeferred {
@@ -71,6 +75,11 @@ impl PhaseItem for Opaque3dDeferred {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for Opaque3dDeferred {
@@ -85,12 +94,14 @@ impl BinnedPhaseItem for Opaque3dDeferred {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Self {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }
@@ -118,6 +129,10 @@ pub struct AlphaMask3dDeferred {
     pub representative_entity: (Entity, MainEntity),
     pub batch_range: Range<u32>,
     pub extra_index: PhaseItemExtraIndex,
+    /// Submesh slot index within the mesh's submesh table.
+    ///
+    /// Slot 0 = full mesh. Additional slots reference subsets for multi-material.
+    pub submesh_index: u16,
 }
 
 impl PhaseItem for AlphaMask3dDeferred {
@@ -155,6 +170,11 @@ impl PhaseItem for AlphaMask3dDeferred {
     fn batch_range_and_extra_index_mut(&mut self) -> (&mut Range<u32>, &mut PhaseItemExtraIndex) {
         (&mut self.batch_range, &mut self.extra_index)
     }
+
+    #[inline]
+    fn submesh_index(&self) -> u16 {
+        self.submesh_index
+    }
 }
 
 impl BinnedPhaseItem for AlphaMask3dDeferred {
@@ -168,12 +188,14 @@ impl BinnedPhaseItem for AlphaMask3dDeferred {
         batch_range: Range<u32>,
         extra_index: PhaseItemExtraIndex,
     ) -> Self {
+        let submesh_index = bin_key.submesh_index;
         Self {
             batch_set_key,
             bin_key,
             representative_entity,
             batch_range,
             extra_index,
+            submesh_index,
         }
     }
 }

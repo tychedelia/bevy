@@ -75,6 +75,16 @@ mod layout_entry {
             .visibility(ShaderStages::FRAGMENT)
             .count(NonZeroU32::new(LIGHTMAPS_PER_SLAB as u32).unwrap())
     }
+
+    /// Layout entry for draw_data buffer (Stage 2 material expansion output).
+    ///
+    /// This is used when GPU multi-material expansion is active. Draw shaders
+    /// read the material_bind_group_slot from this buffer instead of MeshUniform.
+    pub(super) fn draw_data() -> BindGroupLayoutEntryBuilder {
+        use crate::render::mesh::DrawData;
+        storage_buffer_read_only_sized(false, BufferSize::new(size_of::<DrawData>() as u64))
+            .visibility(ShaderStages::VERTEX_FRAGMENT)
+    }
 }
 
 /// Individual [`BindGroupEntry`]
@@ -158,6 +168,16 @@ mod entry {
             resource: BindingResource::SamplerArray(samplers),
         }
     }
+
+    /// Entry for draw_data buffer (Stage 2 material expansion output).
+    ///
+    /// Used when GPU multi-material expansion is active.
+    pub(super) fn draw_data(binding: u32, buffer: &Buffer) -> BindGroupEntry<'_> {
+        BindGroupEntry {
+            binding,
+            resource: buffer.as_entire_binding(),
+        }
+    }
 }
 
 /// All possible [`BindGroupLayout`]s in bevy's default mesh shader (`mesh.wgsl`).
@@ -219,9 +239,13 @@ impl MeshLayouts {
     fn model_only_layout(render_device: &RenderDevice) -> BindGroupLayoutDescriptor {
         BindGroupLayoutDescriptor::new(
             "mesh_layout",
-            &BindGroupLayoutEntries::single(
+            &BindGroupLayoutEntries::with_indices(
                 ShaderStages::empty(),
-                layout_entry::model(&render_device.limits()),
+                (
+                    (0, layout_entry::model(&render_device.limits())),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
+                ),
             ),
         )
     }
@@ -236,6 +260,8 @@ impl MeshLayouts {
                     (0, layout_entry::model(&render_device.limits())),
                     // The current frame's joint matrix buffer.
                     (1, layout_entry::skinning(&render_device.limits())),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
                 ),
             ),
         )
@@ -254,6 +280,8 @@ impl MeshLayouts {
                     (1, layout_entry::skinning(&render_device.limits())),
                     // The previous frame's joint matrix buffer.
                     (6, layout_entry::skinning(&render_device.limits())),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
                 ),
             ),
         )
@@ -270,6 +298,8 @@ impl MeshLayouts {
                     // The current frame's morph weight buffer.
                     (2, layout_entry::weights()),
                     (3, layout_entry::targets()),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
                 ),
             ),
         )
@@ -289,6 +319,8 @@ impl MeshLayouts {
                     (3, layout_entry::targets()),
                     // The previous frame's morph weight buffer.
                     (7, layout_entry::weights()),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
                 ),
             ),
         )
@@ -308,6 +340,8 @@ impl MeshLayouts {
                     // The current frame's morph weight buffer.
                     (2, layout_entry::weights()),
                     (3, layout_entry::targets()),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
                 ),
             ),
         )
@@ -331,6 +365,8 @@ impl MeshLayouts {
                     (6, layout_entry::skinning(&render_device.limits())),
                     // The previous frame's morph weight buffer.
                     (7, layout_entry::weights()),
+                    // DrawData buffer for Stage 2 material expansion
+                    (8, layout_entry::draw_data()),
                 ),
             ),
         )
@@ -349,6 +385,8 @@ impl MeshLayouts {
                         (0, layout_entry::model(&render_device.limits())),
                         (4, layout_entry::lightmaps_texture_view_array()),
                         (5, layout_entry::lightmaps_sampler_array()),
+                        // DrawData buffer for Stage 2 material expansion
+                        (8, layout_entry::draw_data()),
                     ),
                 ),
             )
@@ -361,6 +399,8 @@ impl MeshLayouts {
                         (0, layout_entry::model(&render_device.limits())),
                         (4, layout_entry::lightmaps_texture_view()),
                         (5, layout_entry::lightmaps_sampler()),
+                        // DrawData buffer for Stage 2 material expansion
+                        (8, layout_entry::draw_data()),
                     ),
                 ),
             )
@@ -374,11 +414,15 @@ impl MeshLayouts {
         render_device: &RenderDevice,
         pipeline_cache: &PipelineCache,
         model: &BindingResource,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "model_only_mesh_bind_group",
             &pipeline_cache.get_bind_group_layout(&self.model_only),
-            &[entry::model(0, model.clone())],
+            &[
+                entry::model(0, model.clone()),
+                entry::draw_data(8, draw_data),
+            ],
         )
     }
 
@@ -389,6 +433,7 @@ impl MeshLayouts {
         model: &BindingResource,
         lightmap_slab: &LightmapSlab,
         bindless_lightmaps: bool,
+        draw_data: &Buffer,
     ) -> BindGroup {
         if bindless_lightmaps {
             let (texture_views, samplers) = lightmap_slab.build_binding_arrays();
@@ -399,6 +444,7 @@ impl MeshLayouts {
                     entry::model(0, model.clone()),
                     entry::lightmaps_texture_view_array(4, &texture_views),
                     entry::lightmaps_sampler_array(5, &samplers),
+                    entry::draw_data(8, draw_data),
                 ],
             )
         } else {
@@ -410,6 +456,7 @@ impl MeshLayouts {
                     entry::model(0, model.clone()),
                     entry::lightmaps_texture_view(4, texture_view),
                     entry::lightmaps_sampler(5, sampler),
+                    entry::draw_data(8, draw_data),
                 ],
             )
         }
@@ -422,6 +469,7 @@ impl MeshLayouts {
         pipeline_cache: &PipelineCache,
         model: &BindingResource,
         current_skin: &Buffer,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "skinned_mesh_bind_group",
@@ -429,6 +477,7 @@ impl MeshLayouts {
             &[
                 entry::model(0, model.clone()),
                 entry::skinning(render_device, 1, current_skin),
+                entry::draw_data(8, draw_data),
             ],
         )
     }
@@ -447,6 +496,7 @@ impl MeshLayouts {
         model: &BindingResource,
         current_skin: &Buffer,
         prev_skin: &Buffer,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "skinned_motion_mesh_bind_group",
@@ -455,6 +505,7 @@ impl MeshLayouts {
                 entry::model(0, model.clone()),
                 entry::skinning(render_device, 1, current_skin),
                 entry::skinning(render_device, 6, prev_skin),
+                entry::draw_data(8, draw_data),
             ],
         )
     }
@@ -467,6 +518,7 @@ impl MeshLayouts {
         model: &BindingResource,
         current_weights: &Buffer,
         targets: &TextureView,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "morphed_mesh_bind_group",
@@ -475,6 +527,7 @@ impl MeshLayouts {
                 entry::model(0, model.clone()),
                 entry::weights(2, current_weights),
                 entry::targets(3, targets),
+                entry::draw_data(8, draw_data),
             ],
         )
     }
@@ -494,6 +547,7 @@ impl MeshLayouts {
         current_weights: &Buffer,
         targets: &TextureView,
         prev_weights: &Buffer,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "morphed_motion_mesh_bind_group",
@@ -503,6 +557,7 @@ impl MeshLayouts {
                 entry::weights(2, current_weights),
                 entry::targets(3, targets),
                 entry::weights(7, prev_weights),
+                entry::draw_data(8, draw_data),
             ],
         )
     }
@@ -516,6 +571,7 @@ impl MeshLayouts {
         current_skin: &Buffer,
         current_weights: &Buffer,
         targets: &TextureView,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "morphed_skinned_mesh_bind_group",
@@ -525,6 +581,7 @@ impl MeshLayouts {
                 entry::skinning(render_device, 1, current_skin),
                 entry::weights(2, current_weights),
                 entry::targets(3, targets),
+                entry::draw_data(8, draw_data),
             ],
         )
     }
@@ -546,6 +603,7 @@ impl MeshLayouts {
         targets: &TextureView,
         prev_skin: &Buffer,
         prev_weights: &Buffer,
+        draw_data: &Buffer,
     ) -> BindGroup {
         render_device.create_bind_group(
             "morphed_skinned_motion_mesh_bind_group",
@@ -557,6 +615,7 @@ impl MeshLayouts {
                 entry::targets(3, targets),
                 entry::skinning(render_device, 6, prev_skin),
                 entry::weights(7, prev_weights),
+                entry::draw_data(8, draw_data),
             ],
         )
     }

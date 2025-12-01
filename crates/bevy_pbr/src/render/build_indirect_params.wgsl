@@ -14,8 +14,15 @@
     IndirectParametersNonIndexed,
     IndirectParametersCpuMetadata,
     IndirectParametersGpuMetadata,
-    MeshInput
+    MeshInput,
+    SubMeshDescriptor,
+    get_submesh_index,
+    unpack_submesh_offset
 }
+
+#ifdef MATERIAL_EXPANSION
+#import bevy_pbr::mesh_types::MaterialIndirectGeometry
+#endif
 
 // The data for each mesh that the CPU supplied to the GPU.
 @group(0) @binding(0) var<storage> current_input: array<MeshInput>;
@@ -50,6 +57,16 @@
     array<IndirectParametersNonIndexed>;
 #endif  // INDEXED
 
+// Global submesh descriptor buffer. Meshes index into this via their
+// submesh_offset to find their submesh entries.
+@group(0) @binding(5) var<storage> submesh_buffer: array<SubMeshDescriptor>;
+
+#ifdef MATERIAL_EXPANSION
+// Per-material geometry slices written by Stage 2 (mesh_material_expand).
+// Keyed by indirect_parameters_index (same as instance_index here).
+@group(0) @binding(6) var<storage> material_indirect_geometry: array<MaterialIndirectGeometry>;
+#endif
+
 @compute
 @workgroup_size(64)
 fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
@@ -75,6 +92,12 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     // If in the early phase, we draw only the early meshes. If in the late
     // phase, we draw only the late meshes. If in the main phase, draw all the
     // meshes.
+    //
+    // When MATERIAL_EXPANSION is enabled, Stage 2 writes draw_count instead of
+    // incrementing early_instance_count, so we use draw_count for instance_count.
+#ifdef MATERIAL_EXPANSION
+    let instance_count = indirect_parameters_gpu_metadata[instance_index].draw_count;
+#else   // MATERIAL_EXPANSION
 #ifdef EARLY_PHASE
     let instance_count = early_instance_count;
 #else   // EARLY_PHASE
@@ -84,6 +107,7 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     let instance_count = early_instance_count + late_instance_count;
 #endif  // LATE_PHASE
 #endif  // EARLY_PHASE
+#endif  // MATERIAL_EXPANSION
 
     var indirect_parameters_index = instance_index;
 
@@ -127,16 +151,54 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     indirect_parameters[indirect_parameters_index].first_instance = base_output_index;
 #endif  // LATE_PHASE
 
-    indirect_parameters[indirect_parameters_index].base_vertex =
-        current_input[mesh_index].first_vertex_index;
+    // Resolve geometry for this draw.
+#ifdef MATERIAL_EXPANSION
+    // Use per-material geometry from Stage 2 (mesh_material_expand).
+    // Stage 2 wrote the geometry for this batch into material_indirect_geometry.
+    let mat_geo = material_indirect_geometry[instance_index];
+#ifdef INDEXED
+    indirect_parameters[indirect_parameters_index].index_count = mat_geo.index_count;
+    indirect_parameters[indirect_parameters_index].first_index = mat_geo.first_index;
+    indirect_parameters[indirect_parameters_index].base_vertex = mat_geo.base_vertex;
+#else   // INDEXED
+    indirect_parameters[indirect_parameters_index].vertex_count = mat_geo.vertex_count;
+    indirect_parameters[indirect_parameters_index].base_vertex = mat_geo.first_vertex;
+#endif  // INDEXED
+#else   // MATERIAL_EXPANSION
+    // Non-expansion path (currently unused - MATERIAL_EXPANSION always enabled).
+    // Slot 0 = full mesh from MeshInput, slots 1+ are 1-indexed into submesh_buffer.
+    let submesh_slot = get_submesh_index(indirect_parameters_cpu_metadata[instance_index]);
+    let mesh = current_input[mesh_index];
+
+    if submesh_slot == 0u {
+        // Slot 0: full mesh geometry from MeshInput
+#ifdef INDEXED
+        indirect_parameters[indirect_parameters_index].index_count = mesh.index_count;
+        indirect_parameters[indirect_parameters_index].first_index = mesh.first_index_index;
+        indirect_parameters[indirect_parameters_index].base_vertex = mesh.first_vertex_index;
+#else   // INDEXED
+        indirect_parameters[indirect_parameters_index].vertex_count = mesh.index_count;
+        indirect_parameters[indirect_parameters_index].base_vertex = mesh.first_vertex_index;
+#endif  // INDEXED
+    } else {
+        // Slots 1+: 1-indexed lookup
+        let submesh_offset = unpack_submesh_offset(mesh.submesh_offset_count);
+        let submesh = submesh_buffer[submesh_offset + submesh_slot - 1u];
 
 #ifdef INDEXED
-    indirect_parameters[indirect_parameters_index].index_count =
-        current_input[mesh_index].index_count;
-    indirect_parameters[indirect_parameters_index].first_index =
-        current_input[mesh_index].first_index_index;
+        // For indexed meshes: submesh.first is relative to mesh's first_index_index
+        indirect_parameters[indirect_parameters_index].index_count = submesh.count;
+        indirect_parameters[indirect_parameters_index].first_index =
+            mesh.first_index_index + submesh.first;
+        // base_vertex comes from submesh for indexed (can differ per submesh)
+        indirect_parameters[indirect_parameters_index].base_vertex =
+            mesh.first_vertex_index + u32(submesh.base_vertex);
 #else   // INDEXED
-    indirect_parameters[indirect_parameters_index].vertex_count =
-        current_input[mesh_index].index_count;
+        // For non-indexed meshes: submesh.first is relative to mesh's first_vertex_index
+        indirect_parameters[indirect_parameters_index].vertex_count = submesh.count;
+        indirect_parameters[indirect_parameters_index].base_vertex =
+            mesh.first_vertex_index + submesh.first;
 #endif  // INDEXED
+    }
+#endif  // MATERIAL_EXPANSION
 }

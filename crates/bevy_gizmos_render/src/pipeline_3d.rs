@@ -364,6 +364,8 @@ fn queue_line_gizmos_3d(
                     batch_range: 0..1,
                     extra_index: PhaseItemExtraIndex::None,
                     indexed: true,
+                    material_instance_id: 0,
+                    submesh_index: 0,
                 });
             }
 
@@ -386,6 +388,8 @@ fn queue_line_gizmos_3d(
                     batch_range: 0..1,
                     extra_index: PhaseItemExtraIndex::None,
                     indexed: true,
+                    material_instance_id: 0,
+                    submesh_index: 0,
                 });
             }
         }
@@ -481,6 +485,8 @@ fn queue_line_joint_gizmos_3d(
                 batch_range: 0..1,
                 extra_index: PhaseItemExtraIndex::None,
                 indexed: true,
+                material_instance_id: 0,
+                submesh_index: 0,
             });
         }
     }

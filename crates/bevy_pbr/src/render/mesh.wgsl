@@ -1,5 +1,5 @@
 #import bevy_pbr::{
-    mesh_bindings::mesh,
+    mesh_bindings::{mesh, draw_data},
     mesh_functions,
     skinning,
     morph::morph,
@@ -10,6 +10,7 @@
 #ifdef MORPH_TARGETS
 fn morph_vertex(vertex_in: Vertex) -> Vertex {
     var vertex = vertex_in;
+    // mesh[] is indexed directly by instance_index (output position from Stage 1)
     let first_vertex = mesh[vertex.instance_index].first_vertex_index;
     let vertex_index = vertex.index - first_vertex;
 

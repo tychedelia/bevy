@@ -9,7 +9,7 @@
     pbr_types,
     prepass_utils,
     lighting,
-    mesh_bindings::mesh,
+    mesh_bindings::{mesh, draw_data},
     mesh_view_bindings::view,
     parallax_mapping::parallaxed_uv,
     lightmap::lightmap,
@@ -43,6 +43,7 @@ fn pbr_input_from_vertex_output(
 #ifdef MESHLET_MESH_MATERIAL_PASS
     pbr_input.flags = in.mesh_flags;
 #else
+    // mesh[] is indexed directly by instance_index (output position from Stage 1)
     pbr_input.flags = mesh[in.instance_index].flags;
 #endif
 
@@ -79,7 +80,8 @@ fn pbr_input_from_standard_material(
 #ifdef MESHLET_MESH_MATERIAL_PASS
     let slot = in.material_bind_group_slot;
 #else   // MESHLET_MESH_MATERIAL_PASS
-    let slot = mesh[in.instance_index].material_and_lightmap_bind_group_slot & 0xffffu;
+    // Material slot from DrawData (written by Stage 2 material expansion)
+    let slot = draw_data[in.instance_index].material_bind_group_slot;
 #endif  // MESHLET_MESH_MATERIAL_PASS
 #ifdef BINDLESS
     let flags = pbr_bindings::material_array[material_indices[slot].material].flags;
@@ -575,9 +577,10 @@ pbr_input.material.uv_transform = uv_transform;
         }
 #endif
 #endif
-        // scale thickness, accounting for non-uniform scaling (e.g. a “squished” mesh)
+        // scale thickness, accounting for non-uniform scaling (e.g. a "squished" mesh)
         // TODO: Meshlet support
 #ifndef MESHLET_MESH_MATERIAL_PASS
+        // mesh[] is indexed directly by instance_index (output position from Stage 1)
         thickness *= length(
             (transpose(mesh[in.instance_index].world_from_local) * vec4(pbr_input.N, 0.0)).xyz
         );

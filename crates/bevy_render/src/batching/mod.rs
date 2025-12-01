@@ -46,6 +46,10 @@ struct BatchMeta<T: PartialEq> {
     /// set the pipeline and bindings, and make the draw command
     draw_function_id: DrawFunctionId,
     dynamic_offset: Option<NonMaxU32>,
+    /// Material instance identifier. Different materials must not batch together.
+    material_instance_id: u32,
+    /// Submesh slot index. Different submeshes must not batch together.
+    submesh_index: u16,
     user_data: T,
 }
 
@@ -62,6 +66,8 @@ impl<T: PartialEq> BatchMeta<T> {
                     None
                 }
             },
+            material_instance_id: item.material_instance_id(),
+            submesh_index: item.submesh_index(),
             user_data,
         }
     }
@@ -164,6 +170,9 @@ pub trait GetFullBatchData: GetBatchData {
     ///   [`gpu_preprocessing::IndirectBatchSet`] buffer, if this batch belongs to
     ///   a batch set.
     ///
+    /// * `submesh_index` is the submesh slot to draw. Slot 0 = full mesh,
+    ///   slots 1+ index into the mesh's submesh table.
+    ///
     /// * `indirect_parameters_buffers` is the buffer in which to write the
     ///   metadata.
     ///
@@ -173,6 +182,7 @@ pub trait GetFullBatchData: GetBatchData {
         indexed: bool,
         base_output_index: u32,
         batch_set_index: Option<NonMaxU32>,
+        submesh_index: u16,
         indirect_parameters_buffers: &mut UntypedPhaseIndirectParametersBuffers,
         indirect_parameters_offset: u32,
     );
