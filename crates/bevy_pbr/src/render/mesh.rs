@@ -1139,12 +1139,11 @@ impl RenderMeshInstanceGpuBuilder {
         timestamp: FrameCount,
         meshes_to_reextract_next_frame: &mut MeshesToReextractNextFrame,
     ) -> Option<u32> {
+        // Get vertex info from slot 0 (the primary vertex buffer slot)
+        // With byte offset binding, first_vertex_index is 0 since we bind at the byte offset
         let (first_vertex_index, vertex_count) =
-            match mesh_allocator.mesh_vertex_slice(&self.shared.mesh_asset_id) {
-                Some(mesh_vertex_slice) => (
-                    mesh_vertex_slice.range.start,
-                    mesh_vertex_slice.range.end - mesh_vertex_slice.range.start,
-                ),
+            match mesh_allocator.mesh_vertex_slice(&self.shared.mesh_asset_id, 0) {
+                Some(mesh_vertex_slice) => (0, mesh_vertex_slice.range.len() as u32),
                 None => (0, 0),
             };
         let (mesh_is_indexed, first_index_index, index_count) =
@@ -2009,11 +2008,15 @@ impl GetBatchData for MeshPipeline {
             return None;
         };
         let mesh_instance = mesh_instances.get(&main_entity)?;
-        let first_vertex_index =
-            match mesh_allocator.mesh_vertex_slice(&mesh_instance.mesh_asset_id) {
-                Some(mesh_vertex_slice) => mesh_vertex_slice.range.start,
-                None => 0,
-            };
+        // With byte offset binding, first_vertex_index is 0
+        let first_vertex_index = 0;
+        // Ensure mesh has a vertex buffer allocated
+        if mesh_allocator
+            .mesh_vertex_slice(&mesh_instance.mesh_asset_id, 0)
+            .is_none()
+        {
+            return None;
+        }
         let maybe_lightmap = lightmaps.render_lightmaps.get(&main_entity);
 
         let current_skin_index = skin_uniforms.skin_index(main_entity);
@@ -2079,11 +2082,15 @@ impl GetFullBatchData for MeshPipeline {
             return None;
         };
         let mesh_instance = mesh_instances.get(&main_entity)?;
-        let first_vertex_index =
-            match mesh_allocator.mesh_vertex_slice(&mesh_instance.mesh_asset_id) {
-                Some(mesh_vertex_slice) => mesh_vertex_slice.range.start,
-                None => 0,
-            };
+        // With byte offset binding, first_vertex_index is 0
+        let first_vertex_index = 0;
+        // Ensure mesh has a vertex buffer allocated
+        if mesh_allocator
+            .mesh_vertex_slice(&mesh_instance.mesh_asset_id, 0)
+            .is_none()
+        {
+            return None;
+        }
         let maybe_lightmap = lightmaps.render_lightmaps.get(&main_entity);
 
         let current_skin_index = skin_uniforms.skin_index(main_entity);
@@ -2454,7 +2461,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
             shader_defs.push("SCREEN_SPACE_AMBIENT_OCCLUSION".into());
         }
 
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layouts(&vertex_attributes)?;
 
         let (label, blend, depth_write_enabled);
         let pass = key.intersection(MeshPipelineKey::BLEND_RESERVED_BITS);
@@ -2693,7 +2700,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment: Some(FragmentState {
@@ -3252,11 +3259,21 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {
             return RenderCommandResult::Skip;
         };
-        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(&mesh_asset_id) else {
-            return RenderCommandResult::Skip;
-        };
 
-        pass.set_vertex_buffer(0, vertex_buffer_slice.buffer.slice(..));
+        // Bind all vertex buffer slots
+        // Collect first to release the borrow on mesh_asset_id
+        let vertex_slices: Vec<_> = mesh_allocator.mesh_vertex_slices(&mesh_asset_id).collect();
+        if vertex_slices.is_empty() {
+            return RenderCommandResult::Skip;
+        }
+        for (slot_index, vertex_buffer_slice) in &vertex_slices {
+            pass.set_vertex_buffer(
+                *slot_index as usize,
+                vertex_buffer_slice
+                    .buffer
+                    .slice(vertex_buffer_slice.byte_offset()..),
+            );
+        }
 
         let batch_range = item.batch_range();
 
@@ -3277,10 +3294,11 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
                 match item.extra_index() {
                     PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {
+                        // base_vertex is 0 because we bind buffers at their byte offset
                         pass.draw_indexed(
                             index_buffer_slice.range.start
                                 ..(index_buffer_slice.range.start + *count),
-                            vertex_buffer_slice.range.start as i32,
+                            0,
                             batch_range.clone(),
                         );
                     }
@@ -3350,7 +3368,8 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
             RenderMeshBufferInfo::NonIndexed => match item.extra_index() {
                 PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {
-                    pass.draw(vertex_buffer_slice.range, batch_range.clone());
+                    // Vertex range is 0-based since we bind buffers at their byte offset
+                    pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
                 }
                 PhaseItemExtraIndex::IndirectParametersIndex {
                     range: indirect_parameters_range,

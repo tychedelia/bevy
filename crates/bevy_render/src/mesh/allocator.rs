@@ -20,6 +20,7 @@ use bevy_ecs::{
 use bevy_platform::collections::{hash_map::Entry, HashMap, HashSet};
 use bevy_utils::default;
 use offset_allocator::{Allocation, Allocator};
+use smallvec::SmallVec;
 use tracing::error;
 use wgpu::{
     BufferDescriptor, BufferSize, BufferUsages, CommandEncoderDescriptor, DownlevelFlags,
@@ -63,8 +64,9 @@ pub struct MeshAllocator {
     /// to place an object in.
     slab_layouts: HashMap<ElementLayout, Vec<SlabId>>,
 
-    /// Maps mesh asset IDs to the ID of the slabs that hold their vertex data.
-    mesh_id_to_vertex_slab: HashMap<AssetId<Mesh>, SlabId>,
+    /// Maps mesh asset IDs to their vertex buffer slabs.
+    /// Each entry is a list of (slot_index, slab_id) pairs.
+    mesh_id_to_vertex_slabs: HashMap<AssetId<Mesh>, SmallVec<[(u32, SlabId); 4]>>,
 
     /// Maps mesh asset IDs to the ID of the slabs that hold their index data.
     mesh_id_to_index_slab: HashMap<AssetId<Mesh>, SlabId>,
@@ -154,6 +156,17 @@ pub struct MeshBufferSlice<'a> {
     /// bytes). Draw commands generally take their ranges in elements, not
     /// bytes, so this is the most convenient unit in this case.
     pub range: Range<u32>,
+
+    /// The size of each element in bytes (vertex stride or index size).
+    pub element_size: u64,
+}
+
+impl MeshBufferSlice<'_> {
+    /// Returns the byte offset from the start of the buffer to this slice.
+    #[inline]
+    pub fn byte_offset(&self) -> u64 {
+        self.range.start as u64 * self.element_size
+    }
 }
 
 /// The index of a single slab.
@@ -357,7 +370,7 @@ impl FromWorld for MeshAllocator {
         Self {
             slabs: HashMap::default(),
             slab_layouts: HashMap::default(),
-            mesh_id_to_vertex_slab: HashMap::default(),
+            mesh_id_to_vertex_slabs: HashMap::default(),
             mesh_id_to_index_slab: HashMap::default(),
             next_slab_id: default(),
             general_vertex_slabs_supported,
@@ -376,8 +389,15 @@ pub fn allocate_and_free_meshes(
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
 ) {
+    let dirty_info: HashMap<AssetId<Mesh>, (u8, bool)> = extracted_meshes
+        .extracted
+        .iter()
+        .filter(|(id, _)| extracted_meshes.modified.contains(id))
+        .map(|(id, mesh)| (*id, (mesh.dirty_slots(), mesh.is_indices_dirty())))
+        .collect();
+
     // Process removed or modified meshes.
-    mesh_allocator.free_meshes(&extracted_meshes);
+    mesh_allocator.free_meshes(&extracted_meshes, &dirty_info);
 
     // Process newly-added or modified meshes.
     mesh_allocator.allocate_meshes(
@@ -391,11 +411,38 @@ pub fn allocate_and_free_meshes(
 
 impl MeshAllocator {
     /// Returns the buffer and range within that buffer of the vertex data for
-    /// the mesh with the given ID.
+    /// the mesh with the given ID and slot index.
     ///
-    /// If the mesh wasn't allocated, returns None.
-    pub fn mesh_vertex_slice(&self, mesh_id: &AssetId<Mesh>) -> Option<MeshBufferSlice<'_>> {
-        self.mesh_slice_in_slab(mesh_id, *self.mesh_id_to_vertex_slab.get(mesh_id)?)
+    /// If the mesh slot wasn't allocated, returns None.
+    pub fn mesh_vertex_slice(
+        &self,
+        mesh_id: &AssetId<Mesh>,
+        slot_index: u32,
+    ) -> Option<MeshBufferSlice<'_>> {
+        let slots = self.mesh_id_to_vertex_slabs.get(mesh_id)?;
+        let &(_, slab_id) = slots.iter().find(|(idx, _)| *idx == slot_index)?;
+        self.mesh_slice_in_slab(mesh_id, slab_id)
+    }
+
+    /// Returns all vertex buffer slices for a mesh.
+    /// Returns an iterator of (slot_index, buffer_slice) pairs.
+    pub fn mesh_vertex_slices(
+        &self,
+        mesh_id: &AssetId<Mesh>,
+    ) -> impl Iterator<Item = (u32, MeshBufferSlice<'_>)> {
+        let slots = self.mesh_id_to_vertex_slabs.get(mesh_id);
+        let slices: SmallVec<[Option<(u32, MeshBufferSlice<'_>)>; 4]> = slots
+            .map(|slots| {
+                slots
+                    .iter()
+                    .map(|&(slot_index, slab_id)| {
+                        self.mesh_slice_in_slab(mesh_id, slab_id)
+                            .map(|slice| (slot_index, slice))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        slices.into_iter().flatten()
     }
 
     /// Returns the buffer and range within that buffer of the index data for
@@ -406,17 +453,29 @@ impl MeshAllocator {
         self.mesh_slice_in_slab(mesh_id, *self.mesh_id_to_index_slab.get(mesh_id)?)
     }
 
-    /// Returns the IDs of the vertex buffer and index buffer respectively for
-    /// the mesh with the given ID.
+    /// Returns the slab ID for a specific vertex buffer slot.
+    pub fn mesh_vertex_slab_id(&self, mesh_id: &AssetId<Mesh>, slot_index: u32) -> Option<SlabId> {
+        let slots = self.mesh_id_to_vertex_slabs.get(mesh_id)?;
+        slots
+            .iter()
+            .find(|(idx, _)| *idx == slot_index)
+            .map(|&(_, slab_id)| slab_id)
+    }
+
+    /// Returns the slab ID for the index buffer.
+    pub fn mesh_index_slab_id(&self, mesh_id: &AssetId<Mesh>) -> Option<SlabId> {
+        self.mesh_id_to_index_slab.get(mesh_id).copied()
+    }
+
+    /// Returns all vertex slab IDs for a mesh as (slot_index, slab_id) pairs.
     ///
-    /// If the mesh wasn't allocated, or has no index data in the case of the
-    /// index buffer, the corresponding element in the returned tuple will be
-    /// None.
-    pub fn mesh_slabs(&self, mesh_id: &AssetId<Mesh>) -> (Option<SlabId>, Option<SlabId>) {
-        (
-            self.mesh_id_to_vertex_slab.get(mesh_id).cloned(),
-            self.mesh_id_to_index_slab.get(mesh_id).cloned(),
-        )
+    /// This returns all vertex buffer slots that the mesh uses, which is important
+    /// for proper batching when meshes have multiple vertex buffer slots.
+    pub fn mesh_vertex_slab_ids(&self, mesh_id: &AssetId<Mesh>) -> SmallVec<[(u32, SlabId); 2]> {
+        self.mesh_id_to_vertex_slabs
+            .get(mesh_id)
+            .map(|slots| slots.iter().copied().collect())
+            .unwrap_or_default()
     }
 
     /// Get the number of allocated slabs
@@ -449,6 +508,7 @@ impl MeshAllocator {
                         * general_slab.element_layout.elements_per_slot)
                         ..((slab_allocation.allocation.offset + slab_allocation.slot_count)
                             * general_slab.element_layout.elements_per_slot),
+                    element_size: general_slab.element_layout.size,
                 })
             }
 
@@ -457,6 +517,7 @@ impl MeshAllocator {
                 Some(MeshBufferSlice {
                     buffer,
                     range: 0..((buffer.size() / large_object_slab.element_layout.size) as u32),
+                    element_size: large_object_slab.element_layout.size,
                 })
             }
         }
@@ -476,36 +537,56 @@ impl MeshAllocator {
 
         // Allocate.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
-            let vertex_buffer_size = mesh.get_vertex_buffer_size() as u64;
-            if vertex_buffer_size == 0 {
+            let is_modified = extracted_meshes.modified.contains(mesh_id);
+            let dirty_slots = mesh.dirty_slots();
+            let dirty_indices = mesh.is_indices_dirty();
+
+            let Ok(layout_ref) = mesh.get_mesh_vertex_buffer_layout(mesh_vertex_buffer_layouts)
+            else {
                 continue;
-            }
-            // Allocate vertex data. Note that we can only pack mesh vertex data
-            // together if the platform supports it.
-            let vertex_element_layout = ElementLayout::vertex(mesh_vertex_buffer_layouts, mesh);
-            if self.general_vertex_slabs_supported {
-                self.allocate(
-                    mesh_id,
-                    vertex_buffer_size,
-                    vertex_element_layout,
-                    &mut slabs_to_grow,
-                    mesh_allocator_settings,
-                );
-            } else {
-                self.allocate_large(mesh_id, vertex_element_layout);
+            };
+
+            for slot in layout_ref.0.slots() {
+                if is_modified && slot.slot_index < 8 && (dirty_slots & (1 << slot.slot_index)) == 0
+                {
+                    continue;
+                }
+
+                let vertex_buffer_size = mesh.get_vertex_buffer_size(slot.slot_index) as u64;
+                if vertex_buffer_size == 0 {
+                    continue;
+                }
+
+                let vertex_element_layout =
+                    ElementLayout::vertex_for_slot(slot.layout.array_stride);
+
+                // Note that we can only pack mesh vertex data together if the platform supports it.
+                if self.general_vertex_slabs_supported {
+                    self.allocate_vertex(
+                        mesh_id,
+                        slot.slot_index,
+                        vertex_buffer_size,
+                        vertex_element_layout,
+                        &mut slabs_to_grow,
+                        mesh_allocator_settings,
+                    );
+                } else {
+                    self.allocate_large_vertex(mesh_id, slot.slot_index, vertex_element_layout);
+                }
             }
 
-            // Allocate index data.
-            if let (Some(index_buffer_data), Some(index_element_layout)) =
-                (mesh.get_index_buffer_bytes(), ElementLayout::index(mesh))
-            {
-                self.allocate(
-                    mesh_id,
-                    index_buffer_data.len() as u64,
-                    index_element_layout,
-                    &mut slabs_to_grow,
-                    mesh_allocator_settings,
-                );
+            if !is_modified || dirty_indices {
+                if let (Some(index_buffer_data), Some(index_element_layout)) =
+                    (mesh.get_index_buffer_bytes(), ElementLayout::index(mesh))
+                {
+                    self.allocate(
+                        mesh_id,
+                        index_buffer_data.len() as u64,
+                        index_element_layout,
+                        &mut slabs_to_grow,
+                        mesh_allocator_settings,
+                    );
+                }
             }
         }
 
@@ -516,34 +597,43 @@ impl MeshAllocator {
 
         // Copy new mesh data in.
         for (mesh_id, mesh) in &extracted_meshes.extracted {
-            self.copy_mesh_vertex_data(mesh_id, mesh, render_device, render_queue);
-            self.copy_mesh_index_data(mesh_id, mesh, render_device, render_queue);
+            let is_modified = extracted_meshes.modified.contains(mesh_id);
+            self.copy_mesh_vertex_data(mesh_id, mesh, is_modified, render_device, render_queue);
+            self.copy_mesh_index_data(mesh_id, mesh, is_modified, render_device, render_queue);
         }
     }
 
     /// Copies vertex array data from a mesh into the appropriate spot in the
-    /// slab.
+    /// slabs for each slot.
     fn copy_mesh_vertex_data(
         &mut self,
         mesh_id: &AssetId<Mesh>,
         mesh: &Mesh,
+        is_modified: bool,
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
     ) {
-        let Some(&slab_id) = self.mesh_id_to_vertex_slab.get(mesh_id) else {
+        let Some(slots) = self.mesh_id_to_vertex_slabs.get(mesh_id).cloned() else {
             return;
         };
 
-        // Call the generic function.
-        self.copy_element_data(
-            mesh_id,
-            mesh.get_vertex_buffer_size(),
-            |slice| mesh.write_packed_vertex_buffer_data(slice),
-            BufferUsages::VERTEX,
-            slab_id,
-            render_device,
-            render_queue,
-        );
+        let dirty_slots = mesh.dirty_slots();
+
+        for (slot_index, slab_id) in slots {
+            if is_modified && slot_index < 8 && (dirty_slots & (1 << slot_index)) == 0 {
+                continue;
+            }
+
+            self.copy_element_data(
+                mesh_id,
+                mesh.get_vertex_buffer_size(slot_index),
+                |slice| mesh.write_vertex_buffer_data(slot_index, slice),
+                BufferUsages::VERTEX,
+                slab_id,
+                render_device,
+                render_queue,
+            );
+        }
     }
 
     /// Copies index array data from a mesh into the appropriate spot in the
@@ -552,9 +642,14 @@ impl MeshAllocator {
         &mut self,
         mesh_id: &AssetId<Mesh>,
         mesh: &Mesh,
+        is_modified: bool,
         render_device: &RenderDevice,
         render_queue: &RenderQueue,
     ) {
+        if is_modified && !mesh.is_indices_dirty() {
+            return;
+        }
+
         let Some(&slab_id) = self.mesh_id_to_index_slab.get(mesh_id) else {
             return;
         };
@@ -562,7 +657,6 @@ impl MeshAllocator {
             return;
         };
 
-        // Call the generic function.
         self.copy_element_data(
             mesh_id,
             index_data.len(),
@@ -644,21 +738,63 @@ impl MeshAllocator {
     }
 
     /// Frees allocations for meshes that were removed or modified this frame.
-    fn free_meshes(&mut self, extracted_meshes: &ExtractedAssets<RenderMesh>) {
+    fn free_meshes(
+        &mut self,
+        extracted_meshes: &ExtractedAssets<RenderMesh>,
+        dirty_info: &HashMap<AssetId<Mesh>, (u8, bool)>,
+    ) {
         let mut empty_slabs = <HashSet<_>>::default();
 
-        // TODO: Consider explicitly reusing allocations for changed meshes of the same size
-        let meshes_to_free = extracted_meshes
-            .removed
-            .iter()
-            .chain(extracted_meshes.modified.iter());
-
-        for mesh_id in meshes_to_free {
-            if let Some(slab_id) = self.mesh_id_to_vertex_slab.remove(mesh_id) {
-                self.free_allocation_in_slab(mesh_id, slab_id, &mut empty_slabs);
+        for mesh_id in &extracted_meshes.removed {
+            if let Some(slots) = self.mesh_id_to_vertex_slabs.remove(mesh_id) {
+                for (_slot_index, slab_id) in slots {
+                    self.free_allocation_in_slab(mesh_id, slab_id, &mut empty_slabs);
+                }
             }
             if let Some(slab_id) = self.mesh_id_to_index_slab.remove(mesh_id) {
                 self.free_allocation_in_slab(mesh_id, slab_id, &mut empty_slabs);
+            }
+        }
+
+        for mesh_id in &extracted_meshes.modified {
+            let (dirty_slots, dirty_indices) =
+                dirty_info.get(mesh_id).copied().unwrap_or((u8::MAX, true));
+
+            let slots_to_free: SmallVec<[(u32, SlabId); 4]> =
+                if let Some(slots) = self.mesh_id_to_vertex_slabs.get_mut(mesh_id) {
+                    let to_free: SmallVec<[(u32, SlabId); 4]> = slots
+                        .iter()
+                        .filter(|(slot_index, _)| {
+                            *slot_index >= 8 || (dirty_slots & (1 << slot_index)) != 0
+                        })
+                        .copied()
+                        .collect();
+
+                    slots.retain(|(slot_index, _)| {
+                        *slot_index < 8 && (dirty_slots & (1 << *slot_index)) == 0
+                    });
+
+                    to_free
+                } else {
+                    SmallVec::new()
+                };
+
+            for (_slot_index, slab_id) in slots_to_free {
+                self.free_allocation_in_slab(mesh_id, slab_id, &mut empty_slabs);
+            }
+
+            if self
+                .mesh_id_to_vertex_slabs
+                .get(mesh_id)
+                .is_some_and(|s| s.is_empty())
+            {
+                self.mesh_id_to_vertex_slabs.remove(mesh_id);
+            }
+
+            if dirty_indices {
+                if let Some(slab_id) = self.mesh_id_to_index_slab.remove(mesh_id) {
+                    self.free_allocation_in_slab(mesh_id, slab_id, &mut empty_slabs);
+                }
             }
         }
 
@@ -813,15 +949,151 @@ impl MeshAllocator {
                 .insert(*mesh_id, mesh_allocation.slab_allocation);
         };
 
-        self.record_allocation(mesh_id, mesh_allocation.slab_id, layout.class);
+        self.record_index_allocation(mesh_id, mesh_allocation.slab_id);
     }
 
-    /// Allocates an object into its own dedicated slab.
+    /// Allocates index data into its own dedicated slab.
     fn allocate_large(&mut self, mesh_id: &AssetId<Mesh>, layout: ElementLayout) {
         let new_slab_id = self.next_slab_id;
         self.next_slab_id.0 = NonMaxU32::new(self.next_slab_id.0.get() + 1).unwrap_or_default();
 
-        self.record_allocation(mesh_id, new_slab_id, layout.class);
+        self.record_index_allocation(mesh_id, new_slab_id);
+
+        self.slabs.insert(
+            new_slab_id,
+            Slab::LargeObject(LargeObjectSlab {
+                buffer: None,
+                element_layout: layout,
+            }),
+        );
+    }
+
+    /// Allocates space for vertex data with the given byte size and layout in the
+    /// appropriate slab, creating that slab if necessary.
+    fn allocate_vertex(
+        &mut self,
+        mesh_id: &AssetId<Mesh>,
+        slot_index: u32,
+        data_byte_len: u64,
+        layout: ElementLayout,
+        slabs_to_grow: &mut SlabsToReallocate,
+        settings: &MeshAllocatorSettings,
+    ) {
+        let data_element_count = data_byte_len.div_ceil(layout.size) as u32;
+        let data_slot_count = data_element_count.div_ceil(layout.elements_per_slot);
+
+        // If the mesh data is too large for a slab, give it a slab of its own.
+        if data_slot_count as u64 * layout.slot_size()
+            >= settings.large_threshold.min(settings.max_slab_size)
+        {
+            self.allocate_large_vertex(mesh_id, slot_index, layout);
+        } else {
+            self.allocate_general_vertex(
+                mesh_id,
+                slot_index,
+                data_slot_count,
+                layout,
+                slabs_to_grow,
+                settings,
+            );
+        }
+    }
+
+    /// Allocates space for vertex data with the given slot size and layout in the
+    /// appropriate general slab.
+    fn allocate_general_vertex(
+        &mut self,
+        mesh_id: &AssetId<Mesh>,
+        slot_index: u32,
+        data_slot_count: u32,
+        layout: ElementLayout,
+        slabs_to_grow: &mut SlabsToReallocate,
+        settings: &MeshAllocatorSettings,
+    ) {
+        let candidate_slabs = self.slab_layouts.entry(layout).or_default();
+
+        // Loop through the slabs that accept elements of the appropriate type
+        // and try to allocate the mesh inside them. We go with the first one
+        // that succeeds.
+        let mut mesh_allocation = None;
+        for &slab_id in &*candidate_slabs {
+            let Some(Slab::General(slab)) = self.slabs.get_mut(&slab_id) else {
+                unreachable!("Slab not found")
+            };
+
+            let Some(allocation) = slab.allocator.allocate(data_slot_count) else {
+                continue;
+            };
+
+            // Try to fit the object in the slab, growing if necessary.
+            match slab.grow_if_necessary(allocation.offset + data_slot_count, settings) {
+                SlabGrowthResult::NoGrowthNeeded => {}
+                SlabGrowthResult::NeededGrowth(slab_to_reallocate) => {
+                    // If we already grew the slab this frame, don't replace the
+                    // `SlabToReallocate` entry. We want to keep the entry
+                    // corresponding to the size that the slab had at the start
+                    // of the frame, so that we can copy only the used portion
+                    // of the initial buffer to the new one.
+                    if let Entry::Vacant(vacant_entry) = slabs_to_grow.entry(slab_id) {
+                        vacant_entry.insert(slab_to_reallocate);
+                    }
+                }
+                SlabGrowthResult::CantGrow => continue,
+            }
+
+            mesh_allocation = Some(MeshAllocation {
+                slab_id,
+                slab_allocation: SlabAllocation {
+                    allocation,
+                    slot_count: data_slot_count,
+                },
+            });
+            break;
+        }
+
+        // If we still have no allocation, make a new slab.
+        if mesh_allocation.is_none() {
+            let new_slab_id = self.next_slab_id;
+            self.next_slab_id.0 = NonMaxU32::new(self.next_slab_id.0.get() + 1).unwrap_or_default();
+
+            let new_slab = GeneralSlab::new(
+                new_slab_id,
+                &mut mesh_allocation,
+                settings,
+                layout,
+                data_slot_count,
+            );
+
+            self.slabs.insert(new_slab_id, Slab::General(new_slab));
+            candidate_slabs.push(new_slab_id);
+            slabs_to_grow.insert(new_slab_id, SlabToReallocate::default());
+        }
+
+        let mesh_allocation = mesh_allocation.expect("Should have been able to allocate");
+
+        // Mark the allocation as pending. Don't copy it in just yet; further
+        // meshes loaded this frame may result in its final allocation location
+        // changing.
+        if let Some(Slab::General(general_slab)) = self.slabs.get_mut(&mesh_allocation.slab_id) {
+            general_slab
+                .pending_allocations
+                .insert(*mesh_id, mesh_allocation.slab_allocation);
+        };
+
+        self.record_vertex_allocation(mesh_id, slot_index, mesh_allocation.slab_id);
+    }
+
+    /// Allocates vertex data into its own dedicated slab.
+    fn allocate_large_vertex(
+        &mut self,
+        mesh_id: &AssetId<Mesh>,
+        slot_index: u32,
+        layout: ElementLayout,
+    ) {
+        let new_slab_id = self.next_slab_id;
+        self.next_slab_id.0 = NonMaxU32::new(self.next_slab_id.0.get() + 1).unwrap_or_default();
+
+        self.record_vertex_allocation(mesh_id, slot_index, new_slab_id);
 
         self.slabs.insert(
             new_slab_id,
@@ -893,23 +1165,24 @@ impl MeshAllocator {
         render_queue.submit([command_buffer]);
     }
 
-    /// Records the location of the given newly-allocated mesh data in the
-    /// [`Self::mesh_id_to_vertex_slab`] or [`Self::mesh_id_to_index_slab`]
-    /// tables as appropriate.
-    fn record_allocation(
+    /// Records the location of the given newly-allocated vertex data in the
+    /// [`Self::mesh_id_to_vertex_slabs`] table.
+    fn record_vertex_allocation(
         &mut self,
         mesh_id: &AssetId<Mesh>,
+        slot_index: u32,
         slab_id: SlabId,
-        element_class: ElementClass,
     ) {
-        match element_class {
-            ElementClass::Vertex => {
-                self.mesh_id_to_vertex_slab.insert(*mesh_id, slab_id);
-            }
-            ElementClass::Index => {
-                self.mesh_id_to_index_slab.insert(*mesh_id, slab_id);
-            }
-        }
+        self.mesh_id_to_vertex_slabs
+            .entry(*mesh_id)
+            .or_default()
+            .push((slot_index, slab_id));
+    }
+
+    /// Records the location of the given newly-allocated index data in the
+    /// [`Self::mesh_id_to_index_slab`] table.
+    fn record_index_allocation(&mut self, mesh_id: &AssetId<Mesh>, slab_id: SlabId) {
+        self.mesh_id_to_index_slab.insert(*mesh_id, slab_id);
     }
 }
 
@@ -1012,18 +1285,10 @@ impl ElementLayout {
         self.size * self.elements_per_slot as u64
     }
 
-    /// Creates the appropriate [`ElementLayout`] for the given mesh's vertex
-    /// data.
-    fn vertex(
-        mesh_vertex_buffer_layouts: &mut MeshVertexBufferLayouts,
-        mesh: &Mesh,
-    ) -> ElementLayout {
-        let mesh_vertex_buffer_layout =
-            mesh.get_mesh_vertex_buffer_layout(mesh_vertex_buffer_layouts);
-        ElementLayout::new(
-            ElementClass::Vertex,
-            mesh_vertex_buffer_layout.0.layout().array_stride,
-        )
+    /// Creates the appropriate [`ElementLayout`] for vertex data with the given
+    /// array stride (vertex size in bytes).
+    fn vertex_for_slot(array_stride: u64) -> ElementLayout {
+        ElementLayout::new(ElementClass::Vertex, array_stride)
     }
 
     /// Creates the appropriate [`ElementLayout`] for the given mesh's index

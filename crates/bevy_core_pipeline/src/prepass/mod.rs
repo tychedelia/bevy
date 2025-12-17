@@ -48,6 +48,7 @@ use bevy_render::{
     },
     texture::ColorAttachment,
 };
+use smallvec::SmallVec;
 
 pub const NORMAL_PREPASS_FORMAT: TextureFormat = TextureFormat::Rgb10a2Unorm;
 pub const MOTION_VECTOR_PREPASS_FORMAT: TextureFormat = TextureFormat::Rg16Float;
@@ -206,11 +207,14 @@ pub struct OpaqueNoLightmap3dBatchSetKey {
     /// In the case of PBR, this is the `MaterialBindGroupIndex`.
     pub material_bind_group_index: Option<u32>,
 
-    /// The ID of the slab of GPU memory that contains vertex data.
+    /// The IDs of the slabs of GPU memory that contain vertex data for each vertex buffer slot.
     ///
-    /// For non-mesh items, you can fill this with 0 if your items can be
+    /// Each entry is a (slot_index, slab_id) pair. For meshes with multiple vertex buffer slots,
+    /// all slots must match for items to be batched together.
+    ///
+    /// For non-mesh items, you can fill this with an empty SmallVec if your items can be
     /// multi-drawn, or with a unique value if they can't.
-    pub vertex_slab: SlabId,
+    pub vertex_slabs: SmallVec<[(u32, SlabId); 2]>,
 
     /// The ID of the slab of GPU memory that contains index data, if present.
     ///

@@ -5,7 +5,7 @@ use super::{
     triangle_area_normal, triangle_normal, FourIterators, Indices, MeshAttributeData,
     MeshTrianglesError, MeshVertexAttribute, MeshVertexAttributeId, MeshVertexBufferLayout,
     MeshVertexBufferLayoutRef, MeshVertexBufferLayouts, MeshWindingInvertError,
-    VertexAttributeValues, VertexBufferLayout,
+    SlotVertexBufferLayout, VertexAttributeValues, VertexBufferLayout,
 };
 #[cfg(feature = "serialize")]
 use crate::SerializedMeshAttributeData;
@@ -257,6 +257,13 @@ pub struct Mesh {
     /// Precomputed min and max extents of the mesh position data. Used mainly for constructing `Aabb`s for frustum culling.
     /// This data will be set if/when a mesh is extracted to the GPU
     pub final_aabb: Option<Aabb3d>,
+    /// Bitfield tracking which vertex buffer slots have been modified since last extraction.
+    /// Each bit corresponds to a slot index (bit 0 = slot 0, bit 1 = slot 1, etc.).
+    /// When a mesh is first created, all slots are marked dirty.
+    /// After extraction via `take_gpu_data`, the dirty bits are cleared on the source mesh.
+    dirty_slots: u8,
+    /// Whether the index buffer has been modified since last extraction.
+    dirty_indices: bool,
 }
 
 impl Mesh {
@@ -349,6 +356,8 @@ impl Mesh {
             asset_usage,
             enable_raytracing: true,
             final_aabb: None,
+            dirty_slots: u8::MAX,
+            dirty_indices: true,
         }
     }
 
@@ -400,6 +409,7 @@ impl Mesh {
             );
         }
 
+        self.mark_slot_dirty(attribute.slot_index);
         self.attributes
             .as_mut()?
             .insert(attribute.id, MeshAttributeData { attribute, values });
@@ -455,11 +465,15 @@ impl Mesh {
         &mut self,
         attribute: impl Into<MeshVertexAttributeId>,
     ) -> Option<VertexAttributeValues> {
-        self.attributes
-            .as_mut()
-            .expect(MESH_EXTRACTED_ERROR)
-            .remove(&attribute.into())
-            .map(|data| data.values)
+        let id = attribute.into();
+        let attrs = self.attributes.as_mut().expect(MESH_EXTRACTED_ERROR);
+
+        if let Some(data) = attrs.remove(&id) {
+            self.mark_slot_dirty(data.attribute.slot_index);
+            Some(data.values)
+        } else {
+            None
+        }
     }
 
     /// Removes the data for a vertex attribute
@@ -469,12 +483,15 @@ impl Mesh {
         &mut self,
         attribute: impl Into<MeshVertexAttributeId>,
     ) -> Result<VertexAttributeValues, MeshAccessError> {
-        Ok(self
+        let id = attribute.into();
+        let data = self
             .attributes
             .as_mut()?
-            .remove(&attribute.into())
-            .ok_or(MeshAccessError::NotFound)?
-            .values)
+            .remove(&id)
+            .ok_or(MeshAccessError::NotFound)?;
+
+        self.mark_slot_dirty(data.attribute.slot_index);
+        Ok(data.values)
     }
 
     /// Consumes the mesh and returns a mesh without the data for a vertex attribute
@@ -613,10 +630,21 @@ impl Mesh {
         &mut self,
         id: impl Into<MeshVertexAttributeId>,
     ) -> Result<Option<&mut VertexAttributeValues>, MeshAccessError> {
+        let id = id.into();
+        let slot_index = self
+            .attributes
+            .as_ref()?
+            .get(&id)
+            .map(|data| data.attribute.slot_index);
+
+        if let Some(slot) = slot_index {
+            self.mark_slot_dirty(slot);
+        }
+
         Ok(self
             .attributes
             .as_mut()?
-            .get_mut(&id.into())
+            .get_mut(&id)
             .map(|data| &mut data.values))
     }
 
@@ -664,6 +692,10 @@ impl Mesh {
         impl Iterator<Item = (&MeshVertexAttribute, &mut VertexAttributeValues)>,
         MeshAccessError,
     > {
+        for slot in 0..8 {
+            self.mark_slot_dirty(slot);
+        }
+
         Ok(self
             .attributes
             .as_mut()?
@@ -680,6 +712,7 @@ impl Mesh {
     /// this as an error use [`Mesh::try_insert_indices`]
     #[inline]
     pub fn insert_indices(&mut self, indices: Indices) {
+        self.mark_indices_dirty();
         self.indices
             .replace(Some(indices))
             .expect(MESH_EXTRACTED_ERROR);
@@ -692,6 +725,7 @@ impl Mesh {
     /// Returns an error if the mesh data has been extracted to `RenderWorld`.
     #[inline]
     pub fn try_insert_indices(&mut self, indices: Indices) -> Result<(), MeshAccessError> {
+        self.mark_indices_dirty();
         self.indices.replace(Some(indices))?;
         Ok(())
     }
@@ -763,6 +797,7 @@ impl Mesh {
     /// Returns an error if the mesh data has been extracted to `RenderWorld`.
     #[inline]
     pub fn try_indices_mut(&mut self) -> Result<&mut Indices, MeshAccessError> {
+        self.mark_indices_dirty();
         self.indices.as_mut()
     }
 
@@ -771,6 +806,7 @@ impl Mesh {
     /// Returns an error if the mesh data has been extracted to `RenderWorld`.
     #[inline]
     pub fn try_indices_mut_option(&mut self) -> Result<Option<&mut Indices>, MeshAccessError> {
+        self.mark_indices_dirty();
         self.indices.as_mut_option()
     }
 
@@ -789,6 +825,7 @@ impl Mesh {
     /// Returns an error if the mesh data has been extracted to `RenderWorld`.
     #[inline]
     pub fn try_remove_indices(&mut self) -> Result<Option<Indices>, MeshAccessError> {
+        self.mark_indices_dirty();
         self.indices.replace(None)
     }
 
@@ -815,27 +852,43 @@ impl Mesh {
         Ok(self)
     }
 
-    /// Returns the size of a vertex in bytes.
+    /// Returns the vertex stride for a specific vertex buffer slot.
     ///
     /// # Panics
     /// Panics when the mesh data has already been extracted to `RenderWorld`.
-    pub fn get_vertex_size(&self) -> u64 {
+    pub fn get_vertex_size(&self, slot_index: u32) -> u64 {
         self.attributes
             .as_ref()
             .expect(MESH_EXTRACTED_ERROR)
             .values()
+            .filter(|data| data.attribute.slot_index == slot_index)
             .map(|data| data.attribute.format.size())
             .sum()
     }
 
-    /// Returns the size required for the vertex buffer in bytes.
+    /// Returns the buffer size in bytes for a specific slot.
     ///
     /// # Panics
     /// Panics when the mesh data has already been extracted to `RenderWorld`.
-    pub fn get_vertex_buffer_size(&self) -> usize {
-        let vertex_size = self.get_vertex_size() as usize;
+    pub fn get_vertex_buffer_size(&self, slot_index: u32) -> usize {
+        let vertex_size = self.get_vertex_size(slot_index) as usize;
         let vertex_count = self.count_vertices();
         vertex_count * vertex_size
+    }
+
+    /// Returns all slot indices used by this mesh's attributes.
+    ///
+    /// # Panics
+    /// Panics when the mesh data has already been extracted to `RenderWorld`.
+    pub fn slot_indices(&self) -> impl Iterator<Item = u32> + '_ {
+        let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
+        let mut indices: Vec<u32> = mesh_attributes
+            .values()
+            .map(|data| data.attribute.slot_index)
+            .collect();
+        indices.sort();
+        indices.dedup();
+        indices.into_iter()
     }
 
     /// Computes and returns the index data of the mesh as bytes.
@@ -859,31 +912,50 @@ impl Mesh {
     pub fn get_mesh_vertex_buffer_layout(
         &self,
         mesh_vertex_buffer_layouts: &mut MeshVertexBufferLayouts,
-    ) -> MeshVertexBufferLayoutRef {
-        let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
+    ) -> Result<MeshVertexBufferLayoutRef, MeshAccessError> {
+        let mesh_attributes = self.attributes.as_ref()?;
 
-        let mut attributes = Vec::with_capacity(mesh_attributes.len());
-        let mut attribute_ids = Vec::with_capacity(mesh_attributes.len());
-        let mut accumulated_offset = 0;
-        for (index, data) in mesh_attributes.values().enumerate() {
-            attribute_ids.push(data.attribute.id);
-            attributes.push(VertexAttribute {
-                offset: accumulated_offset,
-                format: data.attribute.format,
-                shader_location: index as u32,
-            });
-            accumulated_offset += data.attribute.format.size();
+        let mut slots_map: BTreeMap<u32, Vec<&MeshAttributeData>> = BTreeMap::new();
+        for data in mesh_attributes.values() {
+            slots_map
+                .entry(data.attribute.slot_index)
+                .or_default()
+                .push(data);
         }
 
-        let layout = MeshVertexBufferLayout {
-            layout: VertexBufferLayout {
-                array_stride: accumulated_offset,
-                step_mode: VertexStepMode::Vertex,
-                attributes,
-            },
-            attribute_ids,
-        };
-        mesh_vertex_buffer_layouts.insert(layout)
+        let mut slots = Vec::with_capacity(slots_map.len());
+
+        for (slot_index, attrs) in slots_map {
+            let mut sorted_attrs: Vec<_> = attrs.into_iter().collect();
+            sorted_attrs.sort_by_key(|a| a.attribute.id);
+
+            let mut attribute_ids = Vec::with_capacity(sorted_attrs.len());
+            let mut wgpu_attributes = Vec::with_capacity(sorted_attrs.len());
+            let mut accumulated_offset = 0u64;
+
+            for (index, data) in sorted_attrs.iter().enumerate() {
+                attribute_ids.push(data.attribute.id);
+                wgpu_attributes.push(VertexAttribute {
+                    offset: accumulated_offset,
+                    format: data.attribute.format,
+                    shader_location: index as u32,
+                });
+                accumulated_offset += data.attribute.format.size();
+            }
+
+            slots.push(SlotVertexBufferLayout {
+                slot_index,
+                attribute_ids,
+                layout: VertexBufferLayout {
+                    array_stride: accumulated_offset,
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: wgpu_attributes,
+                },
+            });
+        }
+
+        let layout = MeshVertexBufferLayout::new(slots);
+        Ok(mesh_vertex_buffer_layouts.insert(layout))
     }
 
     /// Counts all vertices of the mesh.
@@ -917,43 +989,49 @@ impl Mesh {
         vertex_count.unwrap_or(0)
     }
 
-    /// Computes and returns the vertex data of the mesh as bytes.
-    /// Therefore the attributes are located in the order of their [`MeshVertexAttribute::id`].
-    /// This is used to transform the vertex data into a GPU friendly format.
-    ///
-    /// If the vertex attributes have different lengths, they are all truncated to
-    /// the length of the smallest.
+    /// Computes and returns the vertex data for a slot as bytes.
+    /// The attributes are interleaved in the order of their [`MeshVertexAttribute::id`].
     ///
     /// This is a convenience method which allocates a Vec.
-    /// Prefer pre-allocating and using [`Mesh::write_packed_vertex_buffer_data`] when possible.
+    /// Prefer pre-allocating and using [`Mesh::write_vertex_buffer_data`] when possible.
     ///
     /// # Panics
     /// Panics when the mesh data has already been extracted to `RenderWorld`.
-    pub fn create_packed_vertex_buffer_data(&self) -> Vec<u8> {
-        let mut attributes_interleaved_buffer = vec![0; self.get_vertex_buffer_size()];
-        self.write_packed_vertex_buffer_data(&mut attributes_interleaved_buffer);
-        attributes_interleaved_buffer
+    pub fn create_vertex_buffer_data(&self, slot_index: u32) -> Vec<u8> {
+        let mut buffer = vec![0; self.get_vertex_buffer_size(slot_index)];
+        self.write_vertex_buffer_data(slot_index, &mut buffer);
+        buffer
     }
 
-    /// Computes and write the vertex data of the mesh into a mutable byte slice.
-    /// The attributes are located in the order of their [`MeshVertexAttribute::id`].
-    /// This is used to transform the vertex data into a GPU friendly format.
+    /// Writes vertex data for a specific slot into a mutable byte slice.
     ///
-    /// If the vertex attributes have different lengths, they are all truncated to
-    /// the length of the smallest.
+    /// The attributes in the slot are interleaved and ordered by their
+    /// [`MeshVertexAttribute::id`].
     ///
     /// # Panics
     /// Panics when the mesh data has already been extracted to `RenderWorld`.
-    pub fn write_packed_vertex_buffer_data(&self, slice: &mut [u8]) {
+    pub fn write_vertex_buffer_data(&self, slot_index: u32, slice: &mut [u8]) {
         let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
 
-        let vertex_size = self.get_vertex_size() as usize;
+        let mut slot_attrs: Vec<_> = mesh_attributes
+            .values()
+            .filter(|data| data.attribute.slot_index == slot_index)
+            .collect();
+        slot_attrs.sort_by_key(|a| a.attribute.id);
+
+        if slot_attrs.is_empty() {
+            return;
+        }
+
+        let vertex_size = self.get_vertex_size(slot_index) as usize;
         let vertex_count = self.count_vertices();
+
         // bundle into interleaved buffers
         let mut attribute_offset = 0;
-        for attribute_data in mesh_attributes.values() {
-            let attribute_size = attribute_data.attribute.format.size() as usize;
-            let attributes_bytes = attribute_data.values.get_bytes();
+        for attr_data in slot_attrs {
+            let attribute_size = attr_data.attribute.format.size() as usize;
+            let attributes_bytes = attr_data.values.get_bytes();
+
             for (vertex_index, attribute_bytes) in attributes_bytes
                 .chunks_exact(attribute_size)
                 .take(vertex_count)
@@ -2168,6 +2246,11 @@ impl Mesh {
             self.final_aabb = Some(Aabb3d::from_min_max(min, max));
         }
 
+        let dirty_slots = self.dirty_slots;
+        let dirty_indices = self.dirty_indices;
+        self.dirty_slots = 0;
+        self.dirty_indices = false;
+
         Ok(Self {
             attributes,
             indices,
@@ -2175,8 +2258,53 @@ impl Mesh {
             morph_targets,
             #[cfg(feature = "morph")]
             morph_target_names,
+            dirty_slots,
+            dirty_indices,
             ..self.clone()
         })
+    }
+
+    /// Returns the dirty slots bitfield.
+    /// Each bit corresponds to a vertex buffer slot that has been modified.
+    #[inline]
+    pub fn dirty_slots(&self) -> u8 {
+        self.dirty_slots
+    }
+
+    /// Returns whether a specific vertex buffer slot is dirty.
+    #[inline]
+    pub fn is_slot_dirty(&self, slot_index: u32) -> bool {
+        if slot_index >= 8 {
+            return false;
+        }
+        (self.dirty_slots & (1 << slot_index)) != 0
+    }
+
+    /// Returns whether the index buffer is dirty.
+    #[inline]
+    pub fn is_indices_dirty(&self) -> bool {
+        self.dirty_indices
+    }
+
+    /// Clears all dirty flags. Called after GPU upload is complete.
+    #[inline]
+    pub fn clear_dirty_flags(&mut self) {
+        self.dirty_slots = 0;
+        self.dirty_indices = false;
+    }
+
+    /// Marks a vertex buffer slot as dirty, indicating it needs to be re-uploaded to GPU.
+    #[inline]
+    fn mark_slot_dirty(&mut self, slot_index: u32) {
+        if slot_index < 8 {
+            self.dirty_slots |= 1 << slot_index;
+        }
+    }
+
+    /// Marks the index buffer as dirty, indicating it needs to be re-uploaded to GPU.
+    #[inline]
+    fn mark_indices_dirty(&mut self) {
+        self.dirty_indices = true;
     }
 }
 

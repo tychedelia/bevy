@@ -263,7 +263,7 @@ fn queue_custom_phase_item(
                     pipeline: pipeline_id,
                     material_bind_group_index: None,
                     lightmap_slab: None,
-                    vertex_slab: default(),
+                    vertex_slabs: default(),
                     index_slab: None,
                 },
                 Opaque3dBinKey {

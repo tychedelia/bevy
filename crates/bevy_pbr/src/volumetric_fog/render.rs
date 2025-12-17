@@ -379,10 +379,12 @@ impl ViewNode for VolumetricFogNode {
                 fog_assets.plane_mesh.clone()
             };
 
-            let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(&mesh_handle.id())
-            else {
+            // Collect vertex buffer slices for all slots
+            let mesh_id = mesh_handle.id();
+            let vertex_slices: Vec<_> = mesh_allocator.mesh_vertex_slices(&mesh_id).collect();
+            if vertex_slices.is_empty() {
                 continue;
-            };
+            }
 
             let density_image = view_fog_volume
                 .density_texture
@@ -455,7 +457,15 @@ impl ViewNode for VolumetricFogNode {
                 .command_encoder()
                 .begin_render_pass(&render_pass_descriptor);
 
-            render_pass.set_vertex_buffer(0, *vertex_buffer_slice.buffer.slice(..));
+            // Bind all vertex buffer slots with byte offsets
+            for (slot_index, vertex_buffer_slice) in &vertex_slices {
+                render_pass.set_vertex_buffer(
+                    *slot_index,
+                    *vertex_buffer_slice
+                        .buffer
+                        .slice(vertex_buffer_slice.byte_offset()..),
+                );
+            }
             render_pass.set_pipeline(pipeline);
             render_pass.set_bind_group(
                 0,
@@ -489,14 +499,16 @@ impl ViewNode for VolumetricFogNode {
 
                     render_pass
                         .set_index_buffer(*index_buffer_slice.buffer.slice(..), *index_format);
+                    // base_vertex is 0 since we bind vertex buffers at byte offset
                     render_pass.draw_indexed(
                         index_buffer_slice.range.start..(index_buffer_slice.range.start + count),
-                        vertex_buffer_slice.range.start as i32,
+                        0,
                         0..1,
                     );
                 }
                 RenderMeshBufferInfo::NonIndexed => {
-                    render_pass.draw(vertex_buffer_slice.range, 0..1);
+                    // Vertex range is 0-based since we bind buffers at byte offset
+                    render_pass.draw(0..render_mesh.vertex_count, 0..1);
                 }
             }
         }
@@ -539,6 +551,8 @@ impl SpecializedRenderPipeline for VolumetricFogPipeline {
         let vertex_format = key
             .vertex_buffer_layout
             .0
+            .get_slot(0)
+            .expect("Failed to get vertex buffer slot for volumetric fog hull")
             .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])
             .expect("Failed to get vertex layout for volumetric fog hull");
 

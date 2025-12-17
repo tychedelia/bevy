@@ -519,7 +519,7 @@ impl PrepassPipeline {
             self.skins_use_uniform_buffers,
         );
         bind_group_layouts.insert(2, bind_group);
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layouts(&vertex_attributes)?;
         // Setup prepass fragment targets - normals in slot 0 (or None if not needed), motion vectors in slot 1
         let mut targets = prepass_target_descriptors(
             mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS),
@@ -581,7 +581,7 @@ impl PrepassPipeline {
             vertex: VertexState {
                 shader: vert_shader_handle,
                 shader_defs,
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment,
@@ -1077,7 +1077,8 @@ pub fn queue_prepass_material_meshes(
             let Some(material) = render_materials.get(material_instance.asset_id) else {
                 continue;
             };
-            let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
+            let vertex_slabs = mesh_allocator.mesh_vertex_slab_ids(&mesh_instance.mesh_asset_id);
+            let index_slab = mesh_allocator.mesh_index_slab_id(&mesh_instance.mesh_asset_id);
 
             let deferred = match material.properties.render_method {
                 OpaqueRendererMethod::Forward => false,
@@ -1099,7 +1100,7 @@ pub fn queue_prepass_material_meshes(
                                 draw_function,
                                 pipeline: *pipeline_id,
                                 material_bind_group_index: Some(material.binding.group.0),
-                                vertex_slab: vertex_slab.unwrap_or_default(),
+                                vertex_slabs: vertex_slabs.clone(),
                                 index_slab,
                             },
                             OpaqueNoLightmap3dBinKey {
@@ -1114,8 +1115,6 @@ pub fn queue_prepass_material_meshes(
                             *current_change_tick,
                         );
                     } else if let Some(opaque_phase) = opaque_phase.as_mut() {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
                         let Some(draw_function) = material
                             .properties
                             .get_draw_function(PrepassOpaqueDrawFunction)
@@ -1127,7 +1126,7 @@ pub fn queue_prepass_material_meshes(
                                 draw_function,
                                 pipeline: *pipeline_id,
                                 material_bind_group_index: Some(material.binding.group.0),
-                                vertex_slab: vertex_slab.unwrap_or_default(),
+                                vertex_slabs: vertex_slabs.clone(),
                                 index_slab,
                             },
                             OpaqueNoLightmap3dBinKey {
@@ -1145,8 +1144,6 @@ pub fn queue_prepass_material_meshes(
                 }
                 RenderPhaseType::AlphaMask => {
                     if deferred {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
                         let Some(draw_function) = material
                             .properties
                             .get_draw_function(DeferredAlphaMaskDrawFunction)
@@ -1157,7 +1154,7 @@ pub fn queue_prepass_material_meshes(
                             draw_function,
                             pipeline: *pipeline_id,
                             material_bind_group_index: Some(material.binding.group.0),
-                            vertex_slab: vertex_slab.unwrap_or_default(),
+                            vertex_slabs: vertex_slabs.clone(),
                             index_slab,
                         };
                         let bin_key = OpaqueNoLightmap3dBinKey {
@@ -1175,8 +1172,6 @@ pub fn queue_prepass_material_meshes(
                             *current_change_tick,
                         );
                     } else if let Some(alpha_mask_phase) = alpha_mask_phase.as_mut() {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
                         let Some(draw_function) = material
                             .properties
                             .get_draw_function(PrepassAlphaMaskDrawFunction)
@@ -1187,7 +1182,7 @@ pub fn queue_prepass_material_meshes(
                             draw_function,
                             pipeline: *pipeline_id,
                             material_bind_group_index: Some(material.binding.group.0),
-                            vertex_slab: vertex_slab.unwrap_or_default(),
+                            vertex_slabs,
                             index_slab,
                         };
                         let bin_key = OpaqueNoLightmap3dBinKey {

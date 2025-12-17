@@ -62,6 +62,7 @@ use bevy_transform::{components::GlobalTransform, prelude::Transform};
 use bevy_utils::default;
 use core::{hash::Hash, ops::Range};
 use decal::clustered::RenderClusteredDecals;
+use smallvec::SmallVec;
 #[cfg(feature = "trace")]
 use tracing::info_span;
 use tracing::{error, warn};
@@ -2050,14 +2051,15 @@ pub fn queue_shadows(
                     continue;
                 };
 
-                let (vertex_slab, index_slab) =
-                    mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
+                let vertex_slabs =
+                    mesh_allocator.mesh_vertex_slab_ids(&mesh_instance.mesh_asset_id);
+                let index_slab = mesh_allocator.mesh_index_slab_id(&mesh_instance.mesh_asset_id);
 
                 let batch_set_key = ShadowBatchSetKey {
                     pipeline: *pipeline_id,
                     draw_function,
                     material_bind_group_index: Some(material.binding.group.0),
-                    vertex_slab: vertex_slab.unwrap_or_default(),
+                    vertex_slabs,
                     index_slab,
                 };
 
@@ -2110,11 +2112,14 @@ pub struct ShadowBatchSetKey {
     /// In the case of PBR, this is the `MaterialBindGroupIndex`.
     pub material_bind_group_index: Option<u32>,
 
-    /// The ID of the slab of GPU memory that contains vertex data.
+    /// The IDs of the slabs of GPU memory that contain vertex data for each vertex buffer slot.
     ///
-    /// For non-mesh items, you can fill this with 0 if your items can be
+    /// Each entry is a (slot_index, slab_id) pair. For meshes with multiple vertex buffer slots,
+    /// all slots must match for items to be batched together.
+    ///
+    /// For non-mesh items, you can fill this with an empty SmallVec if your items can be
     /// multi-drawn, or with a unique value if they can't.
-    pub vertex_slab: SlabId,
+    pub vertex_slabs: SmallVec<[(u32, SlabId); 2]>,
 
     /// The ID of the slab of GPU memory that contains index data, if present.
     ///

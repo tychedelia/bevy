@@ -1213,7 +1213,8 @@ pub fn queue_material_meshes(
             };
 
             // Fetch the slabs that this mesh resides in.
-            let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
+            let vertex_slabs = mesh_allocator.mesh_vertex_slab_ids(&mesh_instance.mesh_asset_id);
+            let index_slab = mesh_allocator.mesh_index_slab_id(&mesh_instance.mesh_asset_id);
 
             match material.properties.render_phase_type {
                 RenderPhaseType::Transmissive => {
@@ -1254,7 +1255,7 @@ pub fn queue_material_meshes(
                         pipeline: pipeline_id,
                         draw_function,
                         material_bind_group_index: Some(material.binding.group.0),
-                        vertex_slab: vertex_slab.unwrap_or_default(),
+                        vertex_slabs: vertex_slabs.clone(),
                         index_slab,
                         lightmap_slab: mesh_instance.shared.lightmap_slab_index.map(|index| *index),
                     };
@@ -1285,7 +1286,7 @@ pub fn queue_material_meshes(
                         draw_function,
                         pipeline: pipeline_id,
                         material_bind_group_index: Some(material.binding.group.0),
-                        vertex_slab: vertex_slab.unwrap_or_default(),
+                        vertex_slabs: vertex_slabs.clone(),
                         index_slab,
                     };
                     let bin_key = OpaqueNoLightmap3dBinKey {

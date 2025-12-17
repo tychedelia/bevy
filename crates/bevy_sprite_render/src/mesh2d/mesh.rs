@@ -577,7 +577,7 @@ impl SpecializedMeshPipeline for Mesh2dPipeline {
             shader_defs.push("MAY_DISCARD".into());
         }
 
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layouts(&vertex_attributes)?;
 
         let format = match key.contains(Mesh2dPipelineKey::HDR) {
             true => ViewTarget::TEXTURE_FORMAT_HDR,
@@ -599,7 +599,7 @@ impl SpecializedMeshPipeline for Mesh2dPipeline {
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment: Some(FragmentState {
@@ -795,11 +795,20 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh2d {
         let Some(gpu_mesh) = meshes.get(*mesh_asset_id) else {
             return RenderCommandResult::Skip;
         };
-        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(mesh_asset_id) else {
-            return RenderCommandResult::Skip;
-        };
 
-        pass.set_vertex_buffer(0, vertex_buffer_slice.buffer.slice(..));
+        // Bind all vertex buffer slots
+        let vertex_slices: Vec<_> = mesh_allocator.mesh_vertex_slices(mesh_asset_id).collect();
+        if vertex_slices.is_empty() {
+            return RenderCommandResult::Skip;
+        }
+        for (slot_index, vertex_buffer_slice) in &vertex_slices {
+            pass.set_vertex_buffer(
+                *slot_index as usize,
+                vertex_buffer_slice
+                    .buffer
+                    .slice(vertex_buffer_slice.byte_offset()..),
+            );
+        }
 
         let batch_range = item.batch_range();
         match &gpu_mesh.buffer_info {
@@ -814,14 +823,16 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh2d {
 
                 pass.set_index_buffer(index_buffer_slice.buffer.slice(..), *index_format);
 
+                // base_vertex is 0 since we bind buffers at byte offset
                 pass.draw_indexed(
                     index_buffer_slice.range.start..(index_buffer_slice.range.start + count),
-                    vertex_buffer_slice.range.start as i32,
+                    0,
                     batch_range.clone(),
                 );
             }
             RenderMeshBufferInfo::NonIndexed => {
-                pass.draw(vertex_buffer_slice.range, batch_range.clone());
+                // Vertex range is 0-based since we bind buffers at byte offset
+                pass.draw(0..gpu_mesh.vertex_count, batch_range.clone());
             }
         }
         RenderCommandResult::Success

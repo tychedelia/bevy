@@ -53,6 +53,7 @@ use bevy_render::{
 };
 use bevy_shader::Shader;
 use core::{hash::Hash, ops::Range};
+use smallvec::SmallVec;
 use tracing::error;
 
 /// A [`Plugin`] that draws wireframes for 2D meshes.
@@ -247,11 +248,15 @@ pub struct Wireframe2dBatchSetKey {
 
     /// The function used to draw.
     pub draw_function: DrawFunctionId,
-    /// The ID of the slab of GPU memory that contains vertex data.
+
+    /// The IDs of the slabs of GPU memory that contain vertex data for each vertex buffer slot.
     ///
-    /// For non-mesh items, you can fill this with 0 if your items can be
+    /// Each entry is a (slot_index, slab_id) pair. For meshes with multiple vertex buffer slots,
+    /// all slots must match for items to be batched together.
+    ///
+    /// For non-mesh items, you can fill this with an empty SmallVec if your items can be
     /// multi-drawn, or with a unique value if they can't.
-    pub vertex_slab: SlabId,
+    pub vertex_slabs: SmallVec<[(u32, SlabId); 2]>,
 
     /// The ID of the slab of GPU memory that contains index data, if present.
     ///
@@ -846,7 +851,8 @@ fn queue_wireframes(
             let Some(mesh_instance) = render_mesh_instances.get(visible_entity) else {
                 continue;
             };
-            let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
+            let vertex_slabs = mesh_allocator.mesh_vertex_slab_ids(&mesh_instance.mesh_asset_id);
+            let index_slab = mesh_allocator.mesh_index_slab_id(&mesh_instance.mesh_asset_id);
             let bin_key = Wireframe2dBinKey {
                 asset_id: mesh_instance.mesh_asset_id.untyped(),
             };
@@ -854,7 +860,7 @@ fn queue_wireframes(
                 pipeline: pipeline_id,
                 asset_id: wireframe_instance.untyped(),
                 draw_function: draw_wireframe,
-                vertex_slab: vertex_slab.unwrap_or_default(),
+                vertex_slabs,
                 index_slab,
             };
             wireframe_phase.add(

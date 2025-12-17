@@ -42,6 +42,7 @@ fixedbitset = "0.5"
 derive_more = { version = "2", default-features = false, features = ["from"] }
 bitflags = "2.3"
 nonmax = "0.5"
+smallvec = "1.11"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [lints]

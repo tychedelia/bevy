@@ -1135,6 +1135,17 @@ category = "3D Rendering"
 wasm = true
 
 [[example]]
+name = "split_vertex_attributes"
+path = "examples/3d/split_vertex_attributes.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.split_vertex_attributes]
+name = "Split Vertex Attributes"
+description = "Demonstrates splitting vertex attributes across multiple GPU buffers"
+category = "3D Rendering"
+wasm = true
+
+[[example]]
 name = "anti_aliasing"
 path = "examples/3d/anti_aliasing.rs"
 doc-scrape-examples = true

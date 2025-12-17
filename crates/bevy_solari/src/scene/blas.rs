@@ -58,7 +58,8 @@ pub fn prepare_raytracing_blas(
         .iter()
         .filter(|(_, mesh)| is_mesh_raytracing_compatible(mesh))
         .map(|(asset_id, _)| {
-            let vertex_slice = mesh_allocator.mesh_vertex_slice(asset_id).unwrap();
+            // Use slot 0 for raytracing - assumes single vertex buffer
+            let vertex_slice = mesh_allocator.mesh_vertex_slice(asset_id, 0).unwrap();
             let index_slice = mesh_allocator.mesh_index_slice(asset_id).unwrap();
 
             let (blas, blas_size) =

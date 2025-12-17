@@ -19,6 +19,7 @@ use bevy_ecs::{
 #[cfg(feature = "morph")]
 use bevy_mesh::morph::{MeshMorphWeights, MorphWeights};
 use bevy_mesh::*;
+use tracing::error;
 use wgpu::IndexFormat;
 
 /// Makes sure that [`Mesh`]es are extracted and prepared for the GPU.
@@ -142,6 +143,10 @@ impl RenderAsset for RenderMesh {
             .map_err(|_| AssetExtractionError::AlreadyExtracted)
     }
 
+    fn after_extract(source: &mut Self::SourceAsset) {
+        source.clear_dirty_flags();
+    }
+
     fn byte_len(mesh: &Self::SourceAsset) -> Option<usize> {
         let mut vertex_size = 0;
         for attribute_data in mesh.attributes() {
@@ -181,7 +186,13 @@ impl RenderAsset for RenderMesh {
         };
 
         let mesh_vertex_buffer_layout =
-            mesh.get_mesh_vertex_buffer_layout(mesh_vertex_buffer_layouts);
+            match mesh.get_mesh_vertex_buffer_layout(mesh_vertex_buffer_layouts) {
+                Ok(layout) => layout,
+                Err(err) => {
+                    error!("Failed to get mesh vertex buffer layout: {}", err);
+                    return Err(PrepareAssetError::RetryNextUpdate(mesh));
+                }
+            };
 
         let key_bits = BaseMeshPipelineKey::from_primitive_topology(mesh.primitive_topology());
         #[cfg(feature = "morph")]

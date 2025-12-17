@@ -103,6 +103,14 @@ pub trait RenderAsset: Send + Sync + 'static + Sized {
     ) -> Result<Self::SourceAsset, AssetExtractionError> {
         Err(AssetExtractionError::NoExtractionImplementation)
     }
+
+    /// Called after the asset has been extracted (cloned) to the render world.
+    /// Use this to clear any dirty tracking state on the source asset.
+    /// This is only called for assets that keep data in the main world (not RENDER_WORLD only).
+    ///
+    /// The default implementation does nothing.
+    #[inline]
+    fn after_extract(_source: &mut Self::SourceAsset) {}
 }
 
 /// This plugin extracts the changed assets from the "app world" into the "render world"
@@ -315,8 +323,14 @@ pub(crate) fn extract_render_asset<A: RenderAsset>(
                                 };
                             }
                         } else {
-                            extracted_assets.push((id, asset.clone()));
+                            // Clone path: asset keeps data in main world
+                            let cloned = asset.clone();
+                            extracted_assets.push((id, cloned));
                             added.insert(id);
+                            // Clear dirty state on source asset after extraction
+                            if let Some(asset) = assets.get_mut_untracked(id) {
+                                A::after_extract(asset);
+                            }
                         }
                     }
                 }

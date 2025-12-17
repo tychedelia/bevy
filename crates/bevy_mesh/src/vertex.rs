@@ -24,6 +24,10 @@ pub struct MeshVertexAttribute {
 
     /// The format of the vertex attribute.
     pub format: VertexFormat,
+
+    /// The index of the vertex buffer slot this attribute belongs to.
+    /// Attributes with different slot indices will be placed in separate GPU buffers.
+    pub slot_index: u32,
 }
 
 #[cfg(feature = "serialize")]
@@ -63,7 +67,13 @@ impl MeshVertexAttribute {
             name,
             id: MeshVertexAttributeId(id),
             format,
+            slot_index: 0,
         }
+    }
+
+    pub const fn with_slot_index(mut self, slot_index: u32) -> Self {
+        self.slot_index = slot_index;
+        self
     }
 
     pub const fn at_shader_location(&self, shader_location: u32) -> VertexAttributeDescriptor {
@@ -81,15 +91,22 @@ impl From<MeshVertexAttribute> for MeshVertexAttributeId {
     }
 }
 
+/// Layout for a single vertex buffer slot.
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub struct MeshVertexBufferLayout {
-    pub(crate) attribute_ids: Vec<MeshVertexAttributeId>,
-    pub(crate) layout: VertexBufferLayout,
+pub struct SlotVertexBufferLayout {
+    pub slot_index: u32,
+    pub attribute_ids: Vec<MeshVertexAttributeId>,
+    pub layout: VertexBufferLayout,
 }
 
-impl MeshVertexBufferLayout {
-    pub fn new(attribute_ids: Vec<MeshVertexAttributeId>, layout: VertexBufferLayout) -> Self {
+impl SlotVertexBufferLayout {
+    pub fn new(
+        slot_index: u32,
+        attribute_ids: Vec<MeshVertexAttributeId>,
+        layout: VertexBufferLayout,
+    ) -> Self {
         Self {
+            slot_index,
             attribute_ids,
             layout,
         }
@@ -100,21 +117,11 @@ impl MeshVertexBufferLayout {
         self.attribute_ids.contains(&attribute_id.into())
     }
 
-    #[inline]
-    pub fn attribute_ids(&self) -> &[MeshVertexAttributeId] {
-        &self.attribute_ids
-    }
-
-    #[inline]
-    pub fn layout(&self) -> &VertexBufferLayout {
-        &self.layout
-    }
-
-    pub fn get_layout(
+    pub fn get_layout<'a>(
         &self,
-        attribute_descriptors: &[VertexAttributeDescriptor],
+        attribute_descriptors: impl IntoIterator<Item = &'a VertexAttributeDescriptor>,
     ) -> Result<VertexBufferLayout, MissingVertexAttributeError> {
-        let mut attributes = Vec::with_capacity(attribute_descriptors.len());
+        let mut attributes = Vec::new();
         for attribute_descriptor in attribute_descriptors {
             if let Some(index) = self
                 .attribute_ids
@@ -141,6 +148,73 @@ impl MeshVertexBufferLayout {
             step_mode: self.layout.step_mode,
             attributes,
         })
+    }
+}
+
+/// Complete vertex layout across all buffer slots for a mesh.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct MeshVertexBufferLayout {
+    /// Layouts per slot, sorted by slot_index.
+    pub slots: Vec<SlotVertexBufferLayout>,
+}
+
+impl MeshVertexBufferLayout {
+    pub fn new(slots: Vec<SlotVertexBufferLayout>) -> Self {
+        Self { slots }
+    }
+
+    #[inline]
+    pub fn contains(&self, attribute_id: impl Into<MeshVertexAttributeId>) -> bool {
+        let id = attribute_id.into();
+        self.slots.iter().any(|slot| slot.contains(id))
+    }
+
+    pub fn slot_for_attribute(
+        &self,
+        attribute_id: impl Into<MeshVertexAttributeId>,
+    ) -> Option<u32> {
+        let id = attribute_id.into();
+        self.slots
+            .iter()
+            .find(|slot| slot.contains(id))
+            .map(|slot| slot.slot_index)
+    }
+
+    pub fn get_slot(&self, slot_index: u32) -> Option<&SlotVertexBufferLayout> {
+        self.slots.iter().find(|s| s.slot_index == slot_index)
+    }
+
+    pub fn slots(&self) -> &[SlotVertexBufferLayout] {
+        &self.slots
+    }
+
+    pub fn get_layouts(
+        &self,
+        attribute_descriptors: &[VertexAttributeDescriptor],
+    ) -> Result<Vec<VertexBufferLayout>, MissingVertexAttributeError> {
+        use alloc::collections::BTreeMap;
+
+        let mut slot_requests: BTreeMap<u32, Vec<&VertexAttributeDescriptor>> = BTreeMap::new();
+
+        for desc in attribute_descriptors {
+            let slot_index =
+                self.slot_for_attribute(desc.id)
+                    .ok_or(MissingVertexAttributeError {
+                        id: desc.id,
+                        name: desc.name,
+                        pipeline_type: None,
+                    })?;
+            slot_requests.entry(slot_index).or_default().push(desc);
+        }
+
+        let mut result = Vec::with_capacity(slot_requests.len());
+        for (slot_index, descs) in slot_requests {
+            let slot = self.get_slot(slot_index).unwrap();
+            let layout = slot.get_layout(descs)?;
+            result.push(layout);
+        }
+
+        Ok(result)
     }
 }
 

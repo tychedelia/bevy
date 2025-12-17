@@ -154,7 +154,7 @@ pub struct SpecializedMeshPipelines<S: SpecializedMeshPipeline> {
 }
 
 type VertexLayoutCache<S> = HashMap<
-    VertexBufferLayout,
+    Vec<VertexBufferLayout>,
     HashMap<<S as SpecializedMeshPipeline>::Key, CachedRenderPipelineId>,
 >;
 
@@ -215,16 +215,16 @@ impl<S: SpecializedMeshPipeline> SpecializedMeshPipelines<S> {
                     }
                     err
                 })?;
-            // Different MeshVertexBufferLayouts can produce the same final VertexBufferLayout
+            // Different MeshVertexBufferLayouts can produce the same final VertexBufferLayouts
             // We want compatible vertex buffer layouts to use the same pipelines, so we must "deduplicate" them
             let layout_map = match vertex_layout_cache
                 .raw_entry_mut()
-                .from_key(&descriptor.vertex.buffers[0])
+                .from_key(&descriptor.vertex.buffers)
             {
                 RawEntryMut::Occupied(entry) => entry.into_mut(),
                 RawEntryMut::Vacant(entry) => {
                     entry
-                        .insert(descriptor.vertex.buffers[0].clone(), Default::default())
+                        .insert(descriptor.vertex.buffers.clone(), Default::default())
                         .1
                 }
             };

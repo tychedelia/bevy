@@ -314,7 +314,8 @@ fn queue_custom_mesh_pipeline(
                 continue;
             };
 
-            let (vertex_slab, index_slab) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
+            let vertex_slabs = mesh_allocator.mesh_vertex_slab_ids(&mesh_instance.mesh_asset_id);
+            let index_slab = mesh_allocator.mesh_index_slab_id(&mesh_instance.mesh_asset_id);
 
             // Specialize the key for the current mesh entity
             // For this example we only specialize based on the mesh topology
@@ -344,7 +345,7 @@ fn queue_custom_mesh_pipeline(
                     draw_function,
                     pipeline: pipeline_id,
                     material_bind_group_index: None,
-                    vertex_slab: vertex_slab.unwrap_or_default(),
+                    vertex_slabs,
                     index_slab,
                     lightmap_slab: None,
                 },
