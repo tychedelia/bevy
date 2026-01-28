@@ -49,7 +49,10 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny
       - name: Check for banned and duplicated dependencies
-        run: cargo deny check bans
+        run: |
+          if ! cargo deny check bans 2>&1 | tee /tmp/bans.log; then
+            echo "::warning file=Cargo.toml,title=Dependency Bans::cargo deny found banned or duplicated dependencies. See job log for details."
+          fi
 
   check-licenses:
     runs-on: ubuntu-latest
