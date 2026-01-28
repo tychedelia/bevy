@@ -50,8 +50,26 @@ jobs:
         run: cargo install cargo-deny
       - name: Check for banned and duplicated dependencies
         run: |
-          if ! cargo deny check bans 2>&1 | tee /tmp/bans.log; then
-            echo "::warning file=Cargo.toml,title=Dependency Bans::cargo deny found banned or duplicated dependencies. See job log for details."
+          set +e
+          cargo deny --format sarif check bans 2>/dev/null | tee /tmp/bans.sarif
+          cargo deny check bans 2>&1 | tee /tmp/bans.log
+          status=$?
+          set -e
+
+          if [ $status -eq 0 ]; then
+            exit 0
+          fi
+
+          jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine // 1):\(.message.text)"' /tmp/bans.sarif 2>/dev/null | while IFS=: read -r file line msg; do
+            file="${file#file://}"
+            file="${file#$GITHUB_WORKSPACE/}"
+            echo "::warning file=${file},line=${line},title=Dependency Bans::${msg}"
+          done
+
+          if [ ! -s /tmp/bans.sarif ] || ! jq -e '.runs[].results[0]' /tmp/bans.sarif >/dev/null 2>&1; then
+            git diff --name-only origin/${{ github.base_ref }}...HEAD -- '**/Cargo.toml' 'deny.toml' 2>/dev/null | head -1 | while read -r file; do
+              echo "::warning file=${file},title=Dependency Bans::cargo deny found issues. See job log for details."
+            done
           fi
 
   check-licenses:
