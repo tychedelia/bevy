@@ -49,7 +49,31 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny
       - name: Check for banned and duplicated dependencies
-        run: cargo deny check bans
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set +e
+          cargo deny --format sarif check bans 2>/dev/null | tee /tmp/bans.sarif
+          cargo deny check bans 2>&1 | tee /tmp/bans.log
+          status=$?
+          set -e
+
+          if [ $status -eq 0 ]; then
+            exit 0
+          fi
+
+          git diff --name-only "origin/${BASE_REF}...HEAD" -- '**/Cargo.toml' 'deny.toml' 2>/dev/null > /tmp/changed_files.txt
+          fallback_file=$(head -1 /tmp/changed_files.txt)
+
+          jq -r '.runs[].results[] | "\(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine // 1):\(.message.text)"' /tmp/bans.sarif 2>/dev/null | while IFS=: read -r file line msg; do
+            file="${file#file://}"
+            file="${file#$GITHUB_WORKSPACE/}"
+            if grep -qx "$file" /tmp/changed_files.txt; then
+              echo "::warning file=${file},line=${line},title=Dependency Bans::${msg}"
+            elif [ -n "$fallback_file" ]; then
+              echo "::warning file=${fallback_file},title=Dependency Bans::${msg}"
+            fi
+          done
 
   check-licenses:
     runs-on: ubuntu-latest
