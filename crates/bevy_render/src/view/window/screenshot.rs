@@ -6,7 +6,7 @@ use crate::{
         BindGroup, BindGroupEntries, Buffer, BufferUsages, PipelineCache,
         SpecializedRenderPipeline, SpecializedRenderPipelines, Texture, TextureUsages, TextureView,
     },
-    renderer::RenderDevice,
+    renderer::{RenderContext, RenderDevice},
     texture::{GpuImage, ManualTextureViews, OutputColorAttachment},
     view::{prepare_view_attachments, prepare_view_targets, ViewTargetAttachments, WindowSurfaces},
     ExtractSchedule, MainWorld, Render, RenderApp, RenderStartup, RenderSystems,
@@ -110,7 +110,7 @@ impl Screenshot {
     }
 }
 
-struct ScreenshotPreparedState {
+pub struct ScreenshotPreparedState {
     pub texture: Texture,
     pub buffer: Buffer,
     pub bind_group: BindGroup,
@@ -122,13 +122,27 @@ struct ScreenshotPreparedState {
 pub struct CapturedScreenshots(pub Arc<Mutex<Receiver<(Entity, Image)>>>);
 
 #[derive(Resource, Deref, DerefMut, Default)]
-struct RenderScreenshotTargets(EntityHashMap<NormalizedRenderTarget>);
+pub struct RenderScreenshotTargets(EntityHashMap<NormalizedRenderTarget>);
 
 #[derive(Resource, Deref, DerefMut, Default)]
-struct RenderScreenshotsPrepared(EntityHashMap<ScreenshotPreparedState>);
+pub struct RenderScreenshotsPrepared(EntityHashMap<ScreenshotPreparedState>);
 
 #[derive(Resource, Deref, DerefMut)]
-struct RenderScreenshotsSender(Sender<(Entity, Image)>);
+pub struct RenderScreenshotsSender(Sender<(Entity, Image)>);
+
+/// Screenshots that have had copy commands recorded but not yet started async readback.
+/// Populated by [`screenshot`], drained by [`map_screenshot_buffers`].
+#[derive(Resource, Default)]
+pub struct PendingScreenshots(Vec<PendingScreenshot>);
+
+struct PendingScreenshot {
+    entity: Entity,
+    buffer: Buffer,
+    width: u32,
+    height: u32,
+    texture_format: TextureFormat,
+    pixel_size: usize,
+}
 
 /// Saves the captured screenshot to disk at the provided path.
 pub fn save_to_disk(path: impl AsRef<Path>) -> impl FnMut(On<ScreenshotCaptured>) {
@@ -426,15 +440,19 @@ impl Plugin for ScreenshotPlugin {
             .insert_resource(RenderScreenshotsSender(tx))
             .init_resource::<RenderScreenshotTargets>()
             .init_resource::<RenderScreenshotsPrepared>()
+            .init_resource::<PendingScreenshots>()
             .init_resource::<SpecializedRenderPipelines<ScreenshotToScreenPipeline>>()
             .add_systems(RenderStartup, init_screenshot_to_screen_pipeline)
             .add_systems(ExtractSchedule, extract_screenshots.ambiguous_with_all())
             .add_systems(
                 Render,
-                prepare_screenshots
-                    .after(prepare_view_attachments)
-                    .before(prepare_view_targets)
-                    .in_set(RenderSystems::ManageViews),
+                (
+                    prepare_screenshots
+                        .after(prepare_view_attachments)
+                        .before(prepare_view_targets)
+                        .in_set(RenderSystems::ManageViews),
+                    map_screenshot_buffers.in_set(RenderSystems::Cleanup),
+                ),
             );
     }
 }
@@ -492,23 +510,26 @@ impl SpecializedRenderPipeline for ScreenshotToScreenPipeline {
     }
 }
 
-pub(crate) fn submit_screenshot_commands(world: &World, encoder: &mut CommandEncoder) {
-    let targets = world.resource::<RenderScreenshotTargets>();
-    let prepared = world.resource::<RenderScreenshotsPrepared>();
-    let pipelines = world.resource::<PipelineCache>();
-    let gpu_images = world.resource::<RenderAssets<GpuImage>>();
-    let windows = world.resource::<ExtractedWindows>();
-    let manual_texture_views = world.resource::<ManualTextureViews>();
+/// Submits screenshot commands to the GPU and begins async readback of the screenshot data.
+pub fn screenshot(
+    targets: Res<RenderScreenshotTargets>,
+    prepared: Res<RenderScreenshotsPrepared>,
+    pipelines: Res<PipelineCache>,
+    gpu_images: Res<RenderAssets<GpuImage>>,
+    windows: Res<ExtractedWindows>,
+    manual_texture_views: Res<ManualTextureViews>,
+    mut pending: ResMut<PendingScreenshots>,
+    mut ctx: RenderContext,
+) {
+    let encoder = ctx.command_encoder();
 
     for (entity, render_target) in targets.iter() {
-        match render_target {
+        let (width, height, texture_format) = match render_target {
             NormalizedRenderTarget::Window(window) => {
                 let window = window.entity();
                 let Some(window) = windows.get(&window) else {
                     continue;
                 };
-                let width = window.physical_width;
-                let height = window.physical_height;
                 let Some(texture_format) = window.swap_chain_texture_view_format else {
                     continue;
                 };
@@ -517,14 +538,19 @@ pub(crate) fn submit_screenshot_commands(world: &World, encoder: &mut CommandEnc
                 };
                 render_screenshot(
                     encoder,
-                    prepared,
-                    pipelines,
+                    &prepared,
+                    &pipelines,
                     entity,
-                    width,
-                    height,
+                    window.physical_width,
+                    window.physical_height,
                     texture_format,
                     swap_chain_texture_view,
                 );
+                (
+                    window.physical_width,
+                    window.physical_height,
+                    texture_format,
+                )
             }
             NormalizedRenderTarget::Image(image) => {
                 let Some(gpu_image) = gpu_images.get(&image.handle) else {
@@ -537,14 +563,15 @@ pub(crate) fn submit_screenshot_commands(world: &World, encoder: &mut CommandEnc
                 let texture_view = gpu_image.texture_view.deref();
                 render_screenshot(
                     encoder,
-                    prepared,
-                    pipelines,
+                    &prepared,
+                    &pipelines,
                     entity,
                     width,
                     height,
                     texture_format,
                     texture_view,
                 );
+                (width, height, texture_format)
             }
             NormalizedRenderTarget::TextureView(texture_view) => {
                 let Some(texture_view) = manual_texture_views.get(texture_view) else {
@@ -560,19 +587,35 @@ pub(crate) fn submit_screenshot_commands(world: &World, encoder: &mut CommandEnc
                 let texture_view = texture_view.texture_view.deref();
                 render_screenshot(
                     encoder,
-                    prepared,
-                    pipelines,
+                    &prepared,
+                    &pipelines,
                     entity,
                     width,
                     height,
                     texture_format,
                     texture_view,
                 );
+                (width, height, texture_format)
             }
             NormalizedRenderTarget::None { .. } => {
-                // Nothing to screenshot!
+                continue;
             }
         };
+
+        let Ok(pixel_size) = texture_format.pixel_size() else {
+            continue;
+        };
+
+        if let Some(prepared_state) = prepared.get(entity) {
+            pending.0.push(PendingScreenshot {
+                entity: *entity,
+                buffer: prepared_state.buffer.clone(),
+                width,
+                height,
+                texture_format,
+                pixel_size,
+            });
+        }
     }
 }
 
@@ -625,23 +668,27 @@ fn render_screenshot(
     }
 }
 
-pub(crate) fn collect_screenshots(world: &mut World) {
+/// Maps screenshot buffers for async readback after commands have been submitted to the GPU queue.
+///
+/// This runs in [`RenderSystems::Cleanup`], which is after [`render_system`](crate::renderer::render_system)
+/// submits command buffers to the GPU queue.
+pub fn map_screenshot_buffers(
+    mut pending: ResMut<PendingScreenshots>,
+    sender: Res<RenderScreenshotsSender>,
+) {
     #[cfg(feature = "trace")]
-    let _span = bevy_log::info_span!("collect_screenshots").entered();
+    let _span = bevy_log::info_span!("map_screenshot_buffers").entered();
 
-    let sender = world.resource::<RenderScreenshotsSender>().deref().clone();
-    let prepared = world.resource::<RenderScreenshotsPrepared>();
+    let sender: Sender<(Entity, Image)> = sender.0.clone();
 
-    for (entity, prepared) in prepared.iter() {
-        let entity = *entity;
+    for screenshot in pending.0.drain(..) {
         let sender = sender.clone();
-        let width = prepared.size.width;
-        let height = prepared.size.height;
-        let texture_format = prepared.texture.format();
-        let Ok(pixel_size) = texture_format.pixel_size() else {
-            continue;
-        };
-        let buffer = prepared.buffer.clone();
+        let buffer = screenshot.buffer;
+        let width = screenshot.width;
+        let height = screenshot.height;
+        let texture_format = screenshot.texture_format;
+        let pixel_size = screenshot.pixel_size;
+        let entity = screenshot.entity;
 
         let finish = async move {
             let (tx, rx) = async_channel::bounded(1);

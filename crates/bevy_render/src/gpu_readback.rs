@@ -1,26 +1,24 @@
 use crate::{
     extract_component::ExtractComponentPlugin,
     render_asset::RenderAssets,
-    render_resource::{
-        Buffer, BufferUsages, CommandEncoder, Extent3d, TexelCopyBufferLayout, Texture,
-        TextureFormat,
-    },
-    renderer::RenderDevice,
+    render_resource::{Buffer, BufferUsages, Extent3d, TexelCopyBufferLayout, TextureFormat},
+    renderer::{RenderContext, RenderDevice},
     storage::{GpuShaderBuffer, ShaderBuffer},
     sync_world::MainEntity,
     texture::GpuImage,
     ExtractSchedule, MainWorld, Render, RenderApp, RenderSystems,
 };
-use async_channel::{Receiver, Sender};
+use async_channel::Receiver;
 use bevy_app::{App, Plugin};
 use bevy_asset::Handle;
 use bevy_derive::{Deref, DerefMut};
+use bevy_diagnostic::FrameCount;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_ecs::{
     change_detection::ResMut,
     entity::Entity,
     event::EntityEvent,
-    prelude::{Component, Resource, World},
+    prelude::{Component, Resource},
     system::{Query, Res},
 };
 use bevy_image::{Image, TextureFormatPixelInfo};
@@ -49,7 +47,8 @@ impl Default for GpuReadbackPlugin {
 
 impl Plugin for GpuReadbackPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(ExtractComponentPlugin::<Readback>::default());
+        app.add_plugins(ExtractComponentPlugin::<Readback>::default())
+            .add_plugins(ExtractComponentPlugin::<ReadbackLabel>::default());
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -57,14 +56,7 @@ impl Plugin for GpuReadbackPlugin {
                 .init_resource::<GpuReadbacks>()
                 .insert_resource(GpuReadbackMaxUnusedFrames(self.max_unused_frames))
                 .add_systems(ExtractSchedule, sync_readbacks.ambiguous_with_all())
-                .add_systems(
-                    Render,
-                    (
-                        prepare_buffers.in_set(RenderSystems::PrepareResources),
-                        // TODO: this should be in the graph somehow
-                        map_buffers.in_set(RenderSystems::Cleanup),
-                    ),
-                );
+                .add_systems(Render, map_buffers.in_set(RenderSystems::Cleanup));
         }
     }
 }
@@ -106,6 +98,17 @@ impl Readback {
     }
 }
 
+/// A component for routing readback events.
+///
+/// When present on an entity with a [`Readback`] component, only [`readback`] system
+/// invocations with a matching label will process this entity. The label is included in the
+/// resulting [`ReadbackComplete`] event for observer correlation.
+///
+/// Entities without this component are processed by `readback(None)` that runs at the end of
+/// the default render graph.
+#[derive(Component, ExtractComponent, Clone, Debug)]
+pub struct ReadbackLabel(pub &'static str);
+
 /// An event that is triggered when a gpu readback is complete.
 ///
 /// The event contains the data as a `Vec<u8>`, which can be interpreted as the raw bytes of the
@@ -116,6 +119,10 @@ pub struct ReadbackComplete {
     pub entity: Entity,
     #[deref]
     pub data: Vec<u8>,
+    #[reflect(ignore)]
+    pub label: Option<&'static str>,
+    /// The frame number at which the readback commands were recorded.
+    pub frame: u32,
 }
 
 impl ReadbackComplete {
@@ -138,7 +145,7 @@ struct GpuReadbackBuffer {
 }
 
 #[derive(Resource, Default)]
-struct GpuReadbackBufferPool {
+pub struct GpuReadbackBufferPool {
     // Map of buffer size to list of buffers, with a flag for whether the buffer is taken and how
     // many frames it has been unused for.
     // TODO: We could ideally write all readback data to one big buffer per frame, the assumption
@@ -204,30 +211,29 @@ impl GpuReadbackBufferPool {
     }
 }
 
-enum ReadbackSource {
-    Texture {
-        texture: Texture,
-        layout: TexelCopyBufferLayout,
-        size: Extent3d,
-    },
-    Buffer {
-        buffer: Buffer,
-        start_offset_and_size: Option<(u64, u64)>,
-    },
+/// Readback that has had copy commands recorded but not yet mapped.
+struct PendingReadback {
+    entity: Entity,
+    buffer: Buffer,
+    label: Option<&'static str>,
+    frame: u32,
+}
+
+/// Readback whose buffer has been mapped and is waiting for async completion.
+struct MappedReadback {
+    entity: Entity,
+    buffer: Buffer,
+    label: Option<&'static str>,
+    frame: u32,
+    rx: Receiver<Vec<u8>>,
 }
 
 #[derive(Resource, Default)]
-struct GpuReadbacks {
-    requested: Vec<GpuReadback>,
-    mapped: Vec<GpuReadback>,
-}
-
-struct GpuReadback {
-    pub entity: Entity,
-    pub src: ReadbackSource,
-    pub buffer: Buffer,
-    pub rx: Receiver<(Entity, Buffer, Vec<u8>)>,
-    pub tx: Sender<(Entity, Buffer, Vec<u8>)>,
+pub struct GpuReadbacks {
+    /// Populated by [`readback`], drained by [`map_buffers`].
+    requested: Vec<PendingReadback>,
+    /// Populated by [`map_buffers`], drained by [`sync_readbacks`].
+    mapped: Vec<MappedReadback>,
 }
 
 fn sync_readbacks(
@@ -237,9 +243,14 @@ fn sync_readbacks(
     max_unused_frames: Res<GpuReadbackMaxUnusedFrames>,
 ) {
     readbacks.mapped.retain(|readback| {
-        if let Ok((entity, buffer, data)) = readback.rx.try_recv() {
-            main_world.trigger(ReadbackComplete { data, entity });
-            buffer_pool.return_buffer(&buffer);
+        if let Ok(data) = readback.rx.try_recv() {
+            main_world.trigger(ReadbackComplete {
+                data,
+                entity: readback.entity,
+                label: readback.label,
+                frame: readback.frame,
+            });
+            buffer_pool.return_buffer(&readback.buffer);
             false
         } else {
             true
@@ -249,50 +260,92 @@ fn sync_readbacks(
     buffer_pool.update(max_unused_frames.0);
 }
 
-fn prepare_buffers(
-    render_device: Res<RenderDevice>,
-    mut readbacks: ResMut<GpuReadbacks>,
-    mut buffer_pool: ResMut<GpuReadbackBufferPool>,
-    gpu_images: Res<RenderAssets<GpuImage>>,
-    ssbos: Res<RenderAssets<GpuShaderBuffer>>,
-    handles: Query<(&MainEntity, &Readback)>,
+/// Creates a system that submits GPU readback commands for entities matching the given label.
+///
+/// This system allocates destination buffers and records copy commands for each matching entity
+/// with a [`Readback`] component. The actual async buffer mapping happens later in
+/// [`map_buffers`], which runs after the GPU queue submit.
+///
+/// - `readback(None)` processes entities **without** a [`ReadbackLabel`].
+/// - `readback(Some("my_label"))` processes entities whose [`ReadbackLabel`]
+///   matches `"my_label"`.
+///
+/// By default this runs in the [`RenderGraph`](crate::renderer::RenderGraph) schedule after
+/// camera-driven rendering (scheduled by `bevy_core_pipeline`). Users can also schedule
+/// additional invocations at custom points in their render graphs.
+pub fn readback(
+    label: Option<&'static str>,
+) -> impl FnMut(
+    Query<(&MainEntity, &Readback, Option<&ReadbackLabel>)>,
+    Res<RenderAssets<GpuImage>>,
+    Res<RenderAssets<GpuShaderBuffer>>,
+    Res<RenderDevice>,
+    ResMut<GpuReadbackBufferPool>,
+    ResMut<GpuReadbacks>,
+    Res<FrameCount>,
+    RenderContext,
 ) {
-    for (entity, readback) in handles.iter() {
-        match readback {
-            Readback::Texture(image) => {
-                if let Some(gpu_image) = gpu_images.get(image)
-                    && let Ok(pixel_size) = gpu_image.texture_descriptor.format.pixel_size()
-                {
+    move |handles,
+          gpu_images,
+          ssbos,
+          render_device,
+          mut buffer_pool,
+          mut readbacks,
+          frame_count,
+          mut ctx| {
+        let frame = frame_count.0;
+        for (entity, readback, readback_label) in handles.iter() {
+            let entity_label = readback_label.map(|l| l.0);
+            if entity_label != label {
+                continue;
+            }
+
+            match readback {
+                Readback::Texture(image) => {
+                    let Some(gpu_image) = gpu_images.get(image) else {
+                        continue;
+                    };
+                    let Ok(pixel_size) = gpu_image.texture_descriptor.format.pixel_size() else {
+                        continue;
+                    };
+
                     let layout = layout_data(
                         gpu_image.texture_descriptor.size,
                         gpu_image.texture_descriptor.format,
                     );
-                    let buffer = buffer_pool.get(
+                    let dest_buffer = buffer_pool.get(
                         &render_device,
                         get_aligned_size(gpu_image.texture_descriptor.size, pixel_size as u32)
                             as u64,
                     );
-                    let (tx, rx) = async_channel::bounded(1);
-                    readbacks.requested.push(GpuReadback {
-                        entity: entity.id(),
-                        src: ReadbackSource::Texture {
-                            texture: gpu_image.texture.clone(),
+
+                    let command_encoder = ctx.command_encoder();
+                    command_encoder.copy_texture_to_buffer(
+                        gpu_image.texture.as_image_copy(),
+                        wgpu::TexelCopyBufferInfo {
+                            buffer: &dest_buffer,
                             layout,
-                            size: gpu_image.texture_descriptor.size,
                         },
-                        buffer,
-                        rx,
-                        tx,
+                        gpu_image.texture_descriptor.size,
+                    );
+
+                    readbacks.requested.push(PendingReadback {
+                        entity: entity.id(),
+                        buffer: dest_buffer,
+                        label,
+                        frame,
                     });
                 }
-            }
-            Readback::Buffer {
-                buffer,
-                start_offset_and_size,
-            } => {
-                if let Some(ssbo) = ssbos.get(buffer) {
+                Readback::Buffer {
+                    buffer: buffer_handle,
+                    start_offset_and_size,
+                } => {
+                    let Some(ssbo) = ssbos.get(buffer_handle) else {
+                        continue;
+                    };
+
                     let full_size = ssbo.buffer.size();
-                    let size = start_offset_and_size
+                    let (src_start, size) = start_offset_and_size
                         .map(|(start, size)| {
                             let end = start + size;
                             if end > full_size {
@@ -301,20 +354,26 @@ fn prepare_buffers(
                                     size: {size}, buffer size: {full_size})."
                                 );
                             }
-                            size
+                            (start, size)
                         })
-                        .unwrap_or(full_size);
-                    let buffer = buffer_pool.get(&render_device, size);
-                    let (tx, rx) = async_channel::bounded(1);
-                    readbacks.requested.push(GpuReadback {
+                        .unwrap_or((0, full_size));
+
+                    let dest_buffer = buffer_pool.get(&render_device, size);
+
+                    let command_encoder = ctx.command_encoder();
+                    command_encoder.copy_buffer_to_buffer(
+                        &ssbo.buffer,
+                        src_start,
+                        &dest_buffer,
+                        0,
+                        size,
+                    );
+
+                    readbacks.requested.push(PendingReadback {
                         entity: entity.id(),
-                        src: ReadbackSource::Buffer {
-                            start_offset_and_size: *start_offset_and_size,
-                            buffer: ssbo.buffer.clone(),
-                        },
-                        buffer,
-                        rx,
-                        tx,
+                        buffer: dest_buffer,
+                        label,
+                        frame,
                     });
                 }
             }
@@ -322,55 +381,34 @@ fn prepare_buffers(
     }
 }
 
-pub(crate) fn submit_readback_commands(world: &World, command_encoder: &mut CommandEncoder) {
-    let readbacks = world.resource::<GpuReadbacks>();
-    for readback in &readbacks.requested {
-        match &readback.src {
-            ReadbackSource::Texture {
-                texture,
-                layout,
-                size,
-            } => {
-                command_encoder.copy_texture_to_buffer(
-                    texture.as_image_copy(),
-                    wgpu::TexelCopyBufferInfo {
-                        buffer: &readback.buffer,
-                        layout: *layout,
-                    },
-                    *size,
-                );
-            }
-            ReadbackSource::Buffer {
-                buffer,
-                start_offset_and_size,
-            } => {
-                let (src_start, size) = start_offset_and_size.unwrap_or((0, buffer.size()));
-                command_encoder.copy_buffer_to_buffer(buffer, src_start, &readback.buffer, 0, size);
-            }
-        }
-    }
-}
-
-/// Move requested readbacks to mapped readbacks after commands have been submitted in render system
+/// Maps readback buffers for async readback after commands have been submitted to the GPU queue.
 fn map_buffers(mut readbacks: ResMut<GpuReadbacks>) {
-    let requested = readbacks.requested.drain(..).collect::<Vec<GpuReadback>>();
-    for readback in requested {
-        let slice = readback.buffer.slice(..);
-        let entity = readback.entity;
-        let buffer = readback.buffer.clone();
-        let tx = readback.tx.clone();
-        slice.map_async(wgpu::MapMode::Read, move |res| {
-            res.expect("Failed to map buffer");
-            let buffer_slice = buffer.slice(..);
-            let data = buffer_slice.get_mapped_range();
-            let result = Vec::from(&*data);
-            drop(data);
-            buffer.unmap();
-            if let Err(e) = tx.try_send((entity, buffer, result)) {
-                warn!("Failed to send readback result: {}", e);
-            }
+    let pending = readbacks.requested.drain(..).collect::<Vec<_>>();
+    for readback in pending {
+        let (tx, rx) = async_channel::bounded(1);
+        let map_buffer = readback.buffer.clone();
+        readback
+            .buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |res| {
+                res.expect("Failed to map buffer");
+                let buffer_slice = map_buffer.slice(..);
+                let data = buffer_slice.get_mapped_range();
+                let result = Vec::from(&*data);
+                drop(data);
+                map_buffer.unmap();
+                if let Err(e) = tx.try_send(result) {
+                    warn!("Failed to send readback result: {}", e);
+                }
+            });
+
+        readbacks.mapped.push(MappedReadback {
+            entity: readback.entity,
+            buffer: readback.buffer,
+            label: readback.label,
+            frame: readback.frame,
+            rx,
         });
-        readbacks.mapped.push(readback);
     }
 }
 

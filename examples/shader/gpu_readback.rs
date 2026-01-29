@@ -1,12 +1,16 @@
-//! Simple example demonstrating the use of the [`Readback`] component to read back data from the GPU
-//! using both a storage buffer and texture.
+//! Simple example demonstrating the use of the [`Readback`] component to read back data from the
+//! GPU using both a storage buffer and texture.
+//!
+//! Also demonstrates multi-stage readback with [`ReadbackLabel`]: a compute shader increments a
+//! buffer twice per frame, and labeled [`readback`] calls between the dispatches capture
+//! independent snapshots.
 
 use bevy::{
     asset::RenderAssetUsages,
     prelude::*,
     render::{
         extract_resource::{ExtractResource, ExtractResourcePlugin},
-        gpu_readback::{Readback, ReadbackComplete},
+        gpu_readback::{readback, Readback, ReadbackComplete, ReadbackLabel},
         render_asset::RenderAssets,
         render_resource::{
             binding_types::{storage_buffer, texture_storage_2d},
@@ -29,7 +33,7 @@ fn main() {
     App::new()
         .add_plugins((
             DefaultPlugins,
-            GpuReadbackPlugin,
+            GpuReadbackExamplePlugin,
             ExtractResourcePlugin::<ReadbackBuffer>::default(),
             ExtractResourcePlugin::<ReadbackImage>::default(),
         ))
@@ -39,8 +43,8 @@ fn main() {
 }
 
 // We need a plugin to organize all the systems and render node required for this example
-struct GpuReadbackPlugin;
-impl Plugin for GpuReadbackPlugin {
+struct GpuReadbackExamplePlugin;
+impl Plugin for GpuReadbackExamplePlugin {
     fn build(&self, app: &mut App) {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
@@ -54,7 +58,16 @@ impl Plugin for GpuReadbackPlugin {
                     // We don't need to recreate the bind group every frame
                     .run_if(not(resource_exists::<GpuBufferBindGroup>)),
             )
-            .add_systems(RenderGraph, compute);
+            .add_systems(
+                RenderGraph,
+                (
+                    compute_first,
+                    readback(Some("first")),
+                    compute_second,
+                    readback(Some("second")),
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -76,35 +89,34 @@ fn setup(
     buffer.buffer_description.usage |= BufferUsages::COPY_SRC;
     let buffer = buffers.add(buffer);
 
-    // Create a storage texture with some data
+    // Create a storage texture
     let size = Extent3d {
         width: BUFFER_LEN as u32,
         height: 1,
         ..default()
     };
-    // We create an uninitialized image since this texture will only be used for getting data out
-    // of the compute shader, not getting data in, so there's no reason for it to exist on the CPU
     let mut image = Image::new_uninit(
         size,
         TextureDimension::D2,
         TextureFormat::R32Uint,
         RenderAssetUsages::RENDER_WORLD,
     );
-    // We also need to enable the COPY_SRC, as well as STORAGE_BINDING so we can use it in the
-    // compute shader
     image.texture_descriptor.usage |= TextureUsages::COPY_SRC | TextureUsages::STORAGE_BINDING;
     let image = images.add(image);
 
-    // Spawn the readback components. For each frame, the data will be read back from the GPU
-    // asynchronously and trigger the `ReadbackComplete` event on this entity. Despawn the entity
-    // to stop reading back the data.
+    // Labeled buffer readbacks: "first" runs after the first compute dispatch,
+    // "second" after the second dispatch.
     commands
-        .spawn(Readback::buffer(buffer.clone()))
+        .spawn((Readback::buffer(buffer.clone()), ReadbackLabel("first")))
         .observe(|event: On<ReadbackComplete>| {
-            // This matches the type which was used to create the `ShaderBuffer` above,
-            // and is a convenient way to interpret the data.
             let data: Vec<u32> = event.to_shader_type();
-            info!("Buffer {:?}", data);
+            info!("[first]  frame={} {:?}", event.frame, data);
+        });
+    commands
+        .spawn((Readback::buffer(buffer.clone()), ReadbackLabel("second")))
+        .observe(|event: On<ReadbackComplete>| {
+            let data: Vec<u32> = event.to_shader_type();
+            info!("[second] frame={} {:?}", event.frame, data);
         });
 
     // It is also possible to read only a range of the buffer.
@@ -119,20 +131,16 @@ fn setup(
             info!("Buffer range {:?}", data);
         });
 
-    // This is just a simple way to pass the buffer handle to the render app for our compute node
-    commands.insert_resource(ReadbackBuffer(buffer));
-
     // Textures can also be read back from the GPU. Pay careful attention to the format of the
     // texture, as it will affect how the data is interpreted.
     commands
         .spawn(Readback::texture(image.clone()))
         .observe(|event: On<ReadbackComplete>| {
-            // You probably want to interpret the data as a color rather than a `ShaderType`,
-            // but in this case we know the data is a single channel storage texture, so we can
-            // interpret it as a `Vec<u32>`
             let data: Vec<u32> = event.to_shader_type();
             info!("Image {:?}", data);
         });
+
+    commands.insert_resource(ReadbackBuffer(buffer));
     commands.insert_resource(ReadbackImage(image));
 }
 
@@ -193,11 +201,31 @@ fn init_compute_pipeline(
     commands.insert_resource(ComputePipeline { layout, pipeline });
 }
 
-fn compute(
+/// First compute dispatch, increments every element by 1.
+fn compute_first(
     mut render_context: RenderContext,
     pipeline_cache: Res<PipelineCache>,
     pipeline: Res<ComputePipeline>,
     bind_group: Res<GpuBufferBindGroup>,
+) {
+    dispatch_compute(&mut render_context, &pipeline_cache, &pipeline, &bind_group);
+}
+
+/// Second compute dispatch, increments by 1 again.
+fn compute_second(
+    mut render_context: RenderContext,
+    pipeline_cache: Res<PipelineCache>,
+    pipeline: Res<ComputePipeline>,
+    bind_group: Res<GpuBufferBindGroup>,
+) {
+    dispatch_compute(&mut render_context, &pipeline_cache, &pipeline, &bind_group);
+}
+
+fn dispatch_compute(
+    render_context: &mut RenderContext,
+    pipeline_cache: &PipelineCache,
+    pipeline: &ComputePipeline,
+    bind_group: &GpuBufferBindGroup,
 ) {
     if let Some(init_pipeline) = pipeline_cache.get_compute_pipeline(pipeline.pipeline) {
         let mut pass =

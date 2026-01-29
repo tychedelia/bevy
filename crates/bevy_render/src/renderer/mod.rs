@@ -40,8 +40,8 @@ impl RenderGraph {
 }
 
 /// The main render system that drives the rendering process. This system runs the [`RenderGraph`]
-/// schedule, runs any finalization commands like screenshot captures and GPU readbacks, and
-/// calls present on swap chains that need to be presented.
+/// schedule, submits any remaining command buffers, and calls present on swap chains that need
+/// to be presented.
 pub fn render_system(
     world: &mut World,
     state: &mut SystemState<Query<(&ViewTarget, &ExtractedCamera)>>,
@@ -52,16 +52,12 @@ pub fn render_system(
     world.run_schedule(RenderGraph);
 
     {
-        let render_device = world.resource::<RenderDevice>();
-        let render_queue = world.resource::<RenderQueue>();
-
-        let mut encoder =
-            render_device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-
-        crate::view::screenshot::submit_screenshot_commands(world, &mut encoder);
-        crate::gpu_readback::submit_readback_commands(world, &mut encoder);
-
-        render_queue.submit([encoder.finish()]);
+        let mut pending = world.resource_mut::<PendingCommandBuffers>();
+        let buffers = pending.take();
+        if !buffers.is_empty() {
+            let render_queue = world.resource::<RenderQueue>();
+            render_queue.submit(buffers);
+        }
     }
 
     {
@@ -91,8 +87,6 @@ pub fn render_system(
             tracy.frame_mark = true
         );
     }
-
-    crate::view::screenshot::collect_screenshots(world);
 
     // update the time and send it to the app world
     let time_sender = world.resource::<TimeSender>();
