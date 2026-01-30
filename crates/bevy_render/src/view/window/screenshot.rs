@@ -144,6 +144,12 @@ struct PendingScreenshot {
     pixel_size: usize,
 }
 
+impl Command for PendingScreenshot {
+    fn apply(self, world: &mut World) {
+        world.resource_mut::<PendingScreenshots>().0.push(self);
+    }
+}
+
 /// Saves the captured screenshot to disk at the provided path.
 pub fn save_to_disk(path: impl AsRef<Path>) -> impl FnMut(On<ScreenshotCaptured>) {
     let path = path.as_ref().to_owned();
@@ -518,7 +524,7 @@ pub fn screenshot(
     gpu_images: Res<RenderAssets<GpuImage>>,
     windows: Res<ExtractedWindows>,
     manual_texture_views: Res<ManualTextureViews>,
-    mut pending: ResMut<PendingScreenshots>,
+    mut commands: Commands,
     mut ctx: RenderContext,
 ) {
     let encoder = ctx.command_encoder();
@@ -607,7 +613,7 @@ pub fn screenshot(
         };
 
         if let Some(prepared_state) = prepared.get(entity) {
-            pending.0.push(PendingScreenshot {
+            commands.queue(PendingScreenshot {
                 entity: *entity,
                 buffer: prepared_state.buffer.clone(),
                 width,

@@ -110,13 +110,13 @@ fn setup(
         .spawn((Readback::buffer(buffer.clone()), ReadbackLabel("first")))
         .observe(|event: On<ReadbackComplete>| {
             let data: Vec<u32> = event.to_shader_type();
-            info!("[first]  frame={} {:?}", event.frame, data);
+            info!("[first]   frame={} {:?}", event.frame, data);
         });
     commands
         .spawn((Readback::buffer(buffer.clone()), ReadbackLabel("second")))
         .observe(|event: On<ReadbackComplete>| {
             let data: Vec<u32> = event.to_shader_type();
-            info!("[second] frame={} {:?}", event.frame, data);
+            info!("[second]  frame={} {:?}", event.frame, data);
         });
 
     // It is also possible to read only a range of the buffer.
@@ -128,7 +128,7 @@ fn setup(
         ))
         .observe(|event: On<ReadbackComplete>| {
             let data: Vec<u32> = event.to_shader_type();
-            info!("Buffer range {:?}", data);
+            info!("[range]   frame={} {:?}", event.frame, data);
         });
 
     // Textures can also be read back from the GPU. Pay careful attention to the format of the
@@ -137,7 +137,7 @@ fn setup(
         .spawn(Readback::texture(image.clone()))
         .observe(|event: On<ReadbackComplete>| {
             let data: Vec<u32> = event.to_shader_type();
-            info!("Image {:?}", data);
+            info!("[texture] frame={} {:?}", event.frame, data);
         });
 
     commands.insert_resource(ReadbackBuffer(buffer));
