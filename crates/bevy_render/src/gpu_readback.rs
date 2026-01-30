@@ -18,8 +18,9 @@ use bevy_ecs::{
     change_detection::ResMut,
     entity::Entity,
     event::EntityEvent,
-    prelude::{Component, Resource},
+    prelude::{Command, Commands, Component, Resource},
     system::{Query, Res},
+    world::World,
 };
 use bevy_image::{Image, TextureFormatPixelInfo};
 use bevy_log::warn;
@@ -29,6 +30,7 @@ use bevy_render_macros::ExtractComponent;
 use encase::internal::ReadFrom;
 use encase::private::Reader;
 use encase::ShaderType;
+use std::sync::Mutex;
 
 /// A plugin that enables reading back gpu buffers and textures to the cpu.
 pub struct GpuReadbackPlugin {
@@ -151,12 +153,13 @@ pub struct GpuReadbackBufferPool {
     // TODO: We could ideally write all readback data to one big buffer per frame, the assumption
     // here is that very few entities well actually be read back at once, and their size is
     // unlikely to change.
-    buffers: HashMap<u64, Vec<GpuReadbackBuffer>>,
+    buffers: Mutex<HashMap<u64, Vec<GpuReadbackBuffer>>>,
 }
 
 impl GpuReadbackBufferPool {
-    fn get(&mut self, render_device: &RenderDevice, size: u64) -> Buffer {
-        let buffers = self.buffers.entry(size).or_default();
+    fn get(&self, render_device: &RenderDevice, size: u64) -> Buffer {
+        let mut all = self.buffers.lock().unwrap();
+        let buffers = all.entry(size).or_default();
 
         // find an untaken buffer for this size
         if let Some(buf) = buffers.iter_mut().find(|x| !x.taken) {
@@ -180,10 +183,10 @@ impl GpuReadbackBufferPool {
     }
 
     // Returns the buffer to the pool so it can be used in a future frame
-    fn return_buffer(&mut self, buffer: &Buffer) {
+    fn return_buffer(&self, buffer: &Buffer) {
         let size = buffer.size();
-        let buffers = self
-            .buffers
+        let mut all = self.buffers.lock().unwrap();
+        let buffers = all
             .get_mut(&size)
             .expect("Returned buffer of untracked size");
         if let Some(buf) = buffers.iter_mut().find(|x| x.buffer.id() == buffer.id()) {
@@ -193,8 +196,9 @@ impl GpuReadbackBufferPool {
         }
     }
 
-    fn update(&mut self, max_unused_frames: usize) {
-        for (_, buffers) in &mut self.buffers {
+    fn update(&self, max_unused_frames: usize) {
+        let mut all = self.buffers.lock().unwrap();
+        for (_, buffers) in all.iter_mut() {
             // Tick all the buffers
             for buf in &mut *buffers {
                 if !buf.taken {
@@ -207,11 +211,10 @@ impl GpuReadbackBufferPool {
         }
 
         // Remove empty buffer sizes
-        self.buffers.retain(|_, buffers| !buffers.is_empty());
+        all.retain(|_, buffers| !buffers.is_empty());
     }
 }
 
-/// Readback that has had copy commands recorded but not yet mapped.
 struct PendingReadback {
     entity: Entity,
     buffer: Buffer,
@@ -219,7 +222,12 @@ struct PendingReadback {
     frame: u32,
 }
 
-/// Readback whose buffer has been mapped and is waiting for async completion.
+impl Command for PendingReadback {
+    fn apply(self, world: &mut World) {
+        world.resource_mut::<GpuReadbacks>().requested.push(self);
+    }
+}
+
 struct MappedReadback {
     entity: Entity,
     buffer: Buffer,
@@ -230,15 +238,13 @@ struct MappedReadback {
 
 #[derive(Resource, Default)]
 pub struct GpuReadbacks {
-    /// Populated by [`readback`], drained by [`map_buffers`].
     requested: Vec<PendingReadback>,
-    /// Populated by [`map_buffers`], drained by [`sync_readbacks`].
     mapped: Vec<MappedReadback>,
 }
 
 fn sync_readbacks(
     mut main_world: ResMut<MainWorld>,
-    mut buffer_pool: ResMut<GpuReadbackBufferPool>,
+    buffer_pool: Res<GpuReadbackBufferPool>,
     mut readbacks: ResMut<GpuReadbacks>,
     max_unused_frames: Res<GpuReadbackMaxUnusedFrames>,
 ) {
@@ -280,18 +286,18 @@ pub fn readback(
     Res<RenderAssets<GpuImage>>,
     Res<RenderAssets<GpuShaderBuffer>>,
     Res<RenderDevice>,
-    ResMut<GpuReadbackBufferPool>,
-    ResMut<GpuReadbacks>,
+    Res<GpuReadbackBufferPool>,
     Res<FrameCount>,
+    Commands,
     RenderContext,
 ) {
     move |handles,
           gpu_images,
           ssbos,
           render_device,
-          mut buffer_pool,
-          mut readbacks,
+          buffer_pool,
           frame_count,
+          mut commands,
           mut ctx| {
         let frame = frame_count.0;
         for (entity, readback, readback_label) in handles.iter() {
@@ -329,7 +335,7 @@ pub fn readback(
                         gpu_image.texture_descriptor.size,
                     );
 
-                    readbacks.requested.push(PendingReadback {
+                    commands.queue(PendingReadback {
                         entity: entity.id(),
                         buffer: dest_buffer,
                         label,
@@ -369,7 +375,7 @@ pub fn readback(
                         size,
                     );
 
-                    readbacks.requested.push(PendingReadback {
+                    commands.queue(PendingReadback {
                         entity: entity.id(),
                         buffer: dest_buffer,
                         label,
