@@ -778,6 +778,7 @@ pub struct SpecializedPrepassMaterialPipelineCache {
 /// well as the last time it was changed.
 #[derive(Deref, DerefMut, Default)]
 pub struct SpecializedPrepassMaterialViewPipelineCache {
+    // material entity -> (tick, pipeline_id, draw_function)
     #[deref]
     map: MainEntityHashMap<(Tick, CachedRenderPipelineId, DrawFunctionId)>,
 }
