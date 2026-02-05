@@ -30,7 +30,7 @@ use bevy_light::{
 };
 use bevy_material::{
     key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
-    MaterialProperties, RenderPhaseType,
+    MaterialProperties,
 };
 use bevy_math::{
     ops,
@@ -1746,7 +1746,7 @@ pub struct SpecializedShadowMaterialPipelineCache {
 #[derive(Deref, DerefMut, Default)]
 pub struct SpecializedShadowMaterialViewPipelineCache {
     #[deref]
-    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
+    map: MainEntityHashMap<(Tick, CachedRenderPipelineId, DrawFunctionId)>,
 }
 
 pub fn check_views_lights_need_specialization(
@@ -1920,7 +1920,7 @@ pub(crate) fn specialize_shadows(
                     let entity_tick = entity_specialization_ticks.get(&visible_entity).unwrap();
                     let last_specialized_tick = view_specialized_material_pipeline_cache
                         .and_then(|cache| cache.get(&visible_entity))
-                        .map(|(tick, _)| *tick);
+                        .map(|(tick, _, _)| *tick);
                     let needs_specialization = last_specialized_tick.is_none_or(|tick| {
                         view_tick.is_newer_than(tick, this_run)
                             || entity_tick.system_tick.is_newer_than(tick, this_run)
@@ -1993,13 +1993,26 @@ pub(crate) fn specialize_shadows(
             material_key: item.properties.material_key.clone(),
         };
 
+        let is_depth_only_opaque = !item.mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+            && !item.mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO);
+        let draw_function = if is_depth_only_opaque {
+            item.properties
+                .get_draw_function(ShadowsDepthOnlyDrawFunction)
+        } else {
+            item.properties.get_draw_function(ShadowsDrawFunction)
+        };
+
+        let Some(draw_function) = draw_function else {
+            continue;
+        };
+
         match prepass_specialize(world, key, &item.layout, &item.properties) {
             Ok(pipeline_id) => {
                 world
                     .resource_mut::<SpecializedShadowMaterialPipelineCache>()
                     .entry(item.retained_view_entity)
                     .or_default()
-                    .insert(item.visible_entity, (this_run, pipeline_id));
+                    .insert(item.visible_entity, (this_run, pipeline_id, draw_function));
             }
             Err(err) => error!("{}", err),
         }
@@ -2075,7 +2088,7 @@ pub fn queue_shadows(
             };
 
             for (entity, main_entity) in visible_entities.iter().copied() {
-                let Some((current_change_tick, pipeline_id)) =
+                let Some((current_change_tick, pipeline_id, draw_function)) =
                     view_specialized_material_pipeline_cache.get(&main_entity)
                 else {
                     continue;
@@ -2117,22 +2130,14 @@ pub fn queue_shadows(
                     continue;
                 };
 
-                let is_opaque =
-                    matches!(material.properties.render_phase_type, RenderPhaseType::Opaque);
-                let (draw_function, material_bind_group_index) = if is_opaque {
-                    let Some(df) =
-                        material.properties.get_draw_function(ShadowsDepthOnlyDrawFunction)
-                    else {
-                        continue;
-                    };
-                    (df, None)
+                let depth_only_draw_function = material
+                    .properties
+                    .get_draw_function(ShadowsDepthOnlyDrawFunction);
+                let material_bind_group_index = if Some(*draw_function) == depth_only_draw_function
+                {
+                    None
                 } else {
-                    let Some(df) =
-                        material.properties.get_draw_function(ShadowsDrawFunction)
-                    else {
-                        continue;
-                    };
-                    (df, Some(material.binding.group.0))
+                    Some(material.binding.group.0)
                 };
 
                 let (vertex_slab, index_slab) =
@@ -2140,7 +2145,7 @@ pub fn queue_shadows(
 
                 let batch_set_key = ShadowBatchSetKey {
                     pipeline: *pipeline_id,
-                    draw_function,
+                    draw_function: *draw_function,
                     material_bind_group_index,
                     vertex_slab: vertex_slab.unwrap_or_default(),
                     index_slab,

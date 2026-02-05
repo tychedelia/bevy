@@ -7,9 +7,9 @@ use crate::{
     DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, EntitySpecializationTicks,
     MaterialPipeline, MeshLayouts, MeshPipeline, MeshPipelineKey, PreparedMaterial,
     PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction,
-    PrepassOpaqueDrawFunction,
-    PrepassVertexShader, RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags,
-    RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
+    PrepassOpaqueDrawFunction, PrepassVertexShader, RenderLightmaps, RenderMaterialInstances,
+    RenderMeshInstanceFlags, RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup,
+    ShadowView,
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
@@ -382,6 +382,7 @@ fn is_depth_only_opaque_prepass(mesh_key: MeshPipelineKey) -> bool {
         && !mesh_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
         && !mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS)
         && !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+        && !mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
 }
 
 impl PrepassPipeline {
@@ -412,8 +413,6 @@ impl PrepassPipeline {
             "MATERIAL_BIND_GROUP".into(),
             crate::MATERIAL_BIND_GROUP_INDEX as u32,
         ));
-        // For depth-only opaque prepass, use empty bind group layout since material data isn't accessed.
-        // This enables cross-material batching for shadow maps and other depth-only passes.
         if is_depth_only_opaque_prepass(mesh_key) {
             bind_group_layouts.push(self.empty_layout.clone());
         } else {
