@@ -382,7 +382,6 @@ fn is_depth_only_opaque_prepass(mesh_key: MeshPipelineKey) -> bool {
         && !mesh_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
         && !mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS)
         && !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
-        && !mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
 }
 
 impl PrepassPipeline {
@@ -413,7 +412,11 @@ impl PrepassPipeline {
             "MATERIAL_BIND_GROUP".into(),
             crate::MATERIAL_BIND_GROUP_INDEX as u32,
         ));
-        if is_depth_only_opaque_prepass(mesh_key) {
+        // For directional light shadow map views, use unclipped depth via either the native GPU feature,
+        // or emulated by setting depth in the fragment shader for GPUs that don't support it natively.
+        let emulate_unclipped_depth = mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
+            && !self.depth_clip_control_supported;
+        if is_depth_only_opaque_prepass(mesh_key) && !emulate_unclipped_depth {
             bind_group_layouts.push(self.empty_layout.clone());
         } else {
             bind_group_layouts.push(
@@ -444,10 +447,6 @@ impl PrepassPipeline {
             shader_defs.push("VERTEX_POSITIONS".into());
             vertex_attributes.push(Mesh::ATTRIBUTE_POSITION.at_shader_location(0));
         }
-        // For directional light shadow map views, use unclipped depth via either the native GPU feature,
-        // or emulated by setting depth in the fragment shader for GPUs that don't support it natively.
-        let emulate_unclipped_depth = mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
-            && !self.depth_clip_control_supported;
         if emulate_unclipped_depth {
             shader_defs.push("UNCLIPPED_DEPTH_ORTHO_EMULATION".into());
             // PERF: This line forces the "prepass fragment shader" to always run in
@@ -779,9 +778,8 @@ pub struct SpecializedPrepassMaterialPipelineCache {
 /// well as the last time it was changed.
 #[derive(Deref, DerefMut, Default)]
 pub struct SpecializedPrepassMaterialViewPipelineCache {
-    // material entity -> (tick, pipeline_id)
     #[deref]
-    map: MainEntityHashMap<(Tick, CachedRenderPipelineId)>,
+    map: MainEntityHashMap<(Tick, CachedRenderPipelineId, DrawFunctionId)>,
 }
 
 #[derive(Resource, Deref, DerefMut, Default, Clone)]
@@ -942,7 +940,7 @@ pub(crate) fn specialize_prepass_material_meshes(
                     .system_tick;
                 let last_specialized_tick = view_specialized_material_pipeline_cache
                     .and_then(|cache| cache.get(visible_entity))
-                    .map(|(tick, _)| *tick);
+                    .map(|(tick, _, _)| *tick);
                 let needs_specialization = last_specialized_tick.is_none_or(|tick| {
                     view_tick.is_newer_than(tick, this_run)
                         || entity_tick.is_newer_than(tick, this_run)
@@ -1047,6 +1045,10 @@ pub(crate) fn specialize_prepass_material_meshes(
         }
     }
 
+    let depth_clip_control_supported = world
+        .resource::<PrepassPipeline>()
+        .depth_clip_control_supported;
+
     for item in work_items.drain(..) {
         let Some(prepass_specialize) = item.properties.prepass_specialize else {
             continue;
@@ -1058,13 +1060,46 @@ pub(crate) fn specialize_prepass_material_meshes(
             material_key: item.properties.material_key.clone(),
         };
 
+        let emulate_unclipped_depth = item
+            .mesh_key
+            .contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
+            && !depth_clip_control_supported;
+        let deferred = item.mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS);
+        let draw_function = match item.properties.render_phase_type {
+            RenderPhaseType::Opaque => {
+                if deferred {
+                    item.properties
+                        .get_draw_function(DeferredOpaqueDrawFunction)
+                } else if is_depth_only_opaque_prepass(item.mesh_key) && !emulate_unclipped_depth {
+                    item.properties
+                        .get_draw_function(PrepassOpaqueDepthOnlyDrawFunction)
+                } else {
+                    item.properties.get_draw_function(PrepassOpaqueDrawFunction)
+                }
+            }
+            RenderPhaseType::AlphaMask => {
+                if deferred {
+                    item.properties
+                        .get_draw_function(DeferredAlphaMaskDrawFunction)
+                } else {
+                    item.properties
+                        .get_draw_function(PrepassAlphaMaskDrawFunction)
+                }
+            }
+            RenderPhaseType::Transmissive | RenderPhaseType::Transparent => continue,
+        };
+
+        let Some(draw_function) = draw_function else {
+            continue;
+        };
+
         match prepass_specialize(world, key, &item.layout, &item.properties) {
             Ok(pipeline_id) => {
                 world
                     .resource_mut::<SpecializedPrepassMaterialPipelineCache>()
                     .entry(item.retained_view_entity)
                     .or_default()
-                    .insert(item.visible_entity, (this_run, pipeline_id));
+                    .insert(item.visible_entity, (this_run, pipeline_id, draw_function));
             }
             Err(err) => error!("{}", err),
         }
@@ -1096,7 +1131,6 @@ pub fn queue_prepass_material_meshes(
     mut alpha_mask_deferred_render_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3dDeferred>>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     specialized_material_pipeline_cache: Res<SpecializedPrepassMaterialPipelineCache>,
-    view_key_cache: Res<ViewKeyPrepassCache>,
 ) {
     for (extracted_view, visible_entities) in &views {
         let (
@@ -1126,14 +1160,8 @@ pub fn queue_prepass_material_meshes(
             continue;
         }
 
-        let view_mesh_key = view_key_cache
-            .get(&extracted_view.retained_view_entity)
-            .copied()
-            .unwrap_or(MeshPipelineKey::empty());
-        let view_is_depth_only = is_depth_only_opaque_prepass(view_mesh_key);
-
         for (render_entity, visible_entity) in visible_entities.iter::<Mesh3d>() {
-            let Some((current_change_tick, pipeline_id)) =
+            let Some((current_change_tick, pipeline_id, draw_function)) =
                 view_specialized_material_pipeline_cache.get(visible_entity)
             else {
                 continue;
@@ -1174,15 +1202,9 @@ pub fn queue_prepass_material_meshes(
             match material.properties.render_phase_type {
                 RenderPhaseType::Opaque => {
                     if deferred {
-                        let Some(draw_function) = material
-                            .properties
-                            .get_draw_function(DeferredOpaqueDrawFunction)
-                        else {
-                            continue;
-                        };
                         opaque_deferred_phase.as_mut().unwrap().add(
                             OpaqueNoLightmap3dBatchSetKey {
-                                draw_function,
+                                draw_function: *draw_function,
                                 pipeline: *pipeline_id,
                                 material_bind_group_index: Some(material.binding.group.0),
                                 vertex_slab: vertex_slab.unwrap_or_default(),
@@ -1200,28 +1222,18 @@ pub fn queue_prepass_material_meshes(
                             *current_change_tick,
                         );
                     } else if let Some(opaque_phase) = opaque_phase.as_mut() {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        let (draw_function, material_bind_group_index) = if view_is_depth_only {
-                            let Some(df) = material
-                                .properties
-                                .get_draw_function(PrepassOpaqueDepthOnlyDrawFunction)
-                            else {
-                                continue;
+                        let depth_only_draw_function = material
+                            .properties
+                            .get_draw_function(PrepassOpaqueDepthOnlyDrawFunction);
+                        let material_bind_group_index =
+                            if Some(*draw_function) == depth_only_draw_function {
+                                None
+                            } else {
+                                Some(material.binding.group.0)
                             };
-                            (df, None)
-                        } else {
-                            let Some(df) = material
-                                .properties
-                                .get_draw_function(PrepassOpaqueDrawFunction)
-                            else {
-                                continue;
-                            };
-                            (df, Some(material.binding.group.0))
-                        };
                         opaque_phase.add(
                             OpaqueNoLightmap3dBatchSetKey {
-                                draw_function,
+                                draw_function: *draw_function,
                                 pipeline: *pipeline_id,
                                 material_bind_group_index,
                                 vertex_slab: vertex_slab.unwrap_or_default(),
@@ -1242,27 +1254,17 @@ pub fn queue_prepass_material_meshes(
                 }
                 RenderPhaseType::AlphaMask => {
                     if deferred {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        let Some(draw_function) = material
-                            .properties
-                            .get_draw_function(DeferredAlphaMaskDrawFunction)
-                        else {
-                            continue;
-                        };
-                        let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                            draw_function,
-                            pipeline: *pipeline_id,
-                            material_bind_group_index: Some(material.binding.group.0),
-                            vertex_slab: vertex_slab.unwrap_or_default(),
-                            index_slab,
-                        };
-                        let bin_key = OpaqueNoLightmap3dBinKey {
-                            asset_id: mesh_instance.mesh_asset_id.into(),
-                        };
                         alpha_mask_deferred_phase.as_mut().unwrap().add(
-                            batch_set_key,
-                            bin_key,
+                            OpaqueNoLightmap3dBatchSetKey {
+                                draw_function: *draw_function,
+                                pipeline: *pipeline_id,
+                                material_bind_group_index: Some(material.binding.group.0),
+                                vertex_slab: vertex_slab.unwrap_or_default(),
+                                index_slab,
+                            },
+                            OpaqueNoLightmap3dBinKey {
+                                asset_id: mesh_instance.mesh_asset_id.into(),
+                            },
                             (*render_entity, *visible_entity),
                             mesh_instance.current_uniform_index,
                             BinnedRenderPhaseType::mesh(
@@ -1272,27 +1274,17 @@ pub fn queue_prepass_material_meshes(
                             *current_change_tick,
                         );
                     } else if let Some(alpha_mask_phase) = alpha_mask_phase.as_mut() {
-                        let (vertex_slab, index_slab) =
-                            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        let Some(draw_function) = material
-                            .properties
-                            .get_draw_function(PrepassAlphaMaskDrawFunction)
-                        else {
-                            continue;
-                        };
-                        let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
-                            draw_function,
-                            pipeline: *pipeline_id,
-                            material_bind_group_index: Some(material.binding.group.0),
-                            vertex_slab: vertex_slab.unwrap_or_default(),
-                            index_slab,
-                        };
-                        let bin_key = OpaqueNoLightmap3dBinKey {
-                            asset_id: mesh_instance.mesh_asset_id.into(),
-                        };
                         alpha_mask_phase.add(
-                            batch_set_key,
-                            bin_key,
+                            OpaqueNoLightmap3dBatchSetKey {
+                                draw_function: *draw_function,
+                                pipeline: *pipeline_id,
+                                material_bind_group_index: Some(material.binding.group.0),
+                                vertex_slab: vertex_slab.unwrap_or_default(),
+                                index_slab,
+                            },
+                            OpaqueNoLightmap3dBinKey {
+                                asset_id: mesh_instance.mesh_asset_id.into(),
+                            },
                             (*render_entity, *visible_entity),
                             mesh_instance.current_uniform_index,
                             BinnedRenderPhaseType::mesh(

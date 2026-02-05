@@ -1982,6 +1982,10 @@ pub(crate) fn specialize_shadows(
         }
     }
 
+    let depth_clip_control_supported = world
+        .resource::<PrepassPipeline>()
+        .depth_clip_control_supported;
+
     for item in work_items.drain(..) {
         let Some(prepass_specialize) = item.properties.prepass_specialize else {
             continue;
@@ -1993,8 +1997,12 @@ pub(crate) fn specialize_shadows(
             material_key: item.properties.material_key.clone(),
         };
 
-        let is_depth_only_opaque = !item.mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
-            && !item.mesh_key.contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO);
+        let emulate_unclipped_depth = item
+            .mesh_key
+            .contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
+            && !depth_clip_control_supported;
+        let is_depth_only_opaque =
+            !item.mesh_key.contains(MeshPipelineKey::MAY_DISCARD) && !emulate_unclipped_depth;
         let draw_function = if is_depth_only_opaque {
             item.properties
                 .get_draw_function(ShadowsDepthOnlyDrawFunction)
