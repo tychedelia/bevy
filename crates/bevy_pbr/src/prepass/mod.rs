@@ -6,7 +6,8 @@ use crate::{
     setup_morph_and_skinning_defs, skin, DeferredAlphaMaskDrawFunction, DeferredFragmentShader,
     DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, EntitySpecializationTicks,
     MaterialPipeline, MeshLayouts, MeshPipeline, MeshPipelineKey, PreparedMaterial,
-    PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDrawFunction,
+    PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction,
+    PrepassOpaqueDrawFunction,
     PrepassVertexShader, RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags,
     RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
 };
@@ -160,6 +161,7 @@ impl Plugin for PrepassPlugin {
             .init_resource::<ViewKeyPrepassCache>()
             .init_resource::<SpecializedPrepassMaterialPipelineCache>()
             .add_render_command::<Opaque3dPrepass, DrawPrepass>()
+            .add_render_command::<Opaque3dPrepass, DrawDepthOnlyPrepass>()
             .add_render_command::<AlphaMask3dPrepass, DrawPrepass>()
             .add_render_command::<Opaque3dDeferred, DrawPrepass>()
             .add_render_command::<AlphaMask3dDeferred, DrawPrepass>()
@@ -374,6 +376,14 @@ impl SpecializedMeshPipeline for PrepassPipelineSpecializer {
     }
 }
 
+fn is_depth_only_opaque_prepass(mesh_key: MeshPipelineKey) -> bool {
+    mesh_key.contains(MeshPipelineKey::DEPTH_PREPASS)
+        && !mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS)
+        && !mesh_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
+        && !mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS)
+        && !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+}
+
 impl PrepassPipeline {
     fn specialize(
         &self,
@@ -402,15 +412,19 @@ impl PrepassPipeline {
             "MATERIAL_BIND_GROUP".into(),
             crate::MATERIAL_BIND_GROUP_INDEX as u32,
         ));
-        // NOTE: Eventually, it would be nice to only add this when the shaders are overloaded by the Material.
-        // The main limitation right now is that bind group order is hardcoded in shaders.
-        bind_group_layouts.push(
-            material_properties
-                .material_layout
-                .as_ref()
-                .unwrap()
-                .clone(),
-        );
+        // For depth-only opaque prepass, use empty bind group layout since material data isn't accessed.
+        // This enables cross-material batching for shadow maps and other depth-only passes.
+        if is_depth_only_opaque_prepass(mesh_key) {
+            bind_group_layouts.push(self.empty_layout.clone());
+        } else {
+            bind_group_layouts.push(
+                material_properties
+                    .material_layout
+                    .as_ref()
+                    .unwrap()
+                    .clone(),
+            );
+        }
         #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
         shader_defs.push("WEBGL2".into());
         shader_defs.push("VERTEX_OUTPUT_INSTANCE_INDEX".into());
@@ -1083,6 +1097,7 @@ pub fn queue_prepass_material_meshes(
     mut alpha_mask_deferred_render_phases: ResMut<ViewBinnedRenderPhases<AlphaMask3dDeferred>>,
     views: Query<(&ExtractedView, &RenderVisibleEntities)>,
     specialized_material_pipeline_cache: Res<SpecializedPrepassMaterialPipelineCache>,
+    view_key_cache: Res<ViewKeyPrepassCache>,
 ) {
     for (extracted_view, visible_entities) in &views {
         let (
@@ -1111,6 +1126,12 @@ pub fn queue_prepass_material_meshes(
         {
             continue;
         }
+
+        let view_mesh_key = view_key_cache
+            .get(&extracted_view.retained_view_entity)
+            .copied()
+            .unwrap_or(MeshPipelineKey::empty());
+        let view_is_depth_only = is_depth_only_opaque_prepass(view_mesh_key);
 
         for (render_entity, visible_entity) in visible_entities.iter::<Mesh3d>() {
             let Some((current_change_tick, pipeline_id)) =
@@ -1182,17 +1203,28 @@ pub fn queue_prepass_material_meshes(
                     } else if let Some(opaque_phase) = opaque_phase.as_mut() {
                         let (vertex_slab, index_slab) =
                             mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
-                        let Some(draw_function) = material
-                            .properties
-                            .get_draw_function(PrepassOpaqueDrawFunction)
-                        else {
-                            continue;
+                        let (draw_function, material_bind_group_index) = if view_is_depth_only {
+                            let Some(df) = material
+                                .properties
+                                .get_draw_function(PrepassOpaqueDepthOnlyDrawFunction)
+                            else {
+                                continue;
+                            };
+                            (df, None)
+                        } else {
+                            let Some(df) = material
+                                .properties
+                                .get_draw_function(PrepassOpaqueDrawFunction)
+                            else {
+                                continue;
+                            };
+                            (df, Some(material.binding.group.0))
                         };
                         opaque_phase.add(
                             OpaqueNoLightmap3dBatchSetKey {
                                 draw_function,
                                 pipeline: *pipeline_id,
-                                material_bind_group_index: Some(material.binding.group.0),
+                                material_bind_group_index,
                                 vertex_slab: vertex_slab.unwrap_or_default(),
                                 index_slab,
                             },
@@ -1345,11 +1377,40 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPrepassViewEmptyBindG
     }
 }
 
+pub struct SetPrepassEmptyMaterialBindGroup<const I: usize>;
+impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetPrepassEmptyMaterialBindGroup<I> {
+    type Param = SRes<PrepassViewBindGroup>;
+    type ViewQuery = ();
+    type ItemQuery = ();
+
+    #[inline]
+    fn render<'w>(
+        _item: &P,
+        _view: (),
+        _entity: Option<()>,
+        prepass_view_bind_group: SystemParamItem<'w, '_, Self::Param>,
+        pass: &mut TrackedRenderPass<'w>,
+    ) -> RenderCommandResult {
+        let prepass_view_bind_group = prepass_view_bind_group.into_inner();
+        pass.set_bind_group(I, &prepass_view_bind_group.empty_bind_group, &[]);
+        RenderCommandResult::Success
+    }
+}
+
 pub type DrawPrepass = (
     SetItemPipeline,
     SetPrepassViewBindGroup<0>,
     SetPrepassViewEmptyBindGroup<1>,
     SetMeshBindGroup<2>,
     SetMaterialBindGroup<3>,
+    DrawMesh,
+);
+
+pub type DrawDepthOnlyPrepass = (
+    SetItemPipeline,
+    SetPrepassViewBindGroup<0>,
+    SetPrepassViewEmptyBindGroup<1>,
+    SetMeshBindGroup<2>,
+    SetPrepassEmptyMaterialBindGroup<3>,
     DrawMesh,
 );

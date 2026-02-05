@@ -30,7 +30,7 @@ use bevy_light::{
 };
 use bevy_material::{
     key::{ErasedMaterialPipelineKey, ErasedMeshPipelineKey},
-    MaterialProperties,
+    MaterialProperties, RenderPhaseType,
 };
 use bevy_math::{
     ops,
@@ -2116,10 +2116,23 @@ pub fn queue_shadows(
                 let Some(material) = render_materials.get(material_instance.asset_id) else {
                     continue;
                 };
-                let Some(draw_function) =
-                    material.properties.get_draw_function(ShadowsDrawFunction)
-                else {
-                    continue;
+
+                let is_opaque =
+                    matches!(material.properties.render_phase_type, RenderPhaseType::Opaque);
+                let (draw_function, material_bind_group_index) = if is_opaque {
+                    let Some(df) =
+                        material.properties.get_draw_function(ShadowsDepthOnlyDrawFunction)
+                    else {
+                        continue;
+                    };
+                    (df, None)
+                } else {
+                    let Some(df) =
+                        material.properties.get_draw_function(ShadowsDrawFunction)
+                    else {
+                        continue;
+                    };
+                    (df, Some(material.binding.group.0))
                 };
 
                 let (vertex_slab, index_slab) =
@@ -2128,7 +2141,7 @@ pub fn queue_shadows(
                 let batch_set_key = ShadowBatchSetKey {
                     pipeline: *pipeline_id,
                     draw_function,
-                    material_bind_group_index: Some(material.binding.group.0),
+                    material_bind_group_index,
                     vertex_slab: vertex_slab.unwrap_or_default(),
                     index_slab,
                 };
