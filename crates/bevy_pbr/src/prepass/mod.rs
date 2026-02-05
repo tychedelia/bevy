@@ -382,6 +382,7 @@ fn is_depth_only_opaque_prepass(mesh_key: MeshPipelineKey) -> bool {
         && !mesh_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
         && !mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS)
         && !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+        && !mesh_key.contains(MeshPipelineKey::PREPASS_READS_MATERIAL)
 }
 
 impl PrepassPipeline {

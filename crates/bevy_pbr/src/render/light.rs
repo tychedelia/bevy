@@ -2001,8 +2001,11 @@ pub(crate) fn specialize_shadows(
             .mesh_key
             .contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
             && !depth_clip_control_supported;
-        let is_depth_only_opaque =
-            !item.mesh_key.contains(MeshPipelineKey::MAY_DISCARD) && !emulate_unclipped_depth;
+        let is_depth_only_opaque = !item.mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
+            && !item
+                .mesh_key
+                .contains(MeshPipelineKey::PREPASS_READS_MATERIAL)
+            && !emulate_unclipped_depth;
         let draw_function = if is_depth_only_opaque {
             item.properties
                 .get_draw_function(ShadowsDepthOnlyDrawFunction)

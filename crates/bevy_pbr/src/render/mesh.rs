@@ -2292,7 +2292,8 @@ bitflags::bitflags! {
         const DISTANCE_FOG                      = 1 << 21;
         const ATMOSPHERE                        = 1 << 22;
         const INVERT_CULLING                    = 1 << 23;
-        const LAST_FLAG                         = Self::INVERT_CULLING.bits();
+        const PREPASS_READS_MATERIAL            = 1 << 24;
+        const LAST_FLAG                         = Self::PREPASS_READS_MATERIAL.bits();
 
         // Bitfields
         const MSAA_RESERVED_BITS                = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
