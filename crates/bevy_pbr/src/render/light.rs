@@ -2171,7 +2171,7 @@ pub fn queue_shadows(
                         mesh_instance.should_batch(),
                         &gpu_preprocessing_support,
                     ),
-                    *current_change_tick,
+                    current_change_tick,
                 );
             }
         }
