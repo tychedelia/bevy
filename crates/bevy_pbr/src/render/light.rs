@@ -2001,10 +2001,9 @@ pub(crate) fn specialize_shadows(
             .mesh_key
             .contains(MeshPipelineKey::UNCLIPPED_DEPTH_ORTHO)
             && !depth_clip_control_supported;
-        let is_depth_only_opaque = !item.mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
-            && !item
-                .mesh_key
-                .contains(MeshPipelineKey::PREPASS_READS_MATERIAL)
+        let is_depth_only_opaque = !item
+            .mesh_key
+            .intersects(MeshPipelineKey::MAY_DISCARD | MeshPipelineKey::PREPASS_READS_MATERIAL)
             && !emulate_unclipped_depth;
         let draw_function = if is_depth_only_opaque {
             item.properties
@@ -2099,7 +2098,7 @@ pub fn queue_shadows(
             };
 
             for (entity, main_entity) in visible_entities.iter().copied() {
-                let Some((current_change_tick, pipeline_id, draw_function)) =
+                let Some(&(current_change_tick, pipeline_id, draw_function)) =
                     view_specialized_material_pipeline_cache.get(&main_entity)
                 else {
                     continue;
@@ -2129,7 +2128,7 @@ pub fn queue_shadows(
                 }
 
                 // Skip the entity if it's cached in a bin and up to date.
-                if shadow_phase.validate_cached_entity(main_entity, *current_change_tick) {
+                if shadow_phase.validate_cached_entity(main_entity, current_change_tick) {
                     continue;
                 }
 
@@ -2144,8 +2143,7 @@ pub fn queue_shadows(
                 let depth_only_draw_function = material
                     .properties
                     .get_draw_function(ShadowsDepthOnlyDrawFunction);
-                let material_bind_group_index = if Some(*draw_function) == depth_only_draw_function
-                {
+                let material_bind_group_index = if Some(draw_function) == depth_only_draw_function {
                     None
                 } else {
                     Some(material.binding.group.0)
@@ -2155,8 +2153,8 @@ pub fn queue_shadows(
                     mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id);
 
                 let batch_set_key = ShadowBatchSetKey {
-                    pipeline: *pipeline_id,
-                    draw_function: *draw_function,
+                    pipeline: pipeline_id,
+                    draw_function,
                     material_bind_group_index,
                     vertex_slab: vertex_slab.unwrap_or_default(),
                     index_slab,

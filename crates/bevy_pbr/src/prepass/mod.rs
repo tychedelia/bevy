@@ -377,12 +377,7 @@ impl SpecializedMeshPipeline for PrepassPipelineSpecializer {
 }
 
 fn is_depth_only_opaque_prepass(mesh_key: MeshPipelineKey) -> bool {
-    mesh_key.contains(MeshPipelineKey::DEPTH_PREPASS)
-        && !mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS)
-        && !mesh_key.contains(MeshPipelineKey::MOTION_VECTOR_PREPASS)
-        && !mesh_key.contains(MeshPipelineKey::DEFERRED_PREPASS)
-        && !mesh_key.contains(MeshPipelineKey::MAY_DISCARD)
-        && !mesh_key.contains(MeshPipelineKey::PREPASS_READS_MATERIAL)
+    mesh_key.intersection(MeshPipelineKey::ALL_PREPASS_BITS) == MeshPipelineKey::DEPTH_PREPASS
 }
 
 impl PrepassPipeline {
@@ -1163,7 +1158,7 @@ pub fn queue_prepass_material_meshes(
         }
 
         for (render_entity, visible_entity) in visible_entities.iter::<Mesh3d>() {
-            let Some((current_change_tick, pipeline_id, draw_function)) =
+            let Some(&(current_change_tick, pipeline_id, draw_function)) =
                 view_specialized_material_pipeline_cache.get(visible_entity)
             else {
                 continue;
@@ -1171,13 +1166,13 @@ pub fn queue_prepass_material_meshes(
 
             // Skip the entity if it's cached in a bin and up to date.
             if opaque_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
+                phase.validate_cached_entity(*visible_entity, current_change_tick)
             }) || alpha_mask_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
+                phase.validate_cached_entity(*visible_entity, current_change_tick)
             }) || opaque_deferred_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
+                phase.validate_cached_entity(*visible_entity, current_change_tick)
             }) || alpha_mask_deferred_phase.as_mut().is_some_and(|phase| {
-                phase.validate_cached_entity(*visible_entity, *current_change_tick)
+                phase.validate_cached_entity(*visible_entity, current_change_tick)
             }) {
                 continue;
             }
@@ -1206,8 +1201,8 @@ pub fn queue_prepass_material_meshes(
                     if deferred {
                         opaque_deferred_phase.as_mut().unwrap().add(
                             OpaqueNoLightmap3dBatchSetKey {
-                                draw_function: *draw_function,
-                                pipeline: *pipeline_id,
+                                draw_function,
+                                pipeline: pipeline_id,
                                 material_bind_group_index: Some(material.binding.group.0),
                                 vertex_slab: vertex_slab.unwrap_or_default(),
                                 index_slab,
@@ -1221,22 +1216,22 @@ pub fn queue_prepass_material_meshes(
                                 mesh_instance.should_batch(),
                                 &gpu_preprocessing_support,
                             ),
-                            *current_change_tick,
+                            current_change_tick,
                         );
                     } else if let Some(opaque_phase) = opaque_phase.as_mut() {
                         let depth_only_draw_function = material
                             .properties
                             .get_draw_function(PrepassOpaqueDepthOnlyDrawFunction);
                         let material_bind_group_index =
-                            if Some(*draw_function) == depth_only_draw_function {
+                            if Some(draw_function) == depth_only_draw_function {
                                 None
                             } else {
                                 Some(material.binding.group.0)
                             };
                         opaque_phase.add(
                             OpaqueNoLightmap3dBatchSetKey {
-                                draw_function: *draw_function,
-                                pipeline: *pipeline_id,
+                                draw_function,
+                                pipeline: pipeline_id,
                                 material_bind_group_index,
                                 vertex_slab: vertex_slab.unwrap_or_default(),
                                 index_slab,
@@ -1250,7 +1245,7 @@ pub fn queue_prepass_material_meshes(
                                 mesh_instance.should_batch(),
                                 &gpu_preprocessing_support,
                             ),
-                            *current_change_tick,
+                            current_change_tick,
                         );
                     }
                 }
@@ -1258,8 +1253,8 @@ pub fn queue_prepass_material_meshes(
                     if deferred {
                         alpha_mask_deferred_phase.as_mut().unwrap().add(
                             OpaqueNoLightmap3dBatchSetKey {
-                                draw_function: *draw_function,
-                                pipeline: *pipeline_id,
+                                draw_function,
+                                pipeline: pipeline_id,
                                 material_bind_group_index: Some(material.binding.group.0),
                                 vertex_slab: vertex_slab.unwrap_or_default(),
                                 index_slab,
@@ -1273,13 +1268,13 @@ pub fn queue_prepass_material_meshes(
                                 mesh_instance.should_batch(),
                                 &gpu_preprocessing_support,
                             ),
-                            *current_change_tick,
+                            current_change_tick,
                         );
                     } else if let Some(alpha_mask_phase) = alpha_mask_phase.as_mut() {
                         alpha_mask_phase.add(
                             OpaqueNoLightmap3dBatchSetKey {
-                                draw_function: *draw_function,
-                                pipeline: *pipeline_id,
+                                draw_function,
+                                pipeline: pipeline_id,
                                 material_bind_group_index: Some(material.binding.group.0),
                                 vertex_slab: vertex_slab.unwrap_or_default(),
                                 index_slab,
@@ -1293,7 +1288,7 @@ pub fn queue_prepass_material_meshes(
                                 mesh_instance.should_batch(),
                                 &gpu_preprocessing_support,
                             ),
-                            *current_change_tick,
+                            current_change_tick,
                         );
                     }
                 }

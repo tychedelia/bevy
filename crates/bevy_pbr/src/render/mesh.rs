@@ -2295,6 +2295,13 @@ bitflags::bitflags! {
         const PREPASS_READS_MATERIAL            = 1 << 24;
         const LAST_FLAG                         = Self::PREPASS_READS_MATERIAL.bits();
 
+        const ALL_PREPASS_BITS                  = Self::DEPTH_PREPASS.bits()
+                                                | Self::NORMAL_PREPASS.bits()
+                                                | Self::DEFERRED_PREPASS.bits()
+                                                | Self::MOTION_VECTOR_PREPASS.bits()
+                                                | Self::MAY_DISCARD.bits()
+                                                | Self::PREPASS_READS_MATERIAL.bits();
+
         // Bitfields
         const MSAA_RESERVED_BITS                = Self::MSAA_MASK_BITS << Self::MSAA_SHIFT_BITS;
         const BLEND_RESERVED_BITS               = Self::BLEND_MASK_BITS << Self::BLEND_SHIFT_BITS; // ← Bitmask reserving bits for the blend state
