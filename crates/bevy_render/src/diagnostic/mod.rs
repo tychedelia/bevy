@@ -14,8 +14,12 @@ use core::marker::PhantomData;
 use wgpu::{BufferSlice, CommandEncoder};
 
 use bevy_app::{App, Plugin, PreUpdate};
+use bevy_ecs::prelude::*;
 
-use crate::{renderer::RenderAdapterInfo, RenderApp};
+use crate::{
+    renderer::{RenderAdapterInfo, RenderGraphSystems},
+    RenderApp,
+};
 
 use self::internal::{sync_diagnostics, Pass, RenderDiagnosticsMutex, WriteTimestamp};
 pub use self::{
@@ -24,7 +28,7 @@ pub use self::{
     render_asset_diagnostic_plugin::RenderAssetDiagnosticPlugin,
 };
 
-use crate::renderer::{RenderDevice, RenderQueue};
+use crate::renderer::{RenderDevice, RenderGraph, RenderQueue};
 
 /// Enables collecting render diagnostics, such as CPU/GPU elapsed time per render pass,
 /// as well as pipeline statistics (number of primitives, number of shader invocations, etc).
@@ -75,7 +79,37 @@ impl Plugin for RenderDiagnosticsPlugin {
         let device = render_app.world().resource::<RenderDevice>();
         let queue = render_app.world().resource::<RenderQueue>();
         render_app.insert_resource(DiagnosticsRecorder::new(adapter_info, device, queue));
+
+        render_app.add_systems(
+            RenderGraph,
+            (
+                begin_diagnostics_frame.in_set(RenderGraphSystems::Begin),
+                finish_diagnostics_frame.in_set(RenderGraphSystems::Finish),
+            ),
+        );
     }
+}
+
+/// Starts the diagnostics recorder for the frame.
+pub fn begin_diagnostics_frame(mut recorder: ResMut<DiagnosticsRecorder>) {
+    recorder.begin_frame();
+}
+
+/// Ends the current frame for the diagnostics recorder and syncs it with the main world.
+pub fn finish_diagnostics_frame(
+    mut recorder: ResMut<DiagnosticsRecorder>,
+    render_device: Res<RenderDevice>,
+    render_queue: Res<RenderQueue>,
+    mutex: Res<RenderDiagnosticsMutex>,
+) {
+    let mut encoder =
+        render_device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+    recorder.resolve(&mut encoder);
+    render_queue.submit([encoder.finish()]);
+    let mutex = mutex.0.clone();
+    recorder.finish_frame(&render_device, move |diagnostics| {
+        *mutex.lock().unwrap() = Some(diagnostics);
+    });
 }
 
 /// Allows recording diagnostic spans.

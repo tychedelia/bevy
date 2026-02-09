@@ -17,7 +17,7 @@ use crate::{
 use alloc::sync::Arc;
 use bevy_camera::NormalizedRenderTarget;
 use bevy_derive::{Deref, DerefMut};
-use bevy_ecs::schedule::ScheduleLabel;
+use bevy_ecs::schedule::{IntoScheduleConfigs, ScheduleLabel};
 use bevy_ecs::{prelude::*, system::SystemState};
 use bevy_log::{debug, info, info_span, warn};
 use bevy_render::camera::ExtractedCamera;
@@ -33,8 +33,28 @@ pub struct RenderGraph;
 
 impl RenderGraph {
     pub fn base_schedule() -> Schedule {
-        Schedule::new(Self)
+        let mut schedule = Schedule::new(Self);
+        schedule.configure_sets(
+            (
+                RenderGraphSystems::Begin,
+                RenderGraphSystems::Render,
+                RenderGraphSystems::Finish,
+            )
+                .chain(),
+        );
+        schedule
     }
+}
+
+/// System sets for the root [`RenderGraph`] schedule.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RenderGraphSystems {
+    /// Runs before rendering. Used for per-frame setup.
+    Begin,
+    /// The main rendering phase.
+    Render,
+    /// Runs after rendering. Used for per-frame finalization.
+    Finish,
 }
 
 /// The main render system that drives the rendering process. This system runs the [`RenderGraph`]

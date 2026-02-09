@@ -33,7 +33,8 @@ use crate::{
 };
 use bevy_app::{App, Plugin};
 use bevy_asset::embedded_asset;
-use bevy_render::renderer::RenderGraph;
+use bevy_ecs::schedule::IntoScheduleConfigs;
+use bevy_render::renderer::{RenderGraph, RenderGraphSystems};
 use bevy_render::RenderApp;
 use oit::OrderIndependentTransparencyPlugin;
 
@@ -57,6 +58,6 @@ impl Plugin for CorePipelinePlugin {
         };
         render_app
             .init_resource::<FullscreenShader>()
-            .add_systems(RenderGraph, camera_driver);
+            .add_systems(RenderGraph, camera_driver.in_set(RenderGraphSystems::Render));
     }
 }
