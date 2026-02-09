@@ -56,8 +56,9 @@ impl Plugin for CorePipelinePlugin {
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
-        render_app
-            .init_resource::<FullscreenShader>()
-            .add_systems(RenderGraph, camera_driver.in_set(RenderGraphSystems::Render));
+        render_app.init_resource::<FullscreenShader>().add_systems(
+            RenderGraph,
+            camera_driver.in_set(RenderGraphSystems::Render),
+        );
     }
 }
