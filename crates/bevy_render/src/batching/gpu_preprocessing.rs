@@ -33,7 +33,9 @@ use crate::{
         SortedRenderPhase, UnbatchableBinnedEntityIndices, ViewBinnedRenderPhases,
         ViewSortedRenderPhases,
     },
-    render_resource::{Buffer, GpuArrayBufferable, RawBufferVec, UninitBufferVec},
+    render_resource::{
+        AtomicPod, AtomicRawBufferVec, Buffer, GpuArrayBufferable, RawBufferVec, UninitBufferVec,
+    },
     renderer::{RenderAdapter, RenderAdapterInfo, RenderDevice, RenderQueue, WgpuWrapper},
     sync_world::MainEntity,
     view::{ExtractedView, NoIndirectDrawing, RetainedViewEntity},
@@ -154,7 +156,7 @@ pub enum GpuPreprocessingMode {
 pub struct BatchedInstanceBuffers<BD, BDI>
 where
     BD: GpuArrayBufferable + Sync + Send + 'static,
-    BDI: Pod + Default,
+    BDI: AtomicPod,
 {
     /// The uniform data inputs for the current frame.
     ///
@@ -180,7 +182,7 @@ where
 impl<BD, BDI> Default for BatchedInstanceBuffers<BD, BDI>
 where
     BD: GpuArrayBufferable + Sync + Send + 'static,
-    BDI: Pod + Sync + Send + Default + 'static,
+    BDI: AtomicPod,
 {
     fn default() -> Self {
         BatchedInstanceBuffers {
@@ -273,10 +275,10 @@ where
 /// shader is expected to expand to the full *buffer data* type.
 pub struct InstanceInputUniformBuffer<BDI>
 where
-    BDI: Pod + Default,
+    BDI: AtomicPod,
 {
     /// The buffer containing the data that will be uploaded to the GPU.
-    buffer: RawBufferVec<BDI>,
+    buffer: AtomicRawBufferVec<BDI>,
 
     /// Indices of slots that are free within the buffer.
     ///
@@ -287,12 +289,12 @@ where
 
 impl<BDI> InstanceInputUniformBuffer<BDI>
 where
-    BDI: Pod + Default,
+    BDI: AtomicPod,
 {
     /// Creates a new, empty buffer.
     pub fn new() -> InstanceInputUniformBuffer<BDI> {
         InstanceInputUniformBuffer {
-            buffer: RawBufferVec::new(BufferUsages::STORAGE),
+            buffer: AtomicRawBufferVec::new(BufferUsages::STORAGE),
             free_uniform_indices: vec![],
         }
     }
@@ -305,7 +307,7 @@ where
 
     /// Returns the [`RawBufferVec`] corresponding to this input uniform buffer.
     #[inline]
-    pub fn buffer(&self) -> &RawBufferVec<BDI> {
+    pub fn buffer(&self) -> &AtomicRawBufferVec<BDI> {
         &self.buffer
     }
 
@@ -314,10 +316,10 @@ where
     pub fn add(&mut self, element: BDI) -> u32 {
         match self.free_uniform_indices.pop() {
             Some(uniform_index) => {
-                self.buffer.values_mut()[uniform_index as usize] = element;
+                self.buffer.set(uniform_index, element);
                 uniform_index
             }
-            None => self.buffer.push(element) as u32,
+            None => self.buffer.push(element),
         }
     }
 
@@ -332,8 +334,7 @@ where
     ///
     /// Returns [`None`] if the index is out of bounds or the data is removed.
     pub fn get(&self, uniform_index: u32) -> Option<BDI> {
-        if (uniform_index as usize) >= self.buffer.len()
-            || self.free_uniform_indices.contains(&uniform_index)
+        if uniform_index >= self.buffer.len() || self.free_uniform_indices.contains(&uniform_index)
         {
             None
         } else {
@@ -347,15 +348,21 @@ where
     /// # Panics
     /// if `uniform_index` is not in bounds of [`Self::buffer`].
     pub fn get_unchecked(&self, uniform_index: u32) -> BDI {
-        self.buffer.values()[uniform_index as usize]
+        self.buffer.get(uniform_index)
     }
+
+    /*
+    pub fn get_unchecked_ref(&self, uniform_index: u32) -> &BDI {
+        &self.buffer.values()[uniform_index as usize]
+    }
+    */
 
     /// Stores a piece of buffered data at the given index.
     ///
     /// # Panics
     /// if `uniform_index` is not in bounds of [`Self::buffer`].
-    pub fn set(&mut self, uniform_index: u32, element: BDI) {
-        self.buffer.values_mut()[uniform_index as usize] = element;
+    pub fn set(&self, uniform_index: u32, element: BDI) {
+        self.buffer.set(uniform_index, element);
     }
 
     // Ensures that the buffers are nonempty, which the GPU requires before an
@@ -368,7 +375,7 @@ where
 
     /// Returns the number of instances in this buffer.
     pub fn len(&self) -> usize {
-        self.buffer.len()
+        self.buffer.len() as usize
     }
 
     /// Returns true if this buffer has no instances or false if it contains any
@@ -379,14 +386,14 @@ where
 
     /// Consumes this [`InstanceInputUniformBuffer`] and returns the raw buffer
     /// ready to be uploaded to the GPU.
-    pub fn into_buffer(self) -> RawBufferVec<BDI> {
+    pub fn into_buffer(self) -> AtomicRawBufferVec<BDI> {
         self.buffer
     }
 }
 
 impl<BDI> Default for InstanceInputUniformBuffer<BDI>
 where
-    BDI: Pod + Default,
+    BDI: AtomicPod,
 {
     fn default() -> Self {
         Self::new()
@@ -1148,7 +1155,7 @@ impl FromWorld for GpuPreprocessingSupport {
 impl<BD, BDI> BatchedInstanceBuffers<BD, BDI>
 where
     BD: GpuArrayBufferable + Sync + Send + 'static,
-    BDI: Pod + Sync + Send + Default + 'static,
+    BDI: AtomicPod,
 {
     /// Creates new buffers.
     pub fn new() -> Self {
@@ -2166,18 +2173,28 @@ pub fn write_indirect_parameters_buffers(
 
 #[cfg(test)]
 mod tests {
+    use bytemuck::{Pod, Zeroable};
+
+    use crate::impl_atomic_pod;
+
     use super::*;
+
+    #[derive(Clone, Copy, Default, PartialEq, Debug, Pod, Zeroable)]
+    #[repr(C)]
+    struct TestData(u32);
+
+    impl_atomic_pod!(TestData, TestDataBlob);
 
     #[test]
     fn instance_buffer_correct_behavior() {
         let mut instance_buffer = InstanceInputUniformBuffer::new();
 
-        let index = instance_buffer.add(2);
+        let index = instance_buffer.add(TestData(2));
         instance_buffer.remove(index);
-        assert_eq!(instance_buffer.get_unchecked(index), 2);
+        assert_eq!(instance_buffer.get_unchecked(index), TestData(2));
         assert_eq!(instance_buffer.get(index), None);
 
-        instance_buffer.add(5);
+        instance_buffer.add(TestData(5));
         assert_eq!(instance_buffer.buffer().len(), 1);
     }
 }
