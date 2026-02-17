@@ -31,7 +31,17 @@ struct VertexPullParams {
 
 struct WireframeVertexOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(linear) edge_distance: vec3<f32>,
+    @location(0) @interpolate(linear) edge_distance: vec4<f32>,
+}
+
+// unsigned perpendicular distance from point p to the infinite line through a and b.
+fn point_line_distance(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let edge = b - a;
+    let len = length(edge);
+    if len < 0.001 {
+        return 1e6;
+    }
+    return abs(edge.x * (p.y - a.y) - edge.y * (p.x - a.x)) / len;
 }
 
 // finds the local-space vertex position for a given vertex index by reading from the vertex buffer using the provided
@@ -85,6 +95,9 @@ fn vertex(
     let len20 = length(screen0 - screen2);
 
     // altitudes: h_i = 2 * area / opposite_edge_length
+    // the altitude-based distance field follows Baerentzen et al., "Single-Pass
+    // Wireframe Rendering" (SIGGRAPH 2006) and the NVIDIA "Solid Wireframe"
+    // whitepaper (2007).
     let h0 = area2 / max(len12, 0.001);
     let h1 = area2 / max(len20, 0.001);
     let h2 = area2 / max(len01, 0.001);
@@ -107,6 +120,61 @@ fn vertex(
     let diag_01 = in_other_0 && in_other_1;
     let diag_12 = in_other_1 && in_other_2;
     let diag_20 = in_other_2 && in_other_0;
+    let has_diagonal = diag_01 || diag_12 || diag_20;
+
+    // find the extra vertex from the other triangle (the one not shared with ours)
+    // and compute distances to the other triangle's two perimeter edges.
+    // this ensures each fragment sees all 4 quad perimeter edges, not just the 2
+    // belonging to its own triangle. without this, pixels near the diagonal see the
+    // wrong triangle's edges and the wireframe line appears to thin at vertices.
+    var other_d0 = vec2<f32>(1e6);
+    var other_d1 = vec2<f32>(1e6);
+    var other_d2 = vec2<f32>(1e6);
+
+    if has_diagonal {
+        // identify the extra vertex index
+        let j0_shared = (j0 == idx0) || (j0 == idx1) || (j0 == idx2);
+        let j1_shared = (j1 == idx0) || (j1 == idx1) || (j1 == idx2);
+        var extra_idx = j2;
+        if !j0_shared {
+            extra_idx = j0;
+        } else if !j1_shared {
+            extra_idx = j1;
+        }
+
+        let p_extra = read_local_position(first_vertex, extra_idx);
+        let clip_extra = position_world_to_clip((world_from_local * vec4(p_extra, 1.0)).xyz);
+        let screen_extra = (clip_extra.xy / clip_extra.w) * viewport_size * 0.5;
+
+        // the two "other" perimeter edges connect the extra vertex to each diagonal
+        // endpoint. identify the diagonal endpoints from our triangle's vertices.
+        var diag_a = screen0;
+        var diag_b = screen1;
+        if diag_12 {
+            diag_a = screen1;
+            diag_b = screen2;
+        } else if diag_20 {
+            diag_a = screen2;
+            diag_b = screen0;
+        }
+
+        // other edge 1: extra_vertex → diag_a
+        // other edge 2: extra_vertex → diag_b
+        // compute unsigned perpendicular distance at each of our three vertices.
+        other_d0 = vec2<f32>(
+            point_line_distance(screen0, screen_extra, diag_a),
+            point_line_distance(screen0, screen_extra, diag_b),
+        );
+        other_d1 = vec2<f32>(
+            point_line_distance(screen1, screen_extra, diag_a),
+            point_line_distance(screen1, screen_extra, diag_b),
+        );
+        other_d2 = vec2<f32>(
+            point_line_distance(screen2, screen_extra, diag_a),
+            point_line_distance(screen2, screen_extra, diag_b),
+        );
+    }
+
     let mask = vec3<f32>(
         select(1.0, 0.0, diag_12),
         select(1.0, 0.0, diag_20),
@@ -115,24 +183,33 @@ fn vertex(
     let suppress = vec3<f32>(1.0) - mask;
 
     if corner == 0u {
-        out.edge_distance = vec3<f32>(h0, 0.0, 0.0) * mask + suppress * 1e6;
+        out.edge_distance = vec4<f32>(
+            (vec3<f32>(h0, 0.0, 0.0) * mask + suppress * 1e6),
+            min(other_d0.x, other_d0.y),
+        );
         out.position = clip0;
     } else if corner == 1u {
-        out.edge_distance = vec3<f32>(0.0, h1, 0.0) * mask + suppress * 1e6;
+        out.edge_distance = vec4<f32>(
+            (vec3<f32>(0.0, h1, 0.0) * mask + suppress * 1e6),
+            min(other_d1.x, other_d1.y),
+        );
         out.position = clip1;
     } else {
-        out.edge_distance = vec3<f32>(0.0, 0.0, h2) * mask + suppress * 1e6;
+        out.edge_distance = vec4<f32>(
+            (vec3<f32>(0.0, 0.0, h2) * mask + suppress * 1e6),
+            min(other_d2.x, other_d2.y),
+        );
         out.position = clip2;
     }
 #else // WIREFRAME_QUADS
     if corner == 0u {
-        out.edge_distance = vec3<f32>(h0, 0.0, 0.0);
+        out.edge_distance = vec4<f32>(h0, 0.0, 0.0, 1e6);
         out.position = clip0;
     } else if corner == 1u {
-        out.edge_distance = vec3<f32>(0.0, h1, 0.0);
+        out.edge_distance = vec4<f32>(0.0, h1, 0.0, 1e6);
         out.position = clip1;
     } else {
-        out.edge_distance = vec3<f32>(0.0, 0.0, h2);
+        out.edge_distance = vec4<f32>(0.0, 0.0, h2, 1e6);
         out.position = clip2;
     }
 #endif // WIREFRAME_QUADS
@@ -142,7 +219,8 @@ fn vertex(
 
 @fragment
 fn fragment(in: WireframeVertexOutput) -> @location(0) vec4<f32> {
-    let d = min(in.edge_distance.x, min(in.edge_distance.y, in.edge_distance.z));
+    let d = min(min(in.edge_distance.x, in.edge_distance.y),
+               min(in.edge_distance.z, in.edge_distance.w));
 
     let width = immediates.line_width;
     let smoothing = immediates.smoothing;
@@ -151,7 +229,7 @@ fn fragment(in: WireframeVertexOutput) -> @location(0) vec4<f32> {
     let alpha_scale = min(width, 1.0);
 
     let half_width = effective_width * 0.5;
-    // solid line up to half_width, then anti-alias over `smoothing` pixels at the outer edge
+
     let alpha = (1.0 - smoothstep(half_width, half_width + smoothing, d))
               * alpha_scale
               * immediates.color.a;
