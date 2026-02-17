@@ -709,10 +709,8 @@ pub fn init_wireframe_3d_pipeline(
     let wide_bind_group_layout = render_device
         .create_bind_group_layout("wireframe_wide_bind_group_layout", &wide_bgl_entries);
 
-    let wide_bind_group_layout_descriptor = BindGroupLayoutDescriptor::new(
-        "wireframe_wide_bind_group_layout",
-        &wide_bgl_entries,
-    );
+    let wide_bind_group_layout_descriptor =
+        BindGroupLayoutDescriptor::new("wireframe_wide_bind_group_layout", &wide_bgl_entries);
 
     commands.insert_resource(Wireframe3dPipeline {
         mesh_pipeline: mesh_pipeline.clone(),
