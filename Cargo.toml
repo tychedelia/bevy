@@ -33,6 +33,7 @@ members = [
   # Examples of large bevy scenes.
   "examples/large_scenes/bistro",
   "examples/large_scenes/caldera_hotel",
+  "examples/large_scenes/bevy_city",
   # Mipmap generator for testing large bevy scenes with mips and texture compression.
   "examples/large_scenes/mipmap_generator",
   # Benchmarks
@@ -178,7 +179,7 @@ audio = ["bevy_audio", "vorbis"]
 # COLLECTION: Features used to compose Bevy scenes.
 scene = ["bevy_scene"]
 
-# COLLECTION: Enables picking functionality.
+# COLLECTION: Enables picking with all backends.
 picking = ["bevy_picking", "mesh_picking", "sprite_picking", "ui_picking"]
 
 # COLLECTION: The core pieces that most apps need. This serves as a baseline feature set for other higher level feature collections (such as "2d" and "3d"). It is also useful as a baseline feature set for scenarios like headless apps that require no rendering (ex: command line tools, servers, etc).
@@ -324,7 +325,7 @@ bevy_gltf = ["bevy_internal/bevy_gltf"]
 # Adds PBR rendering
 bevy_pbr = ["bevy_internal/bevy_pbr"]
 
-# Provides picking functionality
+# Provides picking functionality without any backend
 bevy_picking = ["bevy_internal/bevy_picking"]
 
 # Provides rendering functionality
@@ -2036,7 +2037,7 @@ wasm = false
 name = "asset_saving"
 path = "examples/asset/asset_saving.rs"
 doc-scrape-examples = true
-required-features = ["bevy_picking", "sprite_picking"]
+required-features = ["ui_picking", "sprite_picking"]
 
 [package.metadata.example.asset_saving]
 name = "Asset Saving"
@@ -5062,7 +5063,7 @@ name = "simple_picking"
 path = "examples/picking/simple_picking.rs"
 # Causes an ICE on docs.rs
 doc-scrape-examples = false
-required-features = ["bevy_picking"]
+required-features = ["ui_picking"]
 
 [package.metadata.example.simple_picking]
 name = "Showcases simple picking events and usage"
