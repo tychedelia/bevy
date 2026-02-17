@@ -476,7 +476,6 @@ pub fn prepare_wireframe_wide_bind_groups(
         return;
     }
 
-    // upload happens here.
     let Some(mut writer) =
         wide_bind_groups
             .params
@@ -673,7 +672,7 @@ pub type DrawWireframe3dThin = (
     DrawMesh,
 );
 
-/// Draw wireframes with stroke expansion.
+/// Draw wireframes using vertex pulling for wide lines or quad topology.
 pub type DrawWireframe3dWide = (
     SetItemPipeline,
     SetMeshViewBindGroup<0>,
@@ -854,11 +853,6 @@ impl Default for WireframeLineWidth {
     }
 }
 
-#[derive(Component, Debug, Clone, Default)]
-pub struct ExtractedWireframeColor {
-    pub color: [f32; 4],
-}
-
 /// Disables wireframe rendering for any entity it is attached to.
 /// It will ignore the [`WireframeConfig`] global setting.
 ///
@@ -867,7 +861,7 @@ pub struct ExtractedWireframeColor {
 #[reflect(Component, Default, Debug, PartialEq)]
 pub struct NoWireframe;
 
-/// Controls edge topology for the wide wireframe path.
+/// Controls whether wireframe edges follow triangle or quad topology.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Reflect)]
 #[reflect(Component, Default, Debug)]
 pub enum WireframeTopology {
