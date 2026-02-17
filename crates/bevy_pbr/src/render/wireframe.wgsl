@@ -182,23 +182,25 @@ fn vertex(
     );
     let suppress = vec3<f32>(1.0) - mask;
 
+    // pack all 4 quad perimeter edge distances into edge_distance:
+    // xyz = own triangle's edges (diagonal slot replaced with other_d.x)
+    // w   = other_d.y
+    // taking min(other_d.x, other_d.y) at the vertex level would be wrong
+    // because the diagonal endpoints lie ON the other perimeter edges,
+    // giving min = 0 at both endpoints and 0 along the entire diagonal
+    // after interpolation. keeping them separate ensures the interpolated
+    // values are nonzero at the diagonal's midpoint.
     if corner == 0u {
-        out.edge_distance = vec4<f32>(
-            (vec3<f32>(h0, 0.0, 0.0) * mask + suppress * 1e6),
-            min(other_d0.x, other_d0.y),
-        );
+        let ed = vec3<f32>(h0, 0.0, 0.0) * mask + suppress * other_d0.x;
+        out.edge_distance = vec4<f32>(ed.x, ed.y, ed.z, other_d0.y);
         out.position = clip0;
     } else if corner == 1u {
-        out.edge_distance = vec4<f32>(
-            (vec3<f32>(0.0, h1, 0.0) * mask + suppress * 1e6),
-            min(other_d1.x, other_d1.y),
-        );
+        let ed = vec3<f32>(0.0, h1, 0.0) * mask + suppress * other_d1.x;
+        out.edge_distance = vec4<f32>(ed.x, ed.y, ed.z, other_d1.y);
         out.position = clip1;
     } else {
-        out.edge_distance = vec4<f32>(
-            (vec3<f32>(0.0, 0.0, h2) * mask + suppress * 1e6),
-            min(other_d2.x, other_d2.y),
-        );
+        let ed = vec3<f32>(0.0, 0.0, h2) * mask + suppress * other_d2.x;
+        out.edge_distance = vec4<f32>(ed.x, ed.y, ed.z, other_d2.y);
         out.position = clip2;
     }
 #else // WIREFRAME_QUADS
