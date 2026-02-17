@@ -711,7 +711,7 @@ pub fn init_wireframe_3d_pipeline(
 
     let wide_bind_group_layout_descriptor = BindGroupLayoutDescriptor::new(
         "wireframe_wide_bind_group_layout",
-        &wide_bgl_entries.to_vec(),
+        &wide_bgl_entries,
     );
 
     commands.insert_resource(Wireframe3dPipeline {
@@ -757,10 +757,8 @@ impl SpecializedMeshPipeline for Wireframe3dPipeline {
             fragment.shader_defs.push("WIREFRAME_WIDE".into());
             fragment.entry_point = Some("fragment".into());
 
-            for target in &mut fragment.targets {
-                if let Some(state) = target {
-                    state.blend = Some(BlendState::ALPHA_BLENDING);
-                }
+            for state in fragment.targets.iter_mut().flatten() {
+                state.blend = Some(BlendState::ALPHA_BLENDING);
             }
 
             descriptor.primitive.polygon_mode = if key.line_mode {
