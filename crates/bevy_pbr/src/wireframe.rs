@@ -863,6 +863,8 @@ pub struct NoWireframe;
 pub enum WireframeTopology {
     #[default]
     Triangles,
+    /// Does a best-effort attempt to detect quads from a triangle mesh. No guarantee of accuracy is made,
+    /// that is, there may be both false positives and false negatives in the rendered output.
     Quads,
 }
 
