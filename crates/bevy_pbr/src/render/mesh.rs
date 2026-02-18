@@ -820,8 +820,8 @@ impl RenderMeshInstanceSharedFlatBlob {
     }
 }
 
-/// Data in [`RenderMeshInstance`] that's both specific to the GPU preprocessing
-/// path and POD.
+/// Data in [`RenderMeshInstanceGpu`] that's both specific to the GPU
+/// preprocessing path and POD.
 ///
 /// This includes all the data except the `render_layers` list, which isn't POD.
 #[derive(Clone, Copy, Default, Pod, Zeroable)]
