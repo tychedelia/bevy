@@ -99,12 +99,13 @@ pub unsafe trait AtomicPodBlob: Default + Send + Sync + 'static {}
 /// type: conventionally, it matches the name of the type with `Blob` appended.
 ///
 /// Afterward follow optional *field getter and setter* declarations. These
-/// declarations direct the [`impl_atomic_pod`] macro to create convenience
-/// accessor and mutation methods that allow fields of the blob value to be
-/// accessed and mutated. The first argument of `field` is the name of the
-/// field, a `:`, and the type of the field. The second argument is the name
-/// that this macro should assign the accessor method, and the third, optional,
-/// argument is the name that this macro should give the mutator method.
+/// declarations direct the [`crate::impl_atomic_pod`] macro to create
+/// convenience accessor and mutation methods that allow fields of the blob
+/// value to be accessed and mutated. The first argument of `field` is the name
+/// of the field, a `:`, and the type of the field. The second argument is the
+/// name that this macro should assign the accessor method, and the third,
+/// optional, argument is the name that this macro should give the mutator
+/// method.
 ///
 /// This macro generates (1) the `struct` corresponding to the blob type; (2)
 /// the implementation of `AtomicPod` for the POD type; (3) the unsafe
