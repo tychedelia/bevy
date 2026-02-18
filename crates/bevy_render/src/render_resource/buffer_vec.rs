@@ -407,18 +407,15 @@ where
         self.buffer.as_ref()
     }
 
-    /// Sets the value at the given index, adding default values to fill the gap
-    /// if necessary.
+    /// Grows to the buffer by adding default values so that it's at least the
+    /// given size.
     ///
-    /// This function should always succeed.
-    ///
-    /// Internally, the value is converted to its blob representation.
-    pub fn grow_set(&mut self, index: u32, value: T) {
-        self.values.reserve(index as usize + 1);
-        while index + 1 > self.len() {
-            self.values.push(T::Blob::default());
+    /// If the buffer is already large enough, this method does nothing.
+    pub fn grow(&mut self, new_len: u32) {
+        if self.len() < new_len {
+            self.values
+                .resize_with(new_len as usize, || T::Blob::default());
         }
-        value.write_to_blob(&self.values[index as usize]);
     }
 }
 

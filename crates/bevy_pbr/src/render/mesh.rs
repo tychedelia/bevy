@@ -1986,11 +1986,9 @@ pub fn collect_meshes_for_gpu_building(
     } = batched_instance_buffers.into_inner();
     previous_input_buffer.clear();
 
+    // Make sure the mesh culling data buffer has enough space.
     if !current_input_buffer.is_empty() {
-        mesh_culling_data_buffer.grow_set(
-            current_input_buffer.len() as u32 - 1,
-            MeshCullingData::default(),
-        );
+        mesh_culling_data_buffer.grow(current_input_buffer.len() as u32);
     }
 
     // Channels used by parallel workers to send data to the single consumer.
