@@ -435,7 +435,7 @@ pub fn prepare_wireframe_wide_bind_groups(
         let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(*entity) else {
             continue;
         };
-        let mesh_id = mesh_instance.mesh_asset_id;
+        let mesh_id = mesh_instance.mesh_asset_id();
         if !seen.insert(mesh_id) {
             continue;
         }
@@ -534,7 +534,7 @@ impl<P: PhaseItem> RenderCommand<P> for SetWireframe3dWideBindGroup {
         let Some((bind_group, dynamic_offset)) = wide_bind_groups
             .into_inner()
             .bind_groups
-            .get(&mesh_instance.mesh_asset_id)
+            .get(&mesh_instance.mesh_asset_id())
         else {
             return RenderCommandResult::Skip;
         };
@@ -1532,7 +1532,7 @@ fn queue_wireframes(
                 // IndirectParametersNonIndexed instead of IndirectParametersIndexed.
                 index_slab: if is_wide { None } else { index_slab },
                 mesh_asset_id: if is_wide {
-                    Some(mesh_instance.mesh_asset_id.untyped())
+                    Some(mesh_instance.mesh_asset_id().untyped())
                 } else {
                     None
                 },
