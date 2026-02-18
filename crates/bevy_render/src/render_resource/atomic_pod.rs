@@ -16,10 +16,11 @@
 
 use bytemuck::Pod;
 
-/// Data that can be converted to an array of [`AtomicU32`] values.
+/// Data that can be converted to an array of [`std::sync::atomic::AtomicU32`]
+/// values.
 ///
-/// That array is known as the *blob* ([`Self::AtomicPodBlob`]). The trait
-/// provides methods to copy data into and out of the blob type.
+/// That array is known as the *blob* ([`Self::Blob`]). The trait provides
+/// methods to copy data into and out of the blob type.
 ///
 /// Note that, while implementing this trait isn't unsafe, it can be tedious,
 /// and in any case implementing [`AtomicPodBlob`] *is* unsafe. Therefore, you
@@ -28,10 +29,11 @@ use bytemuck::Pod;
 pub trait AtomicPod: Pod + Default + Send + Sync + 'static {
     /// The *blob* type that allows shared mutation.
     ///
-    /// This type must be an array of [`AtomicU32`]s. Because the renderer can't
-    /// guarantee that, the [`AtomicPodBlob`] trait is unsafe. However, the
-    /// [`impl_atomic_pod`] macro can automatically generate safe
-    /// implementations of [`AtomicPodBlob`] for you.
+    /// This type must be an array of [`std::sync::atomic::AtomicU32`]s.
+    /// Because the renderer can't guarantee that, the [`AtomicPodBlob`] trait
+    /// is unsafe. However, the [`crate::impl_atomic_pod`] macro can
+    /// automatically generate safe implementations of [`AtomicPodBlob`] for
+    /// you.
     type Blob: AtomicPodBlob;
 
     /// Produces a value of this type from the blob, typically by reading its
@@ -47,7 +49,7 @@ pub trait AtomicPod: Pod + Default + Send + Sync + 'static {
 }
 
 /// Describes a type that has the same bit pattern as another type, but is made
-/// up entirely of an array of [`AtomicU32`] values.
+/// up entirely of an array of [`std::sync::atomic::AtomicU32`] values.
 ///
 /// This trait enables values of whatever type this mirrors to be written from
 /// multiple threads. It's memory-safe because the type must be POD. However,
@@ -55,7 +57,7 @@ pub trait AtomicPod: Pod + Default + Send + Sync + 'static {
 /// partially-updated values, which might be incorrect. Therefore, use this type
 /// with caution.
 ///
-/// The [`impl_atomic_pod`] macro that generates an implementation of
+/// The [`crate::impl_atomic_pod`] macro that generates an implementation of
 /// [`AtomicPod`] automatically generates a blob type that implements
 /// [`AtomicPodBlob`]. This is the preferred way to implement this trait and
 /// doesn't require any unsafe code.
