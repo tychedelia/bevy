@@ -413,8 +413,7 @@ where
     /// If the buffer is already large enough, this method does nothing.
     pub fn grow(&mut self, new_len: u32) {
         if self.len() < new_len {
-            self.values
-                .resize_with(new_len as usize, T::Blob::default);
+            self.values.resize_with(new_len as usize, T::Blob::default);
         }
     }
 }
