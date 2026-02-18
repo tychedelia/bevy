@@ -74,6 +74,8 @@ pub unsafe trait AtomicPodBlob: Default + Send + Sync + 'static {}
 /// An example of use of this macro:
 ///
 /// ```
+/// # use bevy_render::impl_atomic_pod!
+/// # use bytemuck::Pod;
 /// #[derive(Clone, Copy, Pod)]
 /// #[repr(C)]
 /// struct Foo {
