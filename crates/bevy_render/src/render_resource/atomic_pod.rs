@@ -75,8 +75,10 @@ pub unsafe trait AtomicPodBlob: Default + Send + Sync + 'static {}
 ///
 /// ```
 /// # use bevy_render::impl_atomic_pod;
-/// # use bytemuck::Pod;
-/// #[derive(Clone, Copy, Pod)]
+/// # use bevy_render::render_resource::AtomicPod;
+/// # use bytemuck::{Pod, Zeroable};
+/// # use std::mem::offset_of;
+/// #[derive(Clone, Copy, Default, Pod, Zeroable)]
 /// #[repr(C)]
 /// struct Foo {
 ///     a: u32,
