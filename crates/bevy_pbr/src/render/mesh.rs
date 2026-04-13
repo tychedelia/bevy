@@ -715,6 +715,7 @@ bitflags::bitflags! {
     ///
     /// Flags grow from the top bit down; other values grow from the bottom bit
     /// up.
+    #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
     #[repr(transparent)]
     pub struct MeshFlags: u32 {
         /// Bitmask for the 16-bit index into the LOD array.
