@@ -18,8 +18,6 @@
 //!         mesh: mesh_handle,
 //!         max_capacity: 4096,
 //!         aabb: emitter_bounds,
-//!         dispatch_args_buffer: my_dispatch_args_buffer,
-//!         dispatch_args_offset: 0,
 //!         flags: MeshFlags::empty(),
 //!     },
 //!     MeshMaterial3d(material_handle),
@@ -32,15 +30,52 @@
 //! `MaterialPlugin<M>`, which populates the type-erased `RenderMaterialInstances`
 //! the rendering code here reads from.
 //!
+//! # Aliveness control
+//!
+//! To mark a slot as "dead", the user's simulation compute shader writes a
+//! per-slot [`MeshCullingData`] with impossible AABB extents (or a center far
+//! outside any frustum). Bevy's existing frustum culling in
+//! `mesh_preprocess.wgsl` then rejects that slot, so the indirect draw's
+//! `instance_count` only reflects surviving instances. No indirect dispatch
+//! is required for the preprocess pass; the existing direct dispatch iterates
+//! all work items (including ours) and culling drops the dead ones.
+//!
 //! # Scope (v1)
 //!
-//! - Forward opaque rendering only. Shadow casting, prepass, and deferred are
-//!   not yet wired up for batches.
-//! - No motion vectors / TAA support (`previous_input_index` is always
-//!   `u32::MAX`).
-//! - No late-phase occlusion culling for batches — batches participate only in
-//!   the frustum-culling early pass.
+//! Batches render through all standard phases (opaque, shadow, prepass,
+//! deferred) once the bevy-side patch introducing
+//! `RenderMeshInstanceBatches` + range-variant phase items lands. Known
+//! limitations:
+//!
+//! - No transparent-phase support. GPU-authored depths can't be correctly
+//!   interleaved with other transparent geometry via CPU sort keys; this is
+//!   structurally incompatible with `SortedRenderPhase` rather than a
+//!   scope cut. Proper transparent GPU-authored batches would need OIT or
+//!   per-particle GPU sorting.
+//! - No motion vectors / TAA (`previous_input_index = u32::MAX` always).
+//!   Slot mapping isn't stable across frames when the user's simulation
+//!   compacts particles.
+//! - No late-phase occlusion culling for batches — batches participate only
+//!   in the frustum-culling early pass.
+//! - No per-instance attribute variation beyond transform (v2+ extension
+//!   point).
 //! - `max_capacity` is CPU-declared and mutable only from the main world.
+//!
+//! # Architecture note
+//!
+//! Batches do not go through `RenderMeshInstances` (which encodes 1:1
+//! ECS-entity-to-instance semantics). Instead, a separate parallel registry
+//! `RenderMeshInstanceBatches` — introduced in a companion bevy patch —
+//! carries one `RenderMeshInstanceBatch` entry per batch, describing a
+//! range of `count` GPU-authored instances. Queue systems (opaque, shadow,
+//! prepass, deferred) iterate both registries and emit range-variant phase
+//! items (`BinnedRenderPhaseType::InstanceBatch`) for the batch registry.
+//! `batch_and_prepare_binned_render_phase` handles the variant by pushing
+//! `count` work items instead of one. Every subsequent stage — GPU
+//! preprocessing, indirect-parameter building, `DrawMesh` — is unchanged;
+//! the shared infrastructure operates on work items and indirect
+//! parameters, which are populated identically whether they came from a
+//! single mesh entity or a batch range.
 
 use bevy_app::{App, Plugin};
 use bevy_asset::AssetId;
@@ -54,7 +89,6 @@ use bevy_mesh::Mesh;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::batching::gpu_preprocessing::{BatchedInstanceBuffers, GpuPreprocessingSupport};
 use bevy_render::mesh::allocator::MeshAllocator;
-use bevy_render::render_resource::Buffer;
 use bevy_render::sync_world::{MainEntity, MainEntityHashMap};
 use bevy_render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
 
@@ -80,24 +114,18 @@ pub struct GpuInstanceBatch {
     /// Upper bound on the number of instances this batch can render.
     ///
     /// Contiguous slots are reserved in the preprocessing input buffer,
-    /// culling data buffer, and indirect work-item buffer at this size. The
-    /// live instance count may vary 0..=`max_capacity` each frame, driven by
-    /// the user's dispatch-args buffer.
+    /// culling data buffer, and indirect work-item buffer at this size.
+    /// Dead slots (marked via [`MeshCullingData`] with impossible AABBs from
+    /// the user's simulation shader) are rejected by frustum culling so the
+    /// final indirect draw's `instance_count` matches the live particle
+    /// count without any CPU bookkeeping.
     pub max_capacity: u32,
     /// Axis-aligned bounding box that is copied into every slot of the
-    /// culling data buffer for this batch. A single AABB is shared by all
-    /// instances for v1; per-instance AABBs are a future extension.
-    pub aabb: Aabb,
-    /// User-owned buffer whose contents at `dispatch_args_offset` encode the
-    /// indirect dispatch arguments (`[workgroup_x, 1, 1]` as `vec3<u32>`) for
-    /// the preprocessing compute pass over this batch.
+    /// culling data buffer at reservation time.
     ///
-    /// The user's own compute shaders are responsible for writing this buffer
-    /// each frame based on their simulation's live particle count.
-    pub dispatch_args_buffer: Buffer,
-    /// Byte offset into `dispatch_args_buffer` where the indirect arguments
-    /// begin.
-    pub dispatch_args_offset: u64,
+    /// The user's simulation compute is free to overwrite the per-slot AABB
+    /// each frame to signal alive/dead status. See the module-level docs.
+    pub aabb: Aabb,
     /// [`MeshFlags`] to stamp into every slot of the input uniform buffer for
     /// this batch. Used for visibility range, no-frustum-culling, and other
     /// per-mesh rendering toggles.
@@ -110,16 +138,14 @@ pub struct ExtractedGpuInstanceBatch {
     pub mesh_asset_id: AssetId<Mesh>,
     pub max_capacity: u32,
     pub aabb: Aabb,
-    pub dispatch_args_buffer: Buffer,
-    pub dispatch_args_offset: u64,
     pub flags: MeshFlags,
 }
 
 /// Render-world collection of extracted batches for the current frame.
 ///
 /// Populated by [`extract_gpu_instance_batches`] and consumed by
-/// [`allocate_gpu_instance_batch_reservations`] (and, in later PRs, by the
-/// queue system and the preprocessing node).
+/// [`allocate_gpu_instance_batch_reservations`]. Cleared and repopulated each
+/// frame; lookups key by [`MainEntity`].
 #[derive(Resource, Default)]
 pub struct ExtractedGpuInstanceBatches {
     pub batches: MainEntityHashMap<ExtractedGpuInstanceBatch>,
@@ -127,9 +153,9 @@ pub struct ExtractedGpuInstanceBatches {
 
 /// Stable per-batch allocation handles.
 ///
-/// The input-buffer and culling-buffer ranges for a batch are allocated on its
-/// first successful extraction and persist until the batch is removed from the
-/// main world.
+/// The input-buffer and culling-buffer ranges for a batch are allocated on
+/// its first successful extraction and persist until the batch is removed
+/// from the main world.
 #[derive(Clone, Copy)]
 pub struct GpuInstanceBatchReservation {
     pub input_buffer_base: u32,
@@ -146,9 +172,18 @@ pub struct GpuInstanceBatchReservations {
 /// Plugin that registers GPU instance batch extraction and reservation
 /// lifecycle.
 ///
-/// Systems in this plugin are gated on [`GpuPreprocessingSupport::is_available`]
-/// — on devices without GPU preprocessing, the plugin does nothing and logs a
-/// warning.
+/// Systems in this plugin are gated on
+/// [`GpuPreprocessingSupport::is_available`] — on devices without GPU
+/// preprocessing, the plugin does nothing and logs a warning.
+///
+/// # v1 limitations
+///
+/// This plugin currently wires up extraction and reservation only. Queue
+/// and draw integration depend on a companion bevy-side patch that
+/// introduces `RenderMeshInstanceBatches` plus a range-variant phase item
+/// (see the trailing `NOTE` in this module's source). Until that lands,
+/// batches allocate input and culling buffer ranges and template
+/// [`MeshInputUniform`] data, but nothing renders.
 pub struct GpuInstanceBatchPlugin;
 
 impl Plugin for GpuInstanceBatchPlugin {
@@ -204,8 +239,6 @@ pub fn extract_gpu_instance_batches(
                 mesh_asset_id: batch.mesh.id(),
                 max_capacity: batch.max_capacity,
                 aabb: batch.aabb,
-                dispatch_args_buffer: batch.dispatch_args_buffer.clone(),
-                dispatch_args_offset: batch.dispatch_args_offset,
                 flags: batch.flags,
             },
         );
@@ -333,3 +366,25 @@ pub fn allocate_gpu_instance_batch_reservations(
         );
     }
 }
+
+// NOTE: rendering integration is completed by two follow-up pieces in
+// the upstream bevy renderer:
+//
+// 1. A bevy-side patch adding `RenderMeshInstanceBatch` +
+//    `RenderMeshInstanceBatches` and a `BinnedRenderPhaseType::InstanceBatch`
+//    variant, with range handling in `batch_and_prepare_binned_render_phase`
+//    and awareness in `queue_material_meshes` / shadow / prepass / deferred
+//    queue systems. Lands independently as it's broadly useful to any
+//    GPU-driven instance provider.
+//
+// 2. A thin consumer layer in this module that, during reservation,
+//    populates `RenderMeshInstanceBatches` with an entry keyed by the
+//    batch's `MainEntity`, carrying `base_input_index`, `count =
+//    max_capacity`, and the resolved material binding. With that in place,
+//    the registry-aware queue systems emit range phase items for us and
+//    the existing GPU preprocessing + indirect build + draw path renders
+//    batches across all phases with zero further integration.
+//
+// Until those land, this module reserves input / culling buffer ranges
+// and populates `MeshInputUniform` templates, but produces no visible
+// output.
