@@ -37,7 +37,7 @@ use bevy_mesh::{
 };
 use bevy_platform::collections::{hash_map::Entry, HashMap};
 use bevy_render::batching::gpu_preprocessing::{
-    BufferDataInput, PreviousInstanceInputUniformBuffer,
+    BufferDataInput, FreeRunList, PreviousInstanceInputUniformBuffer,
 };
 use bevy_render::impl_atomic_pod;
 use bevy_render::material_bind_groups::{
@@ -109,6 +109,7 @@ use bevy_render::RenderSystems::PrepareAssets;
 use bevy_tasks::ComputeTaskPool;
 
 use bytemuck::{Pod, Zeroable};
+use core::num::NonZeroU32;
 use nonmax::{NonMaxU16, NonMaxU32};
 
 /// Provides support for rendering 3D meshes.
@@ -262,6 +263,7 @@ impl Plugin for MeshRenderPlugin {
                     >>()
                     .init_gpu_resource::<RenderMeshInstanceGpuQueues>()
                     .init_resource::<MeshesToReextractNextFrame>()
+                    .init_resource::<RenderMeshInstanceBatches>()
                     .add_systems(
                         RenderStartup,
                         mark_all_meshes_for_reextraction,
@@ -648,18 +650,18 @@ impl_atomic_pod!(MeshInputUniform, MeshInputUniformBlob);
 
 impl_atomic_pod!(PreviousMeshInputUniform, PreviousMeshInputUniformBlob);
 
-/// Information about each mesh instance needed to cull it on GPU.
-///
-/// This consists of its axis-aligned bounding box (AABB).
+/// AABB plus a dead-slot flag used by GPU-authored instance batches.
 #[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MeshCullingData {
-    /// The 3D center of the AABB in model space, padded with an extra unused
-    /// float value.
-    pub aabb_center: Vec4,
-    /// The 3D extents of the AABB in model space, divided by two, padded with
-    /// an extra unused float value.
-    pub aabb_half_extents: Vec4,
+    pub aabb_center: Vec3,
+    _pad: f32,
+    pub aabb_half_extents: Vec3,
+    /// `0.0` = alive, nonzero = skip in preprocessing. Used by GPU
+    /// simulations to retire slots in a [`GpuBatchedMesh3d`] reservation.
+    ///
+    /// [`GpuBatchedMesh3d`]: crate::gpu_instance_batch::GpuBatchedMesh3d
+    pub dead: f32,
 }
 
 /// A GPU buffer that holds the information needed to cull meshes on GPU.
@@ -669,7 +671,31 @@ pub struct MeshCullingData {
 /// To avoid wasting CPU time in the CPU culling case, this buffer will be empty
 /// if GPU culling isn't in use.
 #[derive(Resource, Deref, DerefMut)]
-pub struct MeshCullingDataBuffer(AtomicSparseBufferVec<MeshCullingData>);
+pub struct MeshCullingDataBuffer {
+    #[deref]
+    buffer: AtomicSparseBufferVec<MeshCullingData>,
+    free_runs: FreeRunList,
+}
+
+impl MeshCullingDataBuffer {
+    /// # Panics
+    /// if `count` is zero.
+    pub fn push_many_identical(&mut self, value: MeshCullingData, count: u32) -> u32 {
+        assert!(count > 0, "push_many_identical requires count > 0");
+        let base = match self.free_runs.allocate(count) {
+            Some(base) => base,
+            None => self.buffer.push_many(count),
+        };
+        for i in 0..count {
+            self.buffer.set(base + i, value);
+        }
+        base
+    }
+
+    pub fn remove_range(&mut self, base: u32, count: u32) {
+        self.free_runs.free(base, count);
+    }
+}
 
 impl_atomic_pod!(MeshCullingData, MeshCullingDataBlob);
 
@@ -725,6 +751,7 @@ bitflags::bitflags! {
     ///
     /// Flags grow from the top bit down; other values grow from the bottom bit
     /// up.
+    #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
     #[repr(transparent)]
     pub struct MeshFlags: u32 {
         /// Bitmask for the 16-bit index into the LOD array.
@@ -1214,6 +1241,20 @@ pub struct RenderMeshInstancesCpu(MainEntityHashMap<RenderMeshInstanceCpu>);
 #[derive(Default, Deref, DerefMut)]
 pub struct RenderMeshInstancesGpu(MainEntityHashMap<RenderMeshInstanceGpu>);
 
+/// A batch of `count` GPU-authored mesh instances rendered as a single
+/// indirect draw.
+#[derive(Clone, Debug)]
+pub struct RenderMeshInstanceBatch {
+    pub asset_id: AssetId<Mesh>,
+    pub material_binding: MaterialBindingId,
+    pub base_input_index: u32,
+    pub count: NonZeroU32,
+    pub flags: MeshFlags,
+}
+
+#[derive(Resource, Default, Deref, DerefMut)]
+pub struct RenderMeshInstanceBatches(pub MainEntityHashMap<RenderMeshInstanceBatch>);
+
 impl RenderMeshInstances {
     /// Creates a new [`RenderMeshInstances`] instance.
     fn new(use_gpu_instance_buffer_builder: bool) -> RenderMeshInstances {
@@ -1643,15 +1684,19 @@ impl MeshCullingData {
     ///
     /// If no AABB is provided, an infinitely-large one is conservatively
     /// chosen.
-    fn new(aabb: Option<&Aabb>) -> Self {
+    pub(crate) fn new(aabb: Option<&Aabb>) -> Self {
         match aabb {
             Some(aabb) => MeshCullingData {
-                aabb_center: aabb.center.extend(0.0),
-                aabb_half_extents: aabb.half_extents.extend(0.0),
+                aabb_center: aabb.center.into(),
+                _pad: 0.0,
+                aabb_half_extents: aabb.half_extents.into(),
+                dead: 0.0,
             },
             None => MeshCullingData {
-                aabb_center: Vec3::ZERO.extend(0.0),
-                aabb_half_extents: Vec3::INFINITY.extend(0.0),
+                aabb_center: Vec3::ZERO,
+                _pad: 0.0,
+                aabb_half_extents: Vec3::INFINITY,
+                dead: 0.0,
             },
         }
     }
@@ -1673,10 +1718,13 @@ impl MeshCullingData {
 impl Default for MeshCullingDataBuffer {
     #[inline]
     fn default() -> Self {
-        Self(AtomicSparseBufferVec::new(
-            BufferUsages::STORAGE,
-            Arc::from("mesh culling data buffer"),
-        ))
+        Self {
+            buffer: AtomicSparseBufferVec::new(
+                BufferUsages::STORAGE,
+                Arc::from("mesh culling data buffer"),
+            ),
+            free_runs: FreeRunList::default(),
+        }
     }
 }
 
@@ -4445,6 +4493,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
         SRes<RenderDevice>,
         SRes<MeshBindGroups>,
         SRes<RenderMeshInstances>,
+        SRes<RenderMeshInstanceBatches>,
         SRes<SkinUniforms>,
         SRes<MorphIndices>,
         SRes<MeshAllocator>,
@@ -4463,6 +4512,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             render_device,
             bind_groups,
             mesh_instances,
+            render_mesh_instance_batches,
             skin_uniforms,
             morph_indices,
             mesh_allocator,
@@ -4473,12 +4523,17 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
     ) -> RenderCommandResult {
         let bind_groups = bind_groups.into_inner();
         let mesh_instances = mesh_instances.into_inner();
+        let render_mesh_instance_batches = render_mesh_instance_batches.into_inner();
         let skin_uniforms = skin_uniforms.into_inner();
         let morph_indices = morph_indices.into_inner();
 
         let entity = &item.main_entity();
 
-        let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(*entity) else {
+        let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(*entity).or_else(|| {
+            render_mesh_instance_batches
+                .get(entity)
+                .map(|batch| batch.asset_id)
+        }) else {
             return RenderCommandResult::Success;
         };
 
@@ -4605,6 +4660,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
     type Param = (
         SRes<RenderAssets<RenderMesh>>,
         SRes<RenderMeshInstances>,
+        SRes<RenderMeshInstanceBatches>,
         SRes<IndirectParametersBuffers>,
         SRes<PipelineCache>,
         SRes<MeshAllocator>,
@@ -4621,6 +4677,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         (
             meshes,
             mesh_instances,
+            render_mesh_instance_batches,
             indirect_parameters_buffer,
             pipeline_cache,
             mesh_allocator,
@@ -4642,10 +4699,18 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
         let meshes = meshes.into_inner();
         let mesh_instances = mesh_instances.into_inner();
+        let render_mesh_instance_batches = render_mesh_instance_batches.into_inner();
         let indirect_parameters_buffer = indirect_parameters_buffer.into_inner();
         let mesh_allocator = mesh_allocator.into_inner();
 
-        let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(item.main_entity()) else {
+        let Some(mesh_asset_id) = mesh_instances
+            .mesh_asset_id(item.main_entity())
+            .or_else(|| {
+                render_mesh_instance_batches
+                    .get(&item.main_entity())
+                    .map(|batch| batch.asset_id)
+            })
+        else {
             return RenderCommandResult::Skip;
         };
         let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {

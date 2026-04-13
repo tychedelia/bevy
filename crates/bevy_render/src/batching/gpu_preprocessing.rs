@@ -34,15 +34,16 @@ use crate::{
     occlusion_culling::OcclusionCulling,
     render_phase::{
         BinnedPhaseItem, BinnedRenderPhaseBatch, BinnedRenderPhaseBatchSet,
-        BinnedRenderPhaseBatchSets, CachedRenderPipelinePhaseItem, PhaseItem,
+        BinnedRenderPhaseBatchSets, CachedRenderPipelinePhaseItem, InstanceBatchDraw, PhaseItem,
         PhaseItemBatchSetKey as _, PhaseItemExtraIndex, RenderMultidrawableBatchSet,
         SortedPhaseItem, SortedRenderPhase, UnbatchableBinnedEntityIndices, ViewBinnedRenderPhases,
         ViewSortedRenderPhases,
     },
     render_resource::{
-        AtomicPod, AtomicRawBufferVec, AtomicSparseBufferVec, Buffer, GpuArrayBufferable,
-        PartialBufferVec, PipelineCache, RawBufferVec, SparseBufferUpdateBindGroups,
-        SparseBufferUpdateJobs, SparseBufferUpdatePipelines, UninitBufferVec,
+        AtomicPod, AtomicRawBufferVec, AtomicSparseBufferVec, BindGroup, Buffer,
+        GpuArrayBufferable, PartialBufferVec, PipelineCache, RawBufferVec,
+        SparseBufferUpdateBindGroups, SparseBufferUpdateJobs, SparseBufferUpdatePipelines,
+        UniformBuffer, UninitBufferVec,
     },
     renderer::{RenderAdapter, RenderAdapterInfo, RenderDevice, RenderQueue, WgpuWrapper},
     sync_world::{MainEntity, MainEntityHashMap},
@@ -318,11 +319,14 @@ where
     /// The buffer containing the data that will be uploaded to the GPU.
     buffer: AtomicSparseBufferVec<BDI>,
 
-    /// Indices of slots that are free within the buffer.
-    ///
-    /// When adding data, we preferentially overwrite these slots first before
-    /// growing the buffer itself.
+    /// Single-slot free list. Populated by [`Self::remove`], consumed by
+    /// [`Self::add`].
     free_uniform_indices: Vec<u32>,
+
+    /// Range-shaped free list, disjoint from `free_uniform_indices`.
+    /// Populated by [`Self::remove_range`], consumed by
+    /// [`Self::add_many_with`].
+    free_uniform_runs: FreeRunList,
 }
 
 impl<BDI> InstanceInputUniformBuffer<BDI>
@@ -337,6 +341,7 @@ where
                 Arc::from("instance input uniform buffer"),
             ),
             free_uniform_indices: vec![],
+            free_uniform_runs: FreeRunList::default(),
         }
     }
 
@@ -344,6 +349,7 @@ where
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.free_uniform_indices.clear();
+        self.free_uniform_runs.clear();
     }
 
     /// Returns the [`AtomicSparseBufferVec`] corresponding to this input
@@ -372,11 +378,38 @@ where
         self.free_uniform_indices.push(uniform_index);
     }
 
+    /// Reserves `count` contiguous slots, invokes `f` on each absolute
+    /// index to produce the slot's value, and returns the base index.
+    ///
+    /// # Panics
+    /// if `count` is zero.
+    pub fn add_many_with<F>(&mut self, count: u32, mut f: F) -> u32
+    where
+        F: FnMut(u32) -> BDI,
+    {
+        assert!(count > 0, "add_many_with requires count > 0");
+        let base = match self.free_uniform_runs.allocate(count) {
+            Some(base) => base,
+            None => self.buffer.push_many(count),
+        };
+        for i in 0..count {
+            self.buffer.set(base + i, f(base + i));
+        }
+        base
+    }
+
+    /// Frees a contiguous range of `count` slots starting at `base`.
+    pub fn remove_range(&mut self, base: u32, count: u32) {
+        self.free_uniform_runs.free(base, count);
+    }
+
     /// Returns the piece of buffered data at the given index.
     ///
     /// Returns [`None`] if the index is out of bounds or the data is removed.
     pub fn get(&self, uniform_index: u32) -> Option<BDI> {
-        if uniform_index >= self.buffer.len() || self.free_uniform_indices.contains(&uniform_index)
+        if uniform_index >= self.buffer.len()
+            || self.free_uniform_indices.contains(&uniform_index)
+            || self.free_uniform_runs.contains(uniform_index)
         {
             None
         } else {
@@ -433,6 +466,75 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A sorted, coalesced list of disjoint free runs over some index space.
+#[derive(Default, Clone, Debug)]
+pub struct FreeRunList {
+    runs: Vec<Range<u32>>,
+}
+
+impl FreeRunList {
+    /// Inserts `[base, base + count)` into the list, merging with adjacent
+    /// or overlapping runs. No-op if `count` is zero.
+    pub fn free(&mut self, base: u32, count: u32) {
+        if count == 0 {
+            return;
+        }
+        let mut merged = base..base + count;
+
+        let idx = self.runs.partition_point(|r| r.end < merged.start);
+
+        while idx < self.runs.len() && self.runs[idx].start <= merged.end {
+            debug_assert!(
+                self.runs[idx].end <= merged.start || self.runs[idx].start >= merged.end,
+                "FreeRunList::free: range {:?} overlaps existing run {:?} (double-free?)",
+                base..base + count,
+                self.runs[idx],
+            );
+            merged.start = merged.start.min(self.runs[idx].start);
+            merged.end = merged.end.max(self.runs[idx].end);
+            self.runs.remove(idx);
+        }
+
+        self.runs.insert(idx, merged);
+    }
+
+    /// First-fit allocation of `count` contiguous slots. Splits the chosen
+    /// run, leaving the remainder on the list.
+    pub fn allocate(&mut self, count: u32) -> Option<u32> {
+        if count == 0 {
+            return None;
+        }
+        for i in 0..self.runs.len() {
+            let run = &mut self.runs[i];
+            if run.end - run.start >= count {
+                let base = run.start;
+                run.start += count;
+                if run.start == run.end {
+                    self.runs.remove(i);
+                }
+                return Some(base);
+            }
+        }
+        None
+    }
+
+    /// Whether `index` falls within any free run.
+    pub fn contains(&self, index: u32) -> bool {
+        let idx = self.runs.partition_point(|r| r.end <= index);
+        idx < self.runs.len() && self.runs[idx].start <= index
+    }
+
+    /// Removes all free runs. Does not shrink capacity.
+    pub fn clear(&mut self) {
+        self.runs.clear();
+    }
+
+    /// Whether the list has no free runs.
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty()
     }
 }
 
@@ -559,6 +661,10 @@ pub enum PreprocessWorkItemBuffers {
         indexed: PartialBufferVec<PreprocessWorkItem>,
         /// The buffer of work items corresponding to non-indexed meshes.
         non_indexed: PartialBufferVec<PreprocessWorkItem>,
+        /// Range entries for indexed GPU-authored instance batches.
+        ranges_indexed: RangeWorkItemBuffer,
+        /// Range entries for non-indexed GPU-authored instance batches.
+        ranges_non_indexed: RangeWorkItemBuffer,
         /// The work item buffers we use when GPU occlusion culling is in use.
         gpu_occlusion_culling: Option<GpuOcclusionCullingWorkItemBuffers>,
     },
@@ -654,6 +760,10 @@ where
                         BufferUsages::STORAGE,
                         "non-indexed preprocess work item buffer".to_owned(),
                     ),
+                    ranges_indexed: RangeWorkItemBuffer::new("indexed instance batch ranges"),
+                    ranges_non_indexed: RangeWorkItemBuffer::new(
+                        "non-indexed instance batch ranges",
+                    ),
                     // We fill this in below if `enable_gpu_occlusion_culling`
                     // is set.
                     gpu_occlusion_culling: None,
@@ -735,6 +845,7 @@ impl PreprocessWorkItemBuffers {
                 indexed: ref mut indexed_buffer,
                 non_indexed: ref mut non_indexed_buffer,
                 ref mut gpu_occlusion_culling,
+                ..
             } => {
                 if indexed {
                     indexed_buffer.push_init(preprocess_work_item);
@@ -753,6 +864,59 @@ impl PreprocessWorkItemBuffers {
         }
     }
 
+    /// Pushes a range entry for a GPU-authored instance batch and reserves
+    /// `count` uninit work-item slots that the `range_unpack` shader will
+    /// populate. Returns the base index of the reserved slots, or `None`
+    /// in direct (no-indirect) mode.
+    pub fn push_range(
+        &mut self,
+        indexed: bool,
+        base_input_index: u32,
+        base_output_or_indirect_parameters_index: u32,
+        count: u32,
+    ) -> Option<u32> {
+        let PreprocessWorkItemBuffers::Indirect {
+            indexed: ref mut indexed_buffer,
+            non_indexed: ref mut non_indexed_buffer,
+            ref mut ranges_indexed,
+            ref mut ranges_non_indexed,
+            ref mut gpu_occlusion_culling,
+        } = *self
+        else {
+            return None;
+        };
+
+        let (work_buf, ranges) = if indexed {
+            (indexed_buffer, ranges_indexed)
+        } else {
+            (non_indexed_buffer, ranges_non_indexed)
+        };
+
+        let work_item_base = work_buf.push_multiple_uninit(count as usize) as u32;
+        if ranges.buffer.is_empty() {
+            ranges.work_item_base = work_item_base;
+        }
+        let cumulative_offset = ranges.total_instance_count;
+        ranges.buffer.push(RangeWorkItem {
+            base_input_index,
+            base_output_or_indirect_parameters_index,
+            count,
+            cumulative_offset,
+        });
+        ranges.total_instance_count += count;
+
+        if let Some(occ) = gpu_occlusion_culling {
+            let late = if indexed {
+                &mut occ.late_indexed
+            } else {
+                &mut occ.late_non_indexed
+            };
+            late.add_multiple(count as usize);
+        }
+
+        Some(work_item_base)
+    }
+
     /// Clears out the GPU work item buffers in preparation for a new frame.
     pub fn clear(&mut self) {
         match *self {
@@ -762,10 +926,14 @@ impl PreprocessWorkItemBuffers {
             PreprocessWorkItemBuffers::Indirect {
                 indexed: ref mut indexed_buffer,
                 non_indexed: ref mut non_indexed_buffer,
+                ref mut ranges_indexed,
+                ref mut ranges_non_indexed,
                 ref mut gpu_occlusion_culling,
             } => {
                 indexed_buffer.clear();
                 non_indexed_buffer.clear();
+                ranges_indexed.clear();
+                ranges_non_indexed.clear();
 
                 if let Some(ref mut gpu_occlusion_culling) = *gpu_occlusion_culling {
                     gpu_occlusion_culling.late_indexed.clear();
@@ -795,6 +963,59 @@ pub struct PreprocessWorkItem {
     /// `IndirectParametersBuffers::indexed_metadata` or
     /// `IndirectParametersBuffers::non_indexed_metadata`.
     pub output_or_indirect_parameters_index: u32,
+}
+
+/// Per-dispatch metadata for the `unpack_ranges` shader.
+#[derive(Clone, Copy, Default, Pod, Zeroable, ShaderType)]
+#[repr(C)]
+pub struct GpuRangeUnpackingMetadata {
+    pub range_count: u32,
+    pub total_instance_count: u32,
+    pub work_item_base: u32,
+    pub pad: u32,
+}
+
+/// One GPU-authored instance batch in a [`RangeWorkItemBuffer`]. Expanded
+/// by `unpack_ranges.wgsl` into `count` individual [`PreprocessWorkItem`]s.
+#[derive(Clone, Copy, Default, Pod, Zeroable, ShaderType)]
+#[repr(C)]
+pub struct RangeWorkItem {
+    pub base_input_index: u32,
+    pub base_output_or_indirect_parameters_index: u32,
+    pub count: u32,
+    /// Sum of `count` for all earlier ranges in the same buffer.
+    pub cumulative_offset: u32,
+}
+
+/// Per-(view, phase, indexed-ness) range entries plus bookkeeping for the
+/// contiguous block of work items they expand into.
+pub struct RangeWorkItemBuffer {
+    pub buffer: RawBufferVec<RangeWorkItem>,
+    pub metadata: UniformBuffer<GpuRangeUnpackingMetadata>,
+    pub bind_group: Option<BindGroup>,
+    pub work_item_base: u32,
+    pub total_instance_count: u32,
+}
+
+impl RangeWorkItemBuffer {
+    pub fn new(label: &str) -> Self {
+        let mut buffer = RawBufferVec::new(BufferUsages::STORAGE);
+        buffer.set_label(Some(label));
+        Self {
+            buffer,
+            metadata: UniformBuffer::default(),
+            bind_group: None,
+            work_item_base: 0,
+            total_instance_count: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.bind_group = None;
+        self.work_item_base = 0;
+        self.total_instance_count = 0;
+    }
 }
 
 /// The `wgpu` indirect parameters structure that specifies a GPU draw command.
@@ -2337,10 +2558,73 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                 }
             }
         }
+
+        for (key, bin) in &phase.instance_batches {
+            let indexed = key.0.indexed();
+
+            for (&main_entity, &(input_uniform_index, count)) in bin.entries() {
+                let count_u32 = count.get();
+
+                let output_base = data_buffer.add_multiple(count_u32 as usize) as u32;
+
+                let extra_index = if no_indirect_drawing {
+                    for i in 0..count_u32 {
+                        work_item_buffer.push(
+                            indexed,
+                            PreprocessWorkItem {
+                                input_index: input_uniform_index.0 + i,
+                                output_or_indirect_parameters_index: output_base + i,
+                            },
+                        );
+                    }
+                    PhaseItemExtraIndex::None
+                } else {
+                    let indirect_parameters_index = phase_indirect_parameters_buffers
+                        .buffers
+                        .allocate(indexed, 1);
+                    let batch_set_index = phase_indirect_parameters_buffers
+                        .buffers
+                        .get_next_batch_set_index(indexed);
+
+                    GFBD::write_batch_indirect_parameters_metadata(
+                        indexed,
+                        output_base,
+                        batch_set_index,
+                        &mut phase_indirect_parameters_buffers.buffers,
+                        indirect_parameters_index,
+                    );
+
+                    work_item_buffer.push_range(
+                        indexed,
+                        input_uniform_index.0,
+                        indirect_parameters_index,
+                        count_u32,
+                    );
+
+                    phase_indirect_parameters_buffers
+                        .buffers
+                        .add_batch_set(indexed, indirect_parameters_index);
+
+                    PhaseItemExtraIndex::IndirectParametersIndex {
+                        range: indirect_parameters_index..(indirect_parameters_index + 1),
+                        batch_set_index: None,
+                    }
+                };
+
+                phase.instance_batch_draws.push(InstanceBatchDraw {
+                    batch_set_key: key.0.clone(),
+                    bin_key: key.1.clone(),
+                    batch: BinnedRenderPhaseBatch {
+                        representative_entity: (Entity::PLACEHOLDER, main_entity),
+                        instance_range: output_base..(output_base + count_u32),
+                        extra_index,
+                    },
+                });
+            }
+        }
     }
 
     // Prepare multidrawables.
-
     for (extracted_view, _, _) in &mut views {
         // We should have created the work item buffer for the view in the loop
         // above.
@@ -2359,6 +2643,7 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                 indexed: ref mut indexed_work_item_buffer,
                 non_indexed: ref mut non_indexed_work_item_buffer,
                 gpu_occlusion_culling: ref mut gpu_occlusion_culling_buffers,
+                ..
             },
         ) = (&mut phase.batch_sets, &mut *work_item_buffer)
         else {
@@ -2771,10 +3056,18 @@ pub fn write_batched_instance_buffers<GFBD>(
                         PreprocessWorkItemBuffers::Indirect {
                             ref mut indexed,
                             ref mut non_indexed,
+                            ref mut ranges_indexed,
+                            ref mut ranges_non_indexed,
                             ref mut gpu_occlusion_culling,
                         } => {
                             indexed.write_buffer(render_device, render_queue);
                             non_indexed.write_buffer(render_device, render_queue);
+                            ranges_indexed
+                                .buffer
+                                .write_buffer(render_device, render_queue);
+                            ranges_non_indexed
+                                .buffer
+                                .write_buffer(render_device, render_queue);
 
                             if let Some(GpuOcclusionCullingWorkItemBuffers {
                                 ref mut late_indexed,
@@ -3180,5 +3473,140 @@ mod tests {
 
         instance_buffer.add(TestData(5));
         assert_eq!(instance_buffer.buffer().len(), 1);
+    }
+
+    #[test]
+    fn add_many_with_reserves_contiguous_range() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+        instance_buffer.add(TestData(100));
+        instance_buffer.add(TestData(101));
+
+        let base = instance_buffer.add_many_with(5, |idx| TestData(idx));
+        assert_eq!(base, 2);
+        for i in 0..5 {
+            assert_eq!(instance_buffer.get_unchecked(base + i), TestData(base + i));
+        }
+        assert_eq!(instance_buffer.buffer().len(), 7);
+    }
+
+    #[test]
+    fn add_many_with_ignores_free_list() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let a = instance_buffer.add(TestData(0));
+        let b = instance_buffer.add(TestData(1));
+        instance_buffer.remove(a);
+        instance_buffer.remove(b);
+
+        let base = instance_buffer.add_many_with(3, |_| TestData(42));
+        assert_eq!(base, 2);
+        assert_eq!(instance_buffer.buffer().len(), 5);
+    }
+
+    #[test]
+    fn remove_range_marks_every_slot_free() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let base = instance_buffer.add_many_with(4, |_| TestData(7));
+        instance_buffer.remove_range(base, 4);
+
+        for i in 0..4 {
+            assert_eq!(instance_buffer.get(base + i), None);
+        }
+    }
+
+    #[test]
+    fn add_many_with_reclaims_matching_range() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let base_a = instance_buffer.add_many_with(4, |_| TestData(1));
+        instance_buffer.remove_range(base_a, 4);
+
+        let base_b = instance_buffer.add_many_with(4, |idx| TestData(idx + 100));
+        assert_eq!(base_b, base_a);
+        assert_eq!(instance_buffer.buffer().len(), 4);
+    }
+
+    #[test]
+    fn add_many_with_first_fits_across_runs() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let _a = instance_buffer.add_many_with(3, |_| TestData(0));
+        let b = instance_buffer.add_many_with(2, |_| TestData(0));
+        let _c = instance_buffer.add_many_with(3, |_| TestData(0));
+        let d = instance_buffer.add_many_with(5, |_| TestData(0));
+        instance_buffer.remove_range(b, 2);
+        instance_buffer.remove_range(d, 5);
+
+        let reused = instance_buffer.add_many_with(4, |_| TestData(42));
+        assert_eq!(reused, d);
+    }
+
+    #[test]
+    fn single_slot_add_does_not_carve_range_holes() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let base = instance_buffer.add_many_with(4, |_| TestData(0));
+        instance_buffer.remove_range(base, 4);
+
+        let appended = instance_buffer.add(TestData(9));
+        assert_eq!(appended, 4);
+        assert_eq!(instance_buffer.buffer().len(), 5);
+
+        let reused = instance_buffer.add_many_with(4, |_| TestData(1));
+        assert_eq!(reused, base);
+    }
+
+    #[test]
+    fn free_run_list_coalesces_adjacent_frees() {
+        let mut list = FreeRunList::default();
+        list.free(10, 5);
+        list.free(20, 5);
+        list.free(15, 5);
+        assert_eq!(list.allocate(15), Some(10));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn free_run_list_coalesces_backward_and_forward() {
+        let mut list = FreeRunList::default();
+        list.free(10, 5);
+        list.free(20, 5);
+        list.free(15, 5);
+        list.free(25, 5);
+        assert_eq!(list.allocate(20), Some(10));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn free_run_list_allocate_splits_run() {
+        let mut list = FreeRunList::default();
+        list.free(0, 100);
+
+        assert_eq!(list.allocate(30), Some(0));
+        assert!(list.contains(30));
+        assert!(!list.contains(29));
+        assert_eq!(list.allocate(70), Some(30));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn free_run_list_allocate_none_when_no_run_fits() {
+        let mut list = FreeRunList::default();
+        list.free(0, 10);
+        list.free(20, 10);
+        assert_eq!(list.allocate(15), None);
+        assert!(list.contains(5));
+        assert!(list.contains(25));
+    }
+
+    #[test]
+    fn free_run_list_contains_boundary_cases() {
+        let mut list = FreeRunList::default();
+        list.free(5, 3);
+        assert!(!list.contains(4));
+        assert!(list.contains(5));
+        assert!(list.contains(7));
+        assert!(!list.contains(8));
     }
 }

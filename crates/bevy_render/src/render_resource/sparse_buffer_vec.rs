@@ -575,6 +575,36 @@ where
         index
     }
 
+    /// Reserves `count` contiguous default-initialized slots, marks them
+    /// dirty, and returns the base index. Callers overwrite the defaults via
+    /// [`Self::set`] before the next upload. Zero-count returns the current
+    /// length unchanged.
+    pub fn push_many(&mut self, count: u32) -> u32 {
+        let base = self.values.len() as u32;
+        if count == 0 {
+            return base;
+        }
+
+        self.values
+            .resize_with((base + count) as usize, T::Blob::default);
+
+        let last_index = base + count - 1;
+        let dirty_word_index = (last_index / BITS_PER_WORD) as usize;
+        let summary_word_index = dirty_word_index / BITS_PER_WORD as usize;
+        while self.summary.len() < summary_word_index + 1 {
+            self.summary.push(AtomicU64::default());
+        }
+        while self.dirty_bits.len() < dirty_word_index + 1 {
+            self.dirty_bits.push(AtomicU64::default());
+        }
+
+        for index in base..=last_index {
+            self.note_changed_index(index);
+        }
+
+        base
+    }
+
     /// Marks the given element index as dirty so that we know that we need to
     /// upload it.
     fn note_changed_index(&self, index: u32) {
@@ -1209,6 +1239,73 @@ mod tests {
                 &dirty_bits
             );
             assert_eq!(calculated_dirty_element_count, true_dirty_element_count);
+        }
+    }
+
+    mod push_many {
+        use alloc::sync::Arc;
+        use bytemuck::{Pod, Zeroable};
+
+        use super::super::*;
+        use crate::impl_atomic_pod;
+
+        #[derive(Clone, Copy, Default, PartialEq, Debug, Pod, Zeroable)]
+        #[repr(C)]
+        struct TestData(u32);
+
+        impl_atomic_pod!(TestData, TestDataBlob);
+
+        #[test]
+        fn push_many_returns_base_and_extends_length() {
+            let mut buffer: AtomicSparseBufferVec<TestData> =
+                AtomicSparseBufferVec::new(BufferUsages::STORAGE, Arc::from("test"));
+
+            let first = buffer.push_many(3);
+            assert_eq!(first, 0);
+            assert_eq!(buffer.len(), 3);
+
+            let second = buffer.push_many(5);
+            assert_eq!(second, 3);
+            assert_eq!(buffer.len(), 8);
+        }
+
+        #[test]
+        fn push_many_zero_is_noop() {
+            let mut buffer: AtomicSparseBufferVec<TestData> =
+                AtomicSparseBufferVec::new(BufferUsages::STORAGE, Arc::from("test"));
+
+            buffer.push(TestData(1));
+            let base = buffer.push_many(0);
+            assert_eq!(base, 1);
+            assert_eq!(buffer.len(), 1);
+        }
+
+        #[test]
+        fn push_many_marks_every_element_dirty() {
+            let mut buffer: AtomicSparseBufferVec<TestData> =
+                AtomicSparseBufferVec::new(BufferUsages::STORAGE, Arc::from("test"));
+
+            let base = buffer.push_many(10);
+            assert_eq!(base, 0);
+            assert_eq!(count_dirty_elements(&buffer.summary, &buffer.dirty_bits), 10);
+        }
+
+        #[test]
+        fn push_many_interleaves_with_single_push() {
+            let mut buffer: AtomicSparseBufferVec<TestData> =
+                AtomicSparseBufferVec::new(BufferUsages::STORAGE, Arc::from("test"));
+
+            let a = buffer.push(TestData(1));
+            let b = buffer.push_many(4);
+            let c = buffer.push(TestData(2));
+
+            assert_eq!(a, 0);
+            assert_eq!(b, 1);
+            assert_eq!(c, 5);
+            assert_eq!(buffer.len(), 6);
+
+            buffer.set(b + 2, TestData(99));
+            assert_eq!(buffer.get(b + 2), TestData(99));
         }
     }
 }
