@@ -643,6 +643,26 @@ pub struct MeshCullingData {
 #[derive(Resource, Deref, DerefMut)]
 pub struct MeshCullingDataBuffer(AtomicSparseBufferVec<MeshCullingData>);
 
+impl MeshCullingDataBuffer {
+    /// Reserves a contiguous range of `count` slots and writes `value` into
+    /// every newly-allocated slot, returning the base index.
+    ///
+    /// This is intended for reservations that share a single AABB across all
+    /// instances (for example, a batch of GPU-authored instances that all live
+    /// within the same parent bounds).
+    ///
+    /// # Panics
+    /// if `count` is zero.
+    pub fn push_many_identical(&mut self, value: MeshCullingData, count: u32) -> u32 {
+        assert!(count > 0, "push_many_identical requires count > 0");
+        let base = self.0.push_many(count);
+        for i in 0..count {
+            self.0.set(base + i, value);
+        }
+        base
+    }
+}
+
 impl_atomic_pod!(MeshCullingData, MeshCullingDataBlob);
 
 impl MeshUniform {

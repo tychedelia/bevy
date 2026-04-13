@@ -346,6 +346,45 @@ where
         self.free_uniform_indices.push(uniform_index);
     }
 
+    /// Reserves a contiguous range of `count` slots at the end of the buffer,
+    /// invokes `f` once per newly-allocated absolute index to produce the
+    /// value written into that slot, and returns the base index.
+    ///
+    /// Unlike [`Self::add`], this method never consults the free list —
+    /// contiguous ranges are always appended. This is appropriate for
+    /// long-lived reservations whose per-slot data is supplied from a side
+    /// channel (e.g. GPU-authored transforms), where fragmentation from
+    /// freeing individual slots would otherwise prevent future bulk
+    /// allocations from finding a contiguous range.
+    ///
+    /// # Panics
+    /// if `count` is zero.
+    pub fn add_many_with<F>(&mut self, count: u32, mut f: F) -> u32
+    where
+        F: FnMut(u32) -> BDI,
+    {
+        assert!(count > 0, "add_many_with requires count > 0");
+        let base = self.buffer.push_many(count);
+        for i in 0..count {
+            self.buffer.set(base + i, f(base + i));
+        }
+        base
+    }
+
+    /// Marks a previously-reserved contiguous range of `count` slots starting
+    /// at `base` as free.
+    ///
+    /// The freed slots become available for reuse by subsequent [`Self::add`]
+    /// calls (which consume free slots individually). The range is not
+    /// coalesced and the underlying buffer is not shrunk; future bulk
+    /// reservations via [`Self::add_many_with`] will still append at the end.
+    pub fn remove_range(&mut self, base: u32, count: u32) {
+        self.free_uniform_indices.reserve(count as usize);
+        for i in 0..count {
+            self.free_uniform_indices.push(base + i);
+        }
+    }
+
     /// Returns the piece of buffered data at the given index.
     ///
     /// Returns [`None`] if the index is out of bounds or the data is removed.
@@ -2727,5 +2766,56 @@ mod tests {
 
         instance_buffer.add(TestData(5));
         assert_eq!(instance_buffer.buffer().len(), 1);
+    }
+
+    #[test]
+    fn add_many_with_reserves_contiguous_range() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        // First, scatter some single adds so the buffer is non-empty.
+        instance_buffer.add(TestData(100));
+        instance_buffer.add(TestData(101));
+
+        // Bulk-reserve a range of 5 slots.
+        let base = instance_buffer.add_many_with(5, |idx| TestData(idx));
+        assert_eq!(base, 2);
+        for i in 0..5 {
+            assert_eq!(instance_buffer.get_unchecked(base + i), TestData(base + i));
+        }
+        assert_eq!(instance_buffer.buffer().len(), 7);
+    }
+
+    #[test]
+    fn add_many_with_ignores_free_list() {
+        // Freed individual slots must not be reused for bulk allocations —
+        // the range would otherwise collide with live data.
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let a = instance_buffer.add(TestData(0));
+        let b = instance_buffer.add(TestData(1));
+        instance_buffer.remove(a);
+        instance_buffer.remove(b);
+
+        let base = instance_buffer.add_many_with(3, |_| TestData(42));
+        // Bulk allocation appends past the free slots.
+        assert_eq!(base, 2);
+        assert_eq!(instance_buffer.buffer().len(), 5);
+    }
+
+    #[test]
+    fn remove_range_frees_every_slot() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let base = instance_buffer.add_many_with(4, |_| TestData(7));
+        instance_buffer.remove_range(base, 4);
+
+        // Freed slots become individually visible as `None` from `get`.
+        for i in 0..4 {
+            assert_eq!(instance_buffer.get(base + i), None);
+        }
+
+        // They're reusable one-at-a-time by `add`.
+        let reused = instance_buffer.add(TestData(9));
+        assert!((base..base + 4).contains(&reused));
     }
 }
