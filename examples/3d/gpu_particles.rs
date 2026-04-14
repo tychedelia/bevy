@@ -1,15 +1,14 @@
-//! GPU-authored instance batches: end-to-end example.
+//! GPU-authored instance batches: end-to-end example with mouse-driven
+//! fluid-ish simulation.
 //!
 //! Demonstrates the [`GpuInstanceBatch`] API — rendering many mesh
 //! instances whose per-instance transforms are authored on the GPU
-//! rather than extracted from ECS entities on the CPU.
+//! rather than extracted from ECS entities on the CPU. Each particle
+//! keeps persistent (position, velocity) state in a user-owned storage
+//! buffer; the compute shader applies a force toward the mouse cursor
+//! and integrates position each frame.
 //!
-//! The example runs a compute shader each frame that writes
-//! `world_from_local` and per-slot `MeshCullingData` into bevy's shared
-//! GPU preprocessing input buffer, at offsets corresponding to the
-//! batch's reservation. Bevy's existing preprocessing, indirect build,
-//! and `multi_draw_indexed_indirect` rendering then render the batch
-//! across all four phases (opaque, shadow, prepass, deferred).
+//! Move the mouse — particles swarm toward the cursor.
 //!
 //! # Requirements
 //!
@@ -33,11 +32,13 @@ use bevy::{
     prelude::*,
     render::{
         batching::gpu_preprocessing::BatchedInstanceBuffers,
+        extract_resource::{ExtractResource, ExtractResourcePlugin},
         render_resource::{
             binding_types::{storage_buffer_sized, uniform_buffer},
             BindGroup, BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries,
-            CachedComputePipelineId, CachedPipelineState, ComputePassDescriptor,
-            ComputePipelineDescriptor, PipelineCache, ShaderStages, ShaderType, UniformBuffer,
+            Buffer, BufferDescriptor, BufferUsages, CachedComputePipelineId, CachedPipelineState,
+            ComputePassDescriptor, ComputePipelineDescriptor, PipelineCache, ShaderStages,
+            ShaderType, UniformBuffer,
         },
         renderer::{RenderContext, RenderDevice, RenderQueue},
         sync_world::MainEntityHashMap,
@@ -48,49 +49,70 @@ use bevy::{
 const SHADER_ASSET_PATH: &str = "shaders/gpu_particles_simulate.wgsl";
 const WORKGROUP_SIZE: u32 = 64;
 const PARTICLES_PER_EMITTER: u32 = 4096;
+/// Size of `ParticleState` in the WGSL: two `vec4<f32>` = 32 bytes.
+const PARTICLE_STATE_SIZE: u64 = 32;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .add_plugins(GpuInstanceBatchPlugin)
         .add_plugins(GpuParticlesSimulationPlugin)
+        .init_resource::<MouseWorldPos>()
         .add_systems(Startup, setup)
+        .add_systems(Update, update_mouse_world_pos)
         .run();
 }
 
 // ---------------------------------------------------------------------------
-// Main world: scene setup.
+// Main world: scene + mouse unprojection.
 // ---------------------------------------------------------------------------
+
+#[derive(Resource, Default, Clone, Copy, ExtractResource)]
+struct MouseWorldPos(Vec3);
 
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Ground plane.
+    // Ground plane — dark, semi-glossy so the colored point lights
+    // spill onto it and give the scene some depth.
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(32.0, 32.0))),
-        MeshMaterial3d(materials.add(Color::srgb(0.3, 0.3, 0.32))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.1, 0.1, 0.12),
+            perceptual_roughness: 0.4,
+            metallic: 0.2,
+            ..default()
+        })),
         Transform::from_xyz(0.0, -2.0, 0.0),
     ));
 
-    // Reference cube rendered through the normal `Mesh3d` path — a
-    // side-by-side sanity check that the existing mesh pipeline still
-    // works alongside the batching infrastructure.
+    // A tall obstacle in the center of the swarm area. Particles that
+    // pass behind it should be depth-occluded — confirming that batched
+    // GPU-authored instances correctly participate in the opaque
+    // depth-tested pipeline.
     commands.spawn((
-        Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
-        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
-        Transform::from_xyz(-4.0, 0.0, 0.0),
+        Mesh3d(meshes.add(Cuboid::new(1.5, 4.0, 1.5))),
+        MeshMaterial3d(materials.add(StandardMaterial {
+            base_color: Color::srgb(0.18, 0.22, 0.28),
+            perceptual_roughness: 0.35,
+            metallic: 0.6,
+            ..default()
+        })),
+        Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // GPU-authored particle batch. The simulation compute shader
-    // (`assets/shaders/gpu_particles_simulate.wgsl`) writes per-instance
-    // transforms and per-slot culling data into bevy's shared input
-    // buffer at the reserved offset each frame.
-    let particle_mesh = meshes.add(Cuboid::new(0.15, 0.15, 0.15));
+    // GPU-authored particle batch. Material is polished copper — high
+    // metallic + low roughness so each particle picks up sharp specular
+    // highlights from the multi-source lighting rig, showcasing that
+    // batched instances go through the full PBR material pipeline.
+    let particle_mesh = meshes.add(Sphere::new(0.18).mesh().ico(2).unwrap());
     let particle_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(1.0, 0.4, 0.2),
-        emissive: LinearRgba::rgb(3.0, 0.8, 0.2),
+        base_color: Color::srgb(0.95, 0.55, 0.38),
+        metallic: 1.0,
+        perceptual_roughness: 0.18,
+        reflectance: 0.7,
         ..default()
     });
 
@@ -98,12 +120,9 @@ fn setup(
         GpuInstanceBatch {
             mesh: particle_mesh,
             max_capacity: PARTICLES_PER_EMITTER,
-            // Conservative emitter-level bounds. Per-particle culling
-            // happens via the per-slot `MeshCullingData` written by the
-            // simulation shader.
             aabb: Aabb {
                 center: Vec3A::ZERO,
-                half_extents: Vec3A::splat(8.0),
+                half_extents: Vec3A::splat(16.0),
             },
             flags: MeshFlags::empty(),
         },
@@ -112,39 +131,101 @@ fn setup(
         Visibility::default(),
     ));
 
-    // Key light (shadows will fall from batched particles onto the
-    // ground plane once per-slot culling stabilizes).
+    // Multi-light setup — several colored sources at different angles
+    // so the metallic highlights vary per-particle as they move
+    // through the scene.
     commands.spawn((
         DirectionalLight {
-            illuminance: 10_000.0,
+            illuminance: 5_000.0,
+            color: Color::srgb(1.0, 0.95, 0.9),
             ..default()
         },
         Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    commands.spawn((
+        PointLight {
+            intensity: 2_000_000.0,
+            color: Color::srgb(0.3, 0.6, 1.0),
+            range: 20.0,
+            ..default()
+        },
+        Transform::from_xyz(-5.0, 3.0, -4.0),
+    ));
+    commands.spawn((
+        PointLight {
+            intensity: 2_000_000.0,
+            color: Color::srgb(1.0, 0.4, 0.2),
+            range: 20.0,
+            ..default()
+        },
+        Transform::from_xyz(5.0, 3.0, 4.0),
+    ));
+    commands.spawn((
+        PointLight {
+            intensity: 1_200_000.0,
+            color: Color::srgb(0.8, 1.0, 0.6),
+            range: 20.0,
+            ..default()
+        },
+        Transform::from_xyz(0.0, 6.0, -6.0),
+    ));
 
-    // Camera — HDR + Bloom so the emissive particles actually glow.
     commands.spawn((
         Camera3d::default(),
         Hdr,
         Bloom::default(),
         Transform::from_xyz(0.0, 3.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
+        MainCamera,
     ));
 }
 
+#[derive(Component)]
+struct MainCamera;
+
+/// Casts a ray from the mouse cursor through the camera and intersects
+/// with the y=0 plane to produce a world-space attractor position.
+fn update_mouse_world_pos(
+    windows: Query<&Window>,
+    camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
+    mut mouse_pos: ResMut<MouseWorldPos>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let Some(cursor) = window.cursor_position() else {
+        return;
+    };
+    let (camera, camera_transform) = *camera;
+    let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) else {
+        return;
+    };
+    // Intersect with y=0 plane.
+    if ray.direction.y.abs() < 1e-4 {
+        return;
+    }
+    let t = -ray.origin.y / ray.direction.y;
+    if t > 0.0 {
+        mouse_pos.0 = ray.origin + ray.direction * t;
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Compute plugin: pipeline setup + per-frame bind groups + dispatch.
+// Compute plugin: pipeline + state buffer + per-frame bind groups + dispatch.
 // ---------------------------------------------------------------------------
 
 struct GpuParticlesSimulationPlugin;
 
 impl Plugin for GpuParticlesSimulationPlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(ExtractResourcePlugin::<MouseWorldPos>::default());
+
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };
 
         render_app
             .init_resource::<ParticleSimBindGroups>()
+            .init_resource::<ParticleStateBuffers>()
             .add_systems(RenderStartup, init_particle_sim_pipeline)
             .add_systems(
                 Render,
@@ -160,18 +241,23 @@ struct ParticleSimPipeline {
     pipeline: CachedComputePipelineId,
 }
 
-/// Per-batch parameters passed to the compute shader via a uniform
-/// buffer.
 #[derive(Copy, Clone, Default, ShaderType)]
 struct ParticleSimParams {
     base_input_index: u32,
     count: u32,
     time: f32,
-    _pad: u32,
+    dt: f32,
+    mouse_world_pos: Vec4,
 }
 
-/// Per-batch bind groups. Rebuilt each frame because bevy's shared
-/// buffers can grow (invalidating bind groups that reference them).
+/// Per-batch persistent state buffer: `count * PARTICLE_STATE_SIZE`
+/// bytes holding `(position, velocity)` for each particle. Allocated
+/// lazily the first time we see the batch's reservation.
+#[derive(Resource, Default)]
+struct ParticleStateBuffers {
+    per_batch: MainEntityHashMap<Buffer>,
+}
+
 #[derive(Resource, Default)]
 struct ParticleSimBindGroups {
     per_batch: MainEntityHashMap<PerBatchBindGroup>,
@@ -192,13 +278,13 @@ fn init_particle_sim_pipeline(
         &BindGroupLayoutEntries::sequential(
             ShaderStages::COMPUTE,
             (
-                // Bevy's shared `MeshInputUniform` buffer (we write
-                // `world_from_local` for our reserved slot range).
+                // (0) Bevy's shared `MeshInputUniform` buffer.
                 storage_buffer_sized(false, None),
-                // Bevy's shared `MeshCullingData` buffer (we write
-                // per-slot culling AABBs).
+                // (1) Bevy's shared `MeshCullingData` buffer.
                 storage_buffer_sized(false, None),
-                // Per-dispatch parameters.
+                // (2) Per-particle state (owned by this example).
+                storage_buffer_sized(false, None),
+                // (3) Per-dispatch parameters.
                 uniform_buffer::<ParticleSimParams>(false),
             ),
         ),
@@ -228,6 +314,8 @@ fn prepare_particle_sim_bind_groups(
     culling_data_buffer: Res<MeshCullingDataBuffer>,
     reservations: Res<GpuInstanceBatchReservations>,
     time: Res<Time>,
+    mouse_world_pos: Res<MouseWorldPos>,
+    mut state_buffers: ResMut<ParticleStateBuffers>,
     mut sim_bind_groups: ResMut<ParticleSimBindGroups>,
 ) {
     sim_bind_groups.per_batch.clear();
@@ -247,11 +335,47 @@ fn prepare_particle_sim_bind_groups(
     };
 
     for (main_entity, reservation) in reservations.by_entity.iter() {
+        // Lazy-allocate the per-particle state buffer on first
+        // encounter. The shader seeds its contents on first dispatch
+        // (via the `pos.w < 0.0` "uninitialized" sentinel); we
+        // initialize to zeros here and rely on the shader-side seed
+        // shifting `pos.w` to -1 as part of wgpu's default
+        // zero-initialization... actually simpler: zero-init works
+        // because age starts at 0 which is not < 0, so we'd skip seed.
+        // Instead, create the buffer with an explicit "uninit"
+        // marker.
+        let state_buffer = state_buffers
+            .per_batch
+            .entry(*main_entity)
+            .or_insert_with(|| {
+                let size = reservation.max_capacity as u64 * PARTICLE_STATE_SIZE;
+                let buffer = render_device.create_buffer(&BufferDescriptor {
+                    label: Some("particle_state"),
+                    size,
+                    usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                // Seed with `pos.w = -1.0` so the shader treats every
+                // slot as uninitialized on its first dispatch and
+                // scatters them into a sphere.
+                let mut seed =
+                    vec![0u8; reservation.max_capacity as usize * PARTICLE_STATE_SIZE as usize];
+                for i in 0..reservation.max_capacity as usize {
+                    // pos.w is at byte offset 12..16 of each 32-byte slot.
+                    let base = i * PARTICLE_STATE_SIZE as usize;
+                    let bytes = (-1.0f32).to_ne_bytes();
+                    seed[base + 12..base + 16].copy_from_slice(&bytes);
+                }
+                render_queue.write_buffer(&buffer, 0, &seed);
+                buffer
+            });
+
         let params = ParticleSimParams {
             base_input_index: reservation.input_buffer_base,
             count: reservation.max_capacity,
             time: time.elapsed_secs(),
-            _pad: 0,
+            dt: time.delta_secs().min(1.0 / 30.0),
+            mouse_world_pos: mouse_world_pos.0.extend(0.0),
         };
 
         let mut uniform = UniformBuffer::from(params);
@@ -263,6 +387,7 @@ fn prepare_particle_sim_bind_groups(
             &BindGroupEntries::sequential((
                 input_buffer.as_entire_binding(),
                 culling_buffer.as_entire_binding(),
+                state_buffer.as_entire_binding(),
                 uniform.binding().unwrap(),
             )),
         );
