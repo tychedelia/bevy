@@ -1392,50 +1392,22 @@ pub fn queue_material_meshes(
         // Alpha-mask, transmissive, and `OpaqueRendererMethod::Deferred`
         // are out of scope for this PR; future extensions can add per-phase
         // routing here.
-        static LOG_BATCH_PATH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let log_this = {
-            let n = LOG_BATCH_PATH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            n < 5 || n % 600 == 0
-        };
-        if log_this {
-            bevy_log::info!(
-                "[batch_queue] view={:?} batches_in_registry={}",
-                view.retained_view_entity,
-                render_mesh_instance_batches.len(),
-            );
-        }
-
         for (main_entity, batch) in render_mesh_instance_batches.iter() {
             let Some(pipeline_id) = view_specialized_material_pipeline_cache
                 .get(main_entity)
                 .copied()
             else {
-                if log_this {
-                    bevy_log::info!(
-                        "[batch_queue] skip {:?}: no specialized pipeline",
-                        main_entity
-                    );
-                }
                 continue;
             };
 
             let Some(material_instance) = render_material_instances.instances.get(main_entity)
             else {
-                if log_this {
-                    bevy_log::info!("[batch_queue] skip {:?}: no material instance", main_entity);
-                }
                 continue;
             };
             let Some(material) = render_materials.get(material_instance.asset_id) else {
-                if log_this {
-                    bevy_log::info!("[batch_queue] skip {:?}: no prepared material", main_entity);
-                }
                 continue;
             };
             let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&batch.asset_id) else {
-                if log_this {
-                    bevy_log::info!("[batch_queue] skip {:?}: no mesh slabs", main_entity);
-                }
                 continue;
             };
 
@@ -1467,14 +1439,6 @@ pub fn queue_material_meshes(
             let bin_key = Opaque3dBinKey {
                 asset_id: batch.asset_id.into(),
             };
-            if log_this {
-                bevy_log::info!(
-                    "[batch_queue] EMIT {:?} count={} base_input={}",
-                    main_entity,
-                    batch.count.get(),
-                    batch.base_input_index,
-                );
-            }
             opaque_phase.add(
                 batch_set_key,
                 bin_key,

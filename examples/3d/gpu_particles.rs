@@ -5,10 +5,10 @@
 //! rather than extracted from ECS entities on the CPU.
 //!
 //! The example runs a compute shader each frame that writes
-//! `world_from_local` and per-slot culling data into bevy's shared GPU
-//! preprocessing input buffer, at offsets corresponding to the batch's
-//! reservation. Bevy's existing preprocessing, indirect build, and
-//! `multi_draw_indexed_indirect` rendering then renders the batch
+//! `world_from_local` and per-slot `MeshCullingData` into bevy's shared
+//! GPU preprocessing input buffer, at offsets corresponding to the
+//! batch's reservation. Bevy's existing preprocessing, indirect build,
+//! and `multi_draw_indexed_indirect` rendering then render the batch
 //! across all four phases (opaque, shadow, prepass, deferred).
 //!
 //! # Requirements
@@ -19,7 +19,7 @@
 use std::borrow::Cow;
 
 use bevy::{
-    camera::primitives::Aabb,
+    camera::{primitives::Aabb, Hdr},
     core_pipeline::Core3d,
     math::Vec3A,
     pbr::{
@@ -29,6 +29,7 @@ use bevy::{
         },
         MeshCullingDataBuffer, MeshFlags, MeshInputUniform, MeshUniform,
     },
+    post_process::bloom::Bloom,
     prelude::*,
     render::{
         batching::gpu_preprocessing::BatchedInstanceBuffers,
@@ -46,7 +47,7 @@ use bevy::{
 
 const SHADER_ASSET_PATH: &str = "shaders/gpu_particles_simulate.wgsl";
 const WORKGROUP_SIZE: u32 = 64;
-const PARTICLES_PER_EMITTER: u32 = 256;
+const PARTICLES_PER_EMITTER: u32 = 4096;
 
 fn main() {
     App::new()
@@ -66,12 +67,30 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Particle batch — stripped scene, no ground/reference cube, to
-    // isolate the batch rendering.
-    let particle_mesh = meshes.add(Cuboid::new(0.3, 0.3, 0.3));
+    // Ground plane.
+    commands.spawn((
+        Mesh3d(meshes.add(Plane3d::default().mesh().size(32.0, 32.0))),
+        MeshMaterial3d(materials.add(Color::srgb(0.3, 0.3, 0.32))),
+        Transform::from_xyz(0.0, -2.0, 0.0),
+    ));
+
+    // Reference cube rendered through the normal `Mesh3d` path — a
+    // side-by-side sanity check that the existing mesh pipeline still
+    // works alongside the batching infrastructure.
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(1.0, 1.0, 1.0))),
+        MeshMaterial3d(materials.add(Color::srgb_u8(124, 144, 255))),
+        Transform::from_xyz(-4.0, 0.0, 0.0),
+    ));
+
+    // GPU-authored particle batch. The simulation compute shader
+    // (`assets/shaders/gpu_particles_simulate.wgsl`) writes per-instance
+    // transforms and per-slot culling data into bevy's shared input
+    // buffer at the reserved offset each frame.
+    let particle_mesh = meshes.add(Cuboid::new(0.15, 0.15, 0.15));
     let particle_material = materials.add(StandardMaterial {
         base_color: Color::srgb(1.0, 0.4, 0.2),
-        emissive: LinearRgba::rgb(1.0, 0.2, 0.0) * 3.0,
+        emissive: LinearRgba::rgb(3.0, 0.8, 0.2),
         ..default()
     });
 
@@ -79,20 +98,22 @@ fn setup(
         GpuInstanceBatch {
             mesh: particle_mesh,
             max_capacity: PARTICLES_PER_EMITTER,
+            // Conservative emitter-level bounds. Per-particle culling
+            // happens via the per-slot `MeshCullingData` written by the
+            // simulation shader.
             aabb: Aabb {
                 center: Vec3A::ZERO,
-                half_extents: Vec3A::splat(6.0),
+                half_extents: Vec3A::splat(8.0),
             },
-            // Disable frustum culling while debugging — if something is
-            // wrong with the per-slot MeshCullingData path, this
-            // guarantees we still see the particles.
-            flags: MeshFlags::NO_FRUSTUM_CULLING,
+            flags: MeshFlags::empty(),
         },
         MeshMaterial3d(particle_material),
         Transform::default(),
         Visibility::default(),
     ));
 
+    // Key light (shadows will fall from batched particles onto the
+    // ground plane once per-slot culling stabilizes).
     commands.spawn((
         DirectionalLight {
             illuminance: 10_000.0,
@@ -101,9 +122,12 @@ fn setup(
         Transform::from_xyz(4.0, 8.0, 4.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 
+    // Camera — HDR + Bloom so the emissive particles actually glow.
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, 3.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
+        Hdr,
+        Bloom::default(),
+        Transform::from_xyz(0.0, 3.0, 12.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
 }
 
@@ -136,7 +160,8 @@ struct ParticleSimPipeline {
     pipeline: CachedComputePipelineId,
 }
 
-/// Per-batch parameters passed to the compute shader via a uniform buffer.
+/// Per-batch parameters passed to the compute shader via a uniform
+/// buffer.
 #[derive(Copy, Clone, Default, ShaderType)]
 struct ParticleSimParams {
     base_input_index: u32,
@@ -145,8 +170,8 @@ struct ParticleSimParams {
     _pad: u32,
 }
 
-/// Bind groups for each live batch, rebuilt each frame because the
-/// underlying buffers can resize and invalidate them.
+/// Per-batch bind groups. Rebuilt each frame because bevy's shared
+/// buffers can grow (invalidating bind groups that reference them).
 #[derive(Resource, Default)]
 struct ParticleSimBindGroups {
     per_batch: MainEntityHashMap<PerBatchBindGroup>,
@@ -167,8 +192,13 @@ fn init_particle_sim_pipeline(
         &BindGroupLayoutEntries::sequential(
             ShaderStages::COMPUTE,
             (
+                // Bevy's shared `MeshInputUniform` buffer (we write
+                // `world_from_local` for our reserved slot range).
                 storage_buffer_sized(false, None),
+                // Bevy's shared `MeshCullingData` buffer (we write
+                // per-slot culling AABBs).
                 storage_buffer_sized(false, None),
+                // Per-dispatch parameters.
                 uniform_buffer::<ParticleSimParams>(false),
             ),
         ),
@@ -199,47 +229,20 @@ fn prepare_particle_sim_bind_groups(
     reservations: Res<GpuInstanceBatchReservations>,
     time: Res<Time>,
     mut sim_bind_groups: ResMut<ParticleSimBindGroups>,
-    mut frame: Local<u32>,
 ) {
     sim_bind_groups.per_batch.clear();
 
-    *frame += 1;
-    let log_this_frame = *frame < 5 || *frame % 60 == 0;
-
-    let pipeline_state = pipeline_cache.get_compute_pipeline_state(pipeline.pipeline);
-    if log_this_frame {
-        info!("[gpu_particles] frame {} pipeline_state = {:?}", *frame, match pipeline_state {
-            CachedPipelineState::Queued => "Queued",
-            CachedPipelineState::Creating(_) => "Creating",
-            CachedPipelineState::Ok(_) => "Ok",
-            CachedPipelineState::Err(e) => {
-                info!("  err: {}", e);
-                "Err"
-            }
-        });
-    }
-
-    // Wait for compute pipeline to finish compiling.
-    if !matches!(pipeline_state, CachedPipelineState::Ok(_)) {
+    if !matches!(
+        pipeline_cache.get_compute_pipeline_state(pipeline.pipeline),
+        CachedPipelineState::Ok(_)
+    ) {
         return;
     }
 
-    let input_buffer_opt = batched_instance_buffers.current_input_buffer.buffer().buffer();
-    let culling_buffer_opt = culling_data_buffer.buffer();
-
-    if log_this_frame {
-        info!(
-            "[gpu_particles] input_buffer: {}, culling_buffer: {}, reservations: {}",
-            input_buffer_opt.is_some(),
-            culling_buffer_opt.is_some(),
-            reservations.by_entity.len(),
-        );
-    }
-
-    let Some(input_buffer) = input_buffer_opt else {
+    let Some(input_buffer) = batched_instance_buffers.current_input_buffer.buffer().buffer() else {
         return;
     };
-    let Some(culling_buffer) = culling_buffer_opt else {
+    let Some(culling_buffer) = culling_data_buffer.buffer() else {
         return;
     };
 
@@ -280,17 +283,7 @@ fn dispatch_particle_sim(
     sim_bind_groups: Res<ParticleSimBindGroups>,
     pipeline: Res<ParticleSimPipeline>,
     pipeline_cache: Res<PipelineCache>,
-    mut frame: Local<u32>,
 ) {
-    *frame += 1;
-    let log = *frame < 5 || *frame % 60 == 0;
-    if log {
-        info!(
-            "[gpu_particles] dispatch: {} bind groups ready",
-            sim_bind_groups.per_batch.len()
-        );
-    }
-
     if sim_bind_groups.per_batch.is_empty() {
         return;
     }

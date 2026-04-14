@@ -2106,32 +2106,11 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
         // uninit work-item slots that the bin-unpacking shader fills on
         // GPU, so any `push_init` calls (including ours) must come
         // first.
-        static LOG_BAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        let log_bap = {
-            let n = LOG_BAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            n < 5 || n % 600 == 0
-        };
-        if log_bap && !phase.instance_batches.is_empty() {
-            bevy_log::info!(
-                "[bap] instance_batches has {} bins",
-                phase.instance_batches.len()
-            );
-        }
         for (key, bin) in &phase.instance_batches {
             let indexed = key.0.indexed();
 
             for (&main_entity, &(input_uniform_index, count)) in bin.entries() {
                 let count_u32 = count.get();
-                if log_bap {
-                    bevy_log::info!(
-                        "[bap] processing batch {:?} count={} base_in={} indexed={} no_indirect={}",
-                        main_entity,
-                        count_u32,
-                        input_uniform_index.0,
-                        indexed,
-                        no_indirect_drawing
-                    );
-                }
 
                 // Allocate N contiguous output slots.
                 let output_base = data_buffer.add_multiple(count_u32 as usize) as u32;

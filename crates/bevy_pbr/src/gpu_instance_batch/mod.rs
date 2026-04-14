@@ -335,11 +335,22 @@ pub fn allocate_gpu_instance_batch_reservations(
         let lightmap_slot = u16::MAX as u32;
         let material_and_lightmap_bind_group_slot = material_slot | (lightmap_slot << 16);
 
+        // The low 16 bits of `MeshFlags` encode the visibility-range /
+        // LOD index. `u16::MAX` is the sentinel for "no LOD" and makes
+        // `mesh_preprocess.wgsl` skip the visibility-range cull
+        // (otherwise the default low-bit value of 0 causes it to index
+        // `visibility_ranges[0]` — usually zeroed — and early-return).
+        // Users spawning `GpuInstanceBatch` shouldn't need to think
+        // about this encoding, so we OR the sentinel in here rather
+        // than requiring them to set it on the component's `flags`.
+        let lod_sentinel = u16::MAX as u32;
+        let resolved_flags = batch.flags.bits() | lod_sentinel;
+
         let template = MeshInputUniform {
             // Zeroed; the user's compute shader overwrites this every frame.
             world_from_local: [Vec4::ZERO; 3],
             lightmap_uv_rect: UVec2::ZERO,
-            flags: batch.flags.bits(),
+            flags: resolved_flags,
             // No TAA / motion vector support for batches in v1.
             previous_input_index: u32::MAX,
             timestamp: frame_count.0,
