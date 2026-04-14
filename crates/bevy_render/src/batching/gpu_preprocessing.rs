@@ -34,7 +34,7 @@ use crate::{
     occlusion_culling::OcclusionCulling,
     render_phase::{
         BinnedPhaseItem, BinnedRenderPhaseBatch, BinnedRenderPhaseBatchSet,
-        BinnedRenderPhaseBatchSets, CachedRenderPipelinePhaseItem, PhaseItem,
+        BinnedRenderPhaseBatchSets, CachedRenderPipelinePhaseItem, InstanceBatchDraw, PhaseItem,
         PhaseItemBatchSetKey as _, PhaseItemExtraIndex, RenderMultidrawableBatchSet,
         SortedPhaseItem, SortedRenderPhase, UnbatchableBinnedEntityIndices, ViewBinnedRenderPhases,
         ViewSortedRenderPhases,
@@ -2079,6 +2079,138 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         });
                     }
                 }
+            }
+        }
+
+        // Prepare GPU-authored instance batches.
+        //
+        // Each entry in `phase.instance_batches` is already a batch: one
+        // phase item representing `count` instances. We expand each into
+        // `count` preprocess work items and `count` output slots, and
+        // allocate one indirect-parameters slot (or none, in direct mode).
+        //
+        // Unlike batchable meshes, which are grouped into batches across
+        // entities in a bin, instance batches are emitted one draw per
+        // entity — each is its own pre-batched N-instance draw. The
+        // resulting draw records go into `phase.instance_batch_draws`, a
+        // parallel collection to `phase.batch_sets` that the render path
+        // iterates separately.
+        //
+        // Instance batches do not participate in late-phase occlusion
+        // culling; they use early frustum culling only.
+        //
+        // IMPORTANT: this runs before the multidrawable path below.
+        // `PartialBufferVec` enforces that CPU-initialized
+        // (`push_init`) elements precede GPU-initialized
+        // (`push_multiple_uninit`) ones. The multidrawable path reserves
+        // uninit work-item slots that the bin-unpacking shader fills on
+        // GPU, so any `push_init` calls (including ours) must come
+        // first.
+        static LOG_BAP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let log_bap = {
+            let n = LOG_BAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            n < 5 || n % 600 == 0
+        };
+        if log_bap && !phase.instance_batches.is_empty() {
+            bevy_log::info!(
+                "[bap] instance_batches has {} bins",
+                phase.instance_batches.len()
+            );
+        }
+        for (key, bin) in &phase.instance_batches {
+            let indexed = key.0.indexed();
+
+            for (&main_entity, &(input_uniform_index, count)) in bin.entries() {
+                let count_u32 = count.get();
+                if log_bap {
+                    bevy_log::info!(
+                        "[bap] processing batch {:?} count={} base_in={} indexed={} no_indirect={}",
+                        main_entity,
+                        count_u32,
+                        input_uniform_index.0,
+                        indexed,
+                        no_indirect_drawing
+                    );
+                }
+
+                // Allocate N contiguous output slots.
+                let output_base = data_buffer.add_multiple(count_u32 as usize) as u32;
+
+                let extra_index = if no_indirect_drawing {
+                    // Direct mode: each work item writes its own output
+                    // slot; one draw is emitted per instance range via
+                    // `instance_range`.
+                    for i in 0..count_u32 {
+                        work_item_buffer.push(
+                            indexed,
+                            PreprocessWorkItem {
+                                input_index: input_uniform_index.0 + i,
+                                output_or_indirect_parameters_index: output_base + i,
+                            },
+                        );
+                    }
+                    PhaseItemExtraIndex::None
+                } else {
+                    // Indirect mode: all N work items reference one
+                    // indirect-parameters slot; the preprocess shader
+                    // atomically increments `early_instance_count`, and
+                    // the final `multi_draw_indexed_indirect` draws only
+                    // the GPU-frustum-culled survivors.
+                    //
+                    // `batch_set_index` in the CPU metadata is still set
+                    // via `get_next_batch_set_index` so the batch set
+                    // index bookkeeping stays consistent with unbatchable
+                    // / batchable paths; `add_batch_set` is called below.
+                    // However we store `None` in the phase item's
+                    // `extra_index` so that `DrawMesh` uses plain
+                    // `multi_draw_indexed_indirect` with draw count = 1
+                    // (our `range` length is always 1). Using
+                    // `multi_draw_indirect_count` would add no benefit
+                    // here and would require backend support checks.
+                    let indirect_parameters_index = phase_indirect_parameters_buffers
+                        .buffers
+                        .allocate(indexed, 1);
+                    let batch_set_index = phase_indirect_parameters_buffers
+                        .buffers
+                        .get_next_batch_set_index(indexed);
+
+                    GFBD::write_batch_indirect_parameters_metadata(
+                        indexed,
+                        output_base,
+                        batch_set_index,
+                        &mut phase_indirect_parameters_buffers.buffers,
+                        indirect_parameters_index,
+                    );
+
+                    for i in 0..count_u32 {
+                        work_item_buffer.push(
+                            indexed,
+                            PreprocessWorkItem {
+                                input_index: input_uniform_index.0 + i,
+                                output_or_indirect_parameters_index: indirect_parameters_index,
+                            },
+                        );
+                    }
+
+                    phase_indirect_parameters_buffers
+                        .buffers
+                        .add_batch_set(indexed, indirect_parameters_index);
+
+                    PhaseItemExtraIndex::IndirectParametersIndex {
+                        range: indirect_parameters_index..(indirect_parameters_index + 1),
+                        batch_set_index: None,
+                    }
+                };
+
+                phase.instance_batch_draws.push(InstanceBatchDraw {
+                    batch_set_key: key.0.clone(),
+                    bin_key: key.1.clone(),
+                    batch: BinnedRenderPhaseBatch {
+                        representative_entity: (Entity::PLACEHOLDER, main_entity),
+                        instance_range: output_base..(output_base + count_u32),
+                        extra_index,
+                    },
+                });
             }
         }
 

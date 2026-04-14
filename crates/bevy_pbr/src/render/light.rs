@@ -2160,6 +2160,7 @@ pub struct PendingShadowQueues(pub PendingQueues);
 pub(crate) struct SpecializeShadowsSystemParam<'w, 's> {
     render_meshes: Res<'w, RenderAssets<RenderMesh>>,
     render_mesh_instances: Res<'w, RenderMeshInstances>,
+    render_mesh_instance_batches: Res<'w, RenderMeshInstanceBatches>,
     render_materials: Res<'w, ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<'w, RenderMaterialInstances>,
     shadow_render_phases: Res<'w, ViewBinnedRenderPhases<Shadow>>,
@@ -2186,6 +2187,7 @@ pub(crate) fn specialize_shadows(
         let SpecializeShadowsSystemParam {
             render_meshes,
             render_mesh_instances,
+            render_mesh_instance_batches,
             render_materials,
             render_material_instances,
             shadow_render_phases,
@@ -2349,6 +2351,57 @@ pub(crate) fn specialize_shadows(
                         material_type_id: material_instance.asset_id.type_id(),
                     });
                 }
+
+                // Specialize shadow pipelines for GPU instance batches.
+                //
+                // Batches cast shadows by default in v1 (no
+                // `NotShadowCaster` opt-out yet). We check the per-view
+                // shadow pipeline cache and push work items for any batch
+                // that isn't cached yet.
+                for (main_entity, batch) in render_mesh_instance_batches.iter() {
+                    if maybe_specialized_shadow_material_pipeline_cache
+                        .as_ref()
+                        .is_some_and(|cache| cache.contains_key(main_entity))
+                    {
+                        continue;
+                    }
+
+                    let Some(material_instance) =
+                        render_material_instances.instances.get(main_entity)
+                    else {
+                        continue;
+                    };
+                    let Some(material) = render_materials.get(material_instance.asset_id) else {
+                        continue;
+                    };
+                    if !material.properties.shadows_enabled {
+                        continue;
+                    }
+                    let Some(mesh) = render_meshes.get(batch.asset_id) else {
+                        continue;
+                    };
+
+                    let mut mesh_key =
+                        *light_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+
+                    mesh_key |= match material.properties.alpha_mode {
+                        AlphaMode::Mask(_)
+                        | AlphaMode::Blend
+                        | AlphaMode::Premultiplied
+                        | AlphaMode::Add
+                        | AlphaMode::AlphaToCoverage => MeshPipelineKey::MAY_DISCARD,
+                        _ => MeshPipelineKey::NONE,
+                    };
+
+                    work_items.push(ShadowSpecializationWorkItem {
+                        visible_entity: *main_entity,
+                        retained_view_entity: extracted_view_light.retained_view_entity,
+                        mesh_key,
+                        layout: mesh.layout.clone(),
+                        properties: material.properties.clone(),
+                        material_type_id: material_instance.asset_id.type_id(),
+                    });
+                }
             }
         }
 
@@ -2412,6 +2465,7 @@ pub(crate) fn specialize_shadows(
 /// appropriate.
 pub fn queue_shadows(
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_mesh_instance_batches: Res<RenderMeshInstanceBatches>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mut shadow_render_phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
@@ -2549,6 +2603,59 @@ pub fn queue_shadows(
                         mesh_instance.should_batch(),
                         &gpu_preprocessing_support,
                     ),
+                );
+            }
+
+            // Queue GPU instance batches into the shadow phase.
+            //
+            // All batches cast shadows in v1. Per-particle GPU frustum
+            // culling (driven by per-slot `MeshCullingData` written by
+            // the user's simulation) determines which instances
+            // actually contribute to the shadow map.
+            for (main_entity, batch) in render_mesh_instance_batches.iter() {
+                let Some(&(pipeline_id, draw_function)) =
+                    view_specialized_material_pipeline_cache.get(main_entity)
+                else {
+                    continue;
+                };
+
+                let Some(material_instance) = render_material_instances.instances.get(main_entity)
+                else {
+                    continue;
+                };
+                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                    continue;
+                };
+
+                let depth_only_draw_function = material
+                    .properties
+                    .get_draw_function(ShadowsDepthOnlyDrawFunction);
+                let material_bind_group_index =
+                    if Some(draw_function) == depth_only_draw_function {
+                        None
+                    } else {
+                        Some(material.binding.group.0)
+                    };
+
+                let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&batch.asset_id) else {
+                    continue;
+                };
+
+                let batch_set_key = ShadowBatchSetKey {
+                    pipeline: pipeline_id,
+                    draw_function,
+                    material_bind_group_index,
+                    slabs: mesh_slabs,
+                };
+
+                shadow_phase.add(
+                    batch_set_key,
+                    ShadowBinKey {
+                        asset_id: batch.asset_id.into(),
+                    },
+                    (Entity::PLACEHOLDER, *main_entity),
+                    InputUniformIndex(batch.base_input_index),
+                    BinnedRenderPhaseType::InstanceBatch { count: batch.count },
                 );
             }
         }

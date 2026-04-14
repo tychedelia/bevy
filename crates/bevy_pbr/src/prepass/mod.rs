@@ -7,8 +7,9 @@ use crate::{
     DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, MaterialPipeline, MeshLayouts,
     MeshPipeline, MeshPipelineKey, PreparedMaterial, PrepassAlphaMaskDrawFunction,
     PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction, PrepassOpaqueDrawFunction,
-    PrepassVertexShader, RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceFlags,
-    RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup, ShadowView,
+    PrepassVertexShader, RenderLightmaps, RenderMaterialInstances, RenderMeshInstanceBatches,
+    RenderMeshInstanceFlags, RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup,
+    ShadowView,
 };
 use bevy_app::{App, Plugin, PreUpdate};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
@@ -853,6 +854,7 @@ pub(crate) struct SpecializePrepassSystemParam<'w, 's> {
     render_meshes: Res<'w, RenderAssets<RenderMesh>>,
     render_materials: Res<'w, ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<'w, RenderMeshInstances>,
+    render_mesh_instance_batches: Res<'w, RenderMeshInstanceBatches>,
     render_material_instances: Res<'w, RenderMaterialInstances>,
     render_lightmaps: Res<'w, RenderLightmaps>,
     render_visibility_ranges: Res<'w, RenderVisibilityRanges>,
@@ -897,6 +899,7 @@ pub(crate) fn specialize_prepass_material_meshes(
             render_meshes,
             render_materials,
             render_mesh_instances,
+            render_mesh_instance_batches,
             render_material_instances,
             render_lightmaps,
             render_visibility_ranges,
@@ -1099,6 +1102,76 @@ pub(crate) fn specialize_prepass_material_meshes(
                     material_type_id: material_instance.asset_id.type_id(),
                 });
             }
+
+            // Specialize prepass (and deferred-prepass) pipelines for GPU
+            // instance batches. Batches participate in whichever of prepass
+            // or deferred their material targets, via the same cache and
+            // work-item mechanism as normal mesh entities.
+            //
+            // V1 batches don't support lightmaps, visibility ranges,
+            // skinning, or motion vectors, so the key derivation is
+            // intentionally simpler than the per-entity path above.
+            for (main_entity, batch) in render_mesh_instance_batches.iter() {
+                if maybe_specialized_prepass_material_pipeline_cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.contains_key(main_entity))
+                {
+                    continue;
+                }
+
+                let Some(material_instance) =
+                    render_material_instances.instances.get(main_entity)
+                else {
+                    continue;
+                };
+                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                    continue;
+                };
+                if !material.properties.prepass_enabled {
+                    continue;
+                }
+                if material.properties.reads_view_transmission_texture {
+                    continue;
+                }
+                let Some(mesh) = render_meshes.get(batch.asset_id) else {
+                    continue;
+                };
+
+                let mut mesh_key =
+                    *view_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+
+                let alpha_mode = material.properties.alpha_mode;
+                match alpha_mode {
+                    AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
+                        mesh_key |= alpha_mode_pipeline_key(alpha_mode, msaa);
+                    }
+                    AlphaMode::Blend
+                    | AlphaMode::Premultiplied
+                    | AlphaMode::Add
+                    | AlphaMode::Multiply => {
+                        continue;
+                    }
+                }
+
+                let forward = match material.properties.render_method {
+                    OpaqueRendererMethod::Forward => true,
+                    OpaqueRendererMethod::Deferred => false,
+                    OpaqueRendererMethod::Auto => unreachable!(),
+                };
+                let deferred = deferred_prepass.is_some() && !forward;
+                if deferred {
+                    mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
+                }
+
+                work_items.push(PrepassSpecializationWorkItem {
+                    visible_entity: *main_entity,
+                    retained_view_entity: extracted_view.retained_view_entity,
+                    mesh_key,
+                    layout: mesh.layout.clone(),
+                    properties: material.properties.clone(),
+                    material_type_id: material_instance.asset_id.type_id(),
+                });
+            }
         }
 
         pending_prepass_mesh_material_queues.expire_stale_views(&all_views);
@@ -1180,6 +1253,7 @@ pub(crate) fn specialize_prepass_material_meshes(
 
 pub fn queue_prepass_material_meshes(
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_mesh_instance_batches: Res<RenderMeshInstanceBatches>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
@@ -1392,6 +1466,67 @@ pub fn queue_prepass_material_meshes(
                     }
                 }
                 _ => {}
+            }
+        }
+
+        // Queue GPU instance batches into the prepass / deferred-prepass
+        // phases. V1 only handles opaque batches; alpha-mask batches are
+        // out of scope (drops through).
+        for (main_entity, batch) in render_mesh_instance_batches.iter() {
+            let Some(&(_, pipeline_id, draw_function)) =
+                view_specialized_material_pipeline_cache.get(main_entity)
+            else {
+                continue;
+            };
+            let Some(material_instance) = render_material_instances.instances.get(main_entity)
+            else {
+                continue;
+            };
+            let Some(material) = render_materials.get(material_instance.asset_id) else {
+                continue;
+            };
+            if !material.properties.prepass_enabled {
+                continue;
+            }
+            if !matches!(material.properties.render_phase_type, RenderPhaseType::Opaque) {
+                continue;
+            }
+
+            let deferred = match material.properties.render_method {
+                OpaqueRendererMethod::Forward => false,
+                OpaqueRendererMethod::Deferred => true,
+                OpaqueRendererMethod::Auto => continue,
+            };
+
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&batch.asset_id) else {
+                continue;
+            };
+
+            let batch_set_key = OpaqueNoLightmap3dBatchSetKey {
+                draw_function,
+                pipeline: pipeline_id,
+                material_bind_group_index: Some(material.binding.group.0),
+                slabs: mesh_slabs,
+            };
+            let bin_key = OpaqueNoLightmap3dBinKey {
+                asset_id: batch.asset_id.into(),
+            };
+            let phase_type = BinnedRenderPhaseType::InstanceBatch { count: batch.count };
+            let entity = (Entity::PLACEHOLDER, *main_entity);
+            let input_index = InputUniformIndex(batch.base_input_index);
+
+            if deferred {
+                if let Some(opaque_deferred_phase) = opaque_deferred_phase.as_mut() {
+                    opaque_deferred_phase.add(
+                        batch_set_key,
+                        bin_key,
+                        entity,
+                        input_index,
+                        phase_type,
+                    );
+                }
+            } else if let Some(opaque_phase) = opaque_phase.as_mut() {
+                opaque_phase.add(batch_set_key, bin_key, entity, input_index, phase_type);
             }
         }
     }

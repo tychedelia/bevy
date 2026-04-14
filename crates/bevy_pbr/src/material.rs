@@ -890,6 +890,7 @@ pub(crate) struct SpecializeMaterialMeshesSystemParam<'w, 's> {
     render_meshes: Res<'w, RenderAssets<RenderMesh>>,
     render_materials: Res<'w, ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<'w, RenderMeshInstances>,
+    render_mesh_instance_batches: Res<'w, RenderMeshInstanceBatches>,
     render_material_instances: Res<'w, RenderMaterialInstances>,
     render_lightmaps: Res<'w, RenderLightmaps>,
     render_visibility_ranges: Res<'w, RenderVisibilityRanges>,
@@ -918,6 +919,7 @@ pub(crate) fn specialize_material_meshes(
             render_meshes,
             render_materials,
             render_mesh_instances,
+            render_mesh_instance_batches,
             render_material_instances,
             render_lightmaps,
             render_visibility_ranges,
@@ -1072,6 +1074,52 @@ pub(crate) fn specialize_material_meshes(
                     material_type_id: material_instance.asset_id.type_id(),
                 });
             }
+
+            // Specialize pipelines for GPU instance batches.
+            //
+            // Batches don't go through `dirty_specializations` (which is
+            // driven by `Mesh3d` change-detection). We check the cache
+            // directly each frame and specialize any batch that doesn't
+            // have a cached pipeline yet. Once specialized, batches stay
+            // cached for the lifetime of the entity.
+            for (main_entity, batch) in render_mesh_instance_batches.iter() {
+                if let Some(view_cache) = maybe_specialized_material_pipeline_cache.as_ref() {
+                    if view_cache.contains_key(main_entity) {
+                        continue;
+                    }
+                }
+
+                let Some(material_instance) =
+                    render_material_instances.instances.get(main_entity)
+                else {
+                    continue;
+                };
+                let Some(mesh) = render_meshes.get(batch.asset_id) else {
+                    continue;
+                };
+                let Some(material) = render_materials.get(material_instance.asset_id) else {
+                    continue;
+                };
+
+                let mut mesh_pipeline_key_bits: MeshPipelineKey =
+                    material.properties.mesh_pipeline_key_bits.downcast();
+                mesh_pipeline_key_bits.insert(alpha_mode_pipeline_key(
+                    material.properties.alpha_mode,
+                    &Msaa::from_samples(view_key.msaa_samples()),
+                ));
+                let mesh_key = *view_key
+                    | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits())
+                    | mesh_pipeline_key_bits;
+
+                work_items.push(SpecializationWorkItem {
+                    visible_entity: *main_entity,
+                    retained_view_entity: view.retained_view_entity,
+                    mesh_key,
+                    layout: mesh.layout.clone(),
+                    properties: material.properties.clone(),
+                    material_type_id: material_instance.asset_id.type_id(),
+                });
+            }
         }
 
         pending_mesh_material_queues.expire_stale_views(&all_views);
@@ -1109,6 +1157,7 @@ pub(crate) fn specialize_material_meshes(
 pub fn queue_material_meshes(
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_mesh_instance_batches: Res<RenderMeshInstanceBatches>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
@@ -1326,6 +1375,113 @@ pub fn queue_material_meshes(
                     });
                 }
             }
+        }
+
+        // Queue GPU instance batches into the opaque phase.
+        //
+        // This is the parallel iteration to the per-entity loop above, but
+        // sourced from `RenderMeshInstanceBatches` rather than from
+        // `RenderVisibleEntities + RenderMeshInstances`. Each batch entry
+        // already represents a pre-batched N-instance draw; we emit one
+        // `BinnedRenderPhaseType::InstanceBatch` phase item per entry and
+        // `batch_and_prepare_binned_render_phase` expands it into N
+        // preprocessing work items.
+        //
+        // V1 limitations: opaque / forward only. Sorted phases (transparent)
+        // are structurally incompatible with GPU-authored depths.
+        // Alpha-mask, transmissive, and `OpaqueRendererMethod::Deferred`
+        // are out of scope for this PR; future extensions can add per-phase
+        // routing here.
+        static LOG_BATCH_PATH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let log_this = {
+            let n = LOG_BATCH_PATH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            n < 5 || n % 600 == 0
+        };
+        if log_this {
+            bevy_log::info!(
+                "[batch_queue] view={:?} batches_in_registry={}",
+                view.retained_view_entity,
+                render_mesh_instance_batches.len(),
+            );
+        }
+
+        for (main_entity, batch) in render_mesh_instance_batches.iter() {
+            let Some(pipeline_id) = view_specialized_material_pipeline_cache
+                .get(main_entity)
+                .copied()
+            else {
+                if log_this {
+                    bevy_log::info!(
+                        "[batch_queue] skip {:?}: no specialized pipeline",
+                        main_entity
+                    );
+                }
+                continue;
+            };
+
+            let Some(material_instance) = render_material_instances.instances.get(main_entity)
+            else {
+                if log_this {
+                    bevy_log::info!("[batch_queue] skip {:?}: no material instance", main_entity);
+                }
+                continue;
+            };
+            let Some(material) = render_materials.get(material_instance.asset_id) else {
+                if log_this {
+                    bevy_log::info!("[batch_queue] skip {:?}: no prepared material", main_entity);
+                }
+                continue;
+            };
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&batch.asset_id) else {
+                if log_this {
+                    bevy_log::info!("[batch_queue] skip {:?}: no mesh slabs", main_entity);
+                }
+                continue;
+            };
+
+            // V1: only forward opaque batches.
+            if !matches!(material.properties.render_phase_type, RenderPhaseType::Opaque) {
+                continue;
+            }
+            if matches!(
+                material.properties.render_method,
+                OpaqueRendererMethod::Deferred
+            ) {
+                continue;
+            }
+
+            let Some(draw_function) = material
+                .properties
+                .get_draw_function(MainPassOpaqueDrawFunction)
+            else {
+                continue;
+            };
+
+            let batch_set_key = Opaque3dBatchSetKey {
+                pipeline: pipeline_id,
+                draw_function,
+                material_bind_group_index: Some(material.binding.group.0),
+                slabs: mesh_slabs,
+                lightmap_slab: None,
+            };
+            let bin_key = Opaque3dBinKey {
+                asset_id: batch.asset_id.into(),
+            };
+            if log_this {
+                bevy_log::info!(
+                    "[batch_queue] EMIT {:?} count={} base_input={}",
+                    main_entity,
+                    batch.count.get(),
+                    batch.base_input_index,
+                );
+            }
+            opaque_phase.add(
+                batch_set_key,
+                bin_key,
+                (Entity::PLACEHOLDER, *main_entity),
+                InputUniformIndex(batch.base_input_index),
+                BinnedRenderPhaseType::InstanceBatch { count: batch.count },
+            );
         }
     }
 }

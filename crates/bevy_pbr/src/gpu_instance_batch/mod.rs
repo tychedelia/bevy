@@ -77,6 +77,8 @@
 //! parameters, which are populated identically whether they came from a
 //! single mesh entity or a batch range.
 
+use core::num::NonZeroU32;
+
 use bevy_app::{App, Plugin};
 use bevy_asset::AssetId;
 use bevy_camera::primitives::Aabb;
@@ -94,7 +96,8 @@ use bevy_render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
 
 use crate::{
     MaterialExtractionSystems, MeshCullingData, MeshCullingDataBuffer, MeshFlags, MeshInputUniform,
-    MeshUniform, RenderMaterialBindings, RenderMaterialInstances,
+    MeshUniform, RenderMaterialBindings, RenderMaterialInstances, RenderMeshInstanceBatch,
+    RenderMeshInstanceBatches,
 };
 
 /// Component declaring that an entity represents a batch of up to
@@ -176,14 +179,12 @@ pub struct GpuInstanceBatchReservations {
 /// [`GpuPreprocessingSupport::is_available`] — on devices without GPU
 /// preprocessing, the plugin does nothing and logs a warning.
 ///
-/// # v1 limitations
+/// # Current scope
 ///
-/// This plugin currently wires up extraction and reservation only. Queue
-/// and draw integration depend on a companion bevy-side patch that
-/// introduces `RenderMeshInstanceBatches` plus a range-variant phase item
-/// (see the trailing `NOTE` in this module's source). Until that lands,
-/// batches allocate input and culling buffer ranges and template
-/// [`MeshInputUniform`] data, but nothing renders.
+/// This plugin handles extraction, buffer reservation, and registration
+/// into [`RenderMeshInstanceBatches`]. The bevy-side queue systems
+/// (opaque, shadow, prepass, deferred) pick up the registry and emit
+/// range-variant phase items automatically.
 pub struct GpuInstanceBatchPlugin;
 
 impl Plugin for GpuInstanceBatchPlugin {
@@ -246,12 +247,15 @@ pub fn extract_gpu_instance_batches(
 }
 
 /// Allocates input-buffer and culling-buffer ranges for newly-seen batches,
-/// and frees ranges for batches no longer present.
+/// registers them in [`RenderMeshInstanceBatches`] so the bevy-side queue
+/// systems can emit phase items, and frees ranges for batches no longer
+/// present.
 pub fn allocate_gpu_instance_batch_reservations(
     extracted: Res<ExtractedGpuInstanceBatches>,
     mut reservations: ResMut<GpuInstanceBatchReservations>,
     mut batched_instance_buffers: ResMut<BatchedInstanceBuffers<MeshUniform, MeshInputUniform>>,
     mut culling_data_buffer: ResMut<MeshCullingDataBuffer>,
+    mut render_mesh_instance_batches: ResMut<RenderMeshInstanceBatches>,
     mesh_allocator: Res<MeshAllocator>,
     render_material_instances: Res<RenderMaterialInstances>,
     render_material_bindings: Res<RenderMaterialBindings>,
@@ -264,7 +268,9 @@ pub fn allocate_gpu_instance_batch_reservations(
 
     let input_uniform_buffer = &mut batched_instance_buffers.current_input_buffer;
 
-    // Free reservations for batches no longer present this frame.
+    // Free reservations for batches no longer present this frame, and
+    // remove them from the render-world registry so queue systems stop
+    // emitting phase items for them.
     let alive_entities: HashSet<MainEntity> = extracted.batches.keys().copied().collect();
     reservations.by_entity.retain(|entity, reservation| {
         if alive_entities.contains(entity) {
@@ -272,6 +278,7 @@ pub fn allocate_gpu_instance_batch_reservations(
         } else {
             input_uniform_buffer
                 .remove_range(reservation.input_buffer_base, reservation.max_capacity);
+            render_mesh_instance_batches.remove(entity);
             // `MeshCullingDataBuffer` does not support freeing ranges yet;
             // slots persist until the app exits. Acceptable for v1 because
             // batches are expected to be long-lived.
@@ -364,27 +371,35 @@ pub fn allocate_gpu_instance_batch_reservations(
                 mesh_asset_id: batch.mesh_asset_id,
             },
         );
+
+        // Register the batch in the render-world registry. Queue systems
+        // (`queue_material_meshes`, shadow, prepass, deferred) iterate
+        // this map and emit one `BinnedRenderPhaseType::InstanceBatch`
+        // phase item per entry.
+        let Some(count) = NonZeroU32::new(batch.max_capacity) else {
+            // max_capacity == 0 shouldn't happen in practice; `add_many_with`
+            // panics on zero counts. Skip registration defensively.
+            continue;
+        };
+        render_mesh_instance_batches.insert(
+            *main_entity,
+            RenderMeshInstanceBatch {
+                asset_id: batch.mesh_asset_id,
+                material_binding,
+                base_input_index: input_buffer_base,
+                count,
+                flags: batch.flags,
+            },
+        );
     }
 }
 
-// NOTE: rendering integration is completed by two follow-up pieces in
-// the upstream bevy renderer:
-//
-// 1. A bevy-side patch adding `RenderMeshInstanceBatch` +
-//    `RenderMeshInstanceBatches` and a `BinnedRenderPhaseType::InstanceBatch`
-//    variant, with range handling in `batch_and_prepare_binned_render_phase`
-//    and awareness in `queue_material_meshes` / shadow / prepass / deferred
-//    queue systems. Lands independently as it's broadly useful to any
-//    GPU-driven instance provider.
-//
-// 2. A thin consumer layer in this module that, during reservation,
-//    populates `RenderMeshInstanceBatches` with an entry keyed by the
-//    batch's `MainEntity`, carrying `base_input_index`, `count =
-//    max_capacity`, and the resolved material binding. With that in place,
-//    the registry-aware queue systems emit range phase items for us and
-//    the existing GPU preprocessing + indirect build + draw path renders
-//    batches across all phases with zero further integration.
-//
-// Until those land, this module reserves input / culling buffer ranges
-// and populates `MeshInputUniform` templates, but produces no visible
-// output.
+// Rendering integration is now complete via the companion bevy patch
+// that introduced `RenderMeshInstanceBatch` + `RenderMeshInstanceBatches`
+// plus the `BinnedRenderPhaseType::InstanceBatch` variant. Each batch
+// inserted into `RenderMeshInstanceBatches` by
+// `allocate_gpu_instance_batch_reservations` is picked up by the
+// bevy-side queue systems (`queue_material_meshes`, shadow, prepass,
+// deferred) which emit range-variant phase items. The shared GPU
+// preprocessing + indirect build + draw path handles the rest, rendering
+// batches across all supported phases.
