@@ -23,9 +23,12 @@
 //!
 //! The user's compute shader then writes `world_from_local` (and
 //! optionally per-slot [`MeshCullingData`]) into the reserved range of
-//! bevy's shared input buffer each frame. To mark a slot as "dead",
-//! write an impossible AABB for it — frustum culling rejects it and the
-//! indirect draw's `instance_count` reflects only surviving instances.
+//! bevy's shared input buffer each frame. To mark a slot as "dead", write
+//! a nonzero value into [`MeshCullingData::dead`] — the preprocessing pass
+//! skips it entirely, so it costs nothing past that point and the indirect
+//! draw's `instance_count` reflects only live instances. Slots default to
+//! alive (`dead == 0.0`) after reservation, so simulations only need to
+//! write the flag when retiring a slot.
 //!
 //! # Known limitations
 //!
@@ -48,7 +51,7 @@ use bevy_diagnostic::FrameCount;
 use bevy_ecs::prelude::*;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 use bevy_log::warn;
-use bevy_math::{UVec2, Vec3, Vec4};
+use bevy_math::{UVec2, Vec4};
 use bevy_mesh::Mesh;
 use bevy_platform::collections::{HashMap, HashSet};
 use bevy_render::batching::gpu_preprocessing::{BatchedInstanceBuffers, GpuPreprocessingSupport};
@@ -77,8 +80,9 @@ pub struct GpuInstanceBatch {
     /// and work-item buffer.
     pub max_capacity: u32,
     /// Emitter-level AABB, stamped into every slot at reservation time.
-    /// The simulation shader can overwrite per-slot AABBs each frame to
-    /// signal alive/dead via frustum culling.
+    /// The simulation shader can overwrite per-slot AABBs each frame for
+    /// tighter culling, and mark slots dead via
+    /// [`MeshCullingData::dead`](crate::MeshCullingData::dead).
     pub aabb: Aabb,
     pub flags: MeshFlags,
 }
@@ -275,10 +279,7 @@ pub fn allocate_gpu_instance_batch_reservations(
         let input_buffer_base =
             input_uniform_buffer.add_many_with(batch.max_capacity, |_| template);
 
-        let culling_data = MeshCullingData {
-            aabb_center: Vec3::from(batch.aabb.center).extend(0.0),
-            aabb_half_extents: Vec3::from(batch.aabb.half_extents).extend(0.0),
-        };
+        let culling_data = MeshCullingData::new(Some(&batch.aabb));
         let culling_buffer_base =
             culling_data_buffer.push_many_identical(culling_data, batch.max_capacity);
 

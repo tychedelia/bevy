@@ -624,16 +624,27 @@ impl_atomic_pod!(MeshInputUniform, MeshInputUniformBlob);
 
 /// Information about each mesh instance needed to cull it on GPU.
 ///
-/// This consists of its axis-aligned bounding box (AABB).
+/// Holds the axis-aligned bounding box (AABB) and a dead-slot flag used by
+/// GPU-authored instance batches (see [`GpuInstanceBatch`]).
+///
+/// [`GpuInstanceBatch`]: crate::gpu_instance_batch::GpuInstanceBatch
 #[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MeshCullingData {
-    /// The 3D center of the AABB in model space, padded with an extra unused
-    /// float value.
-    pub aabb_center: Vec4,
-    /// The 3D extents of the AABB in model space, divided by two, padded with
-    /// an extra unused float value.
-    pub aabb_half_extents: Vec4,
+    /// The 3D center of the AABB in model space.
+    pub aabb_center: Vec3,
+    /// Padding so `aabb_half_extents` lands on the 16-byte alignment WGSL
+    /// requires for the following `vec3<f32>`.
+    _pad: f32,
+    /// The 3D extents of the AABB in model space, divided by two.
+    pub aabb_half_extents: Vec3,
+    /// Dead-slot flag used by GPU-authored instance batches. `0.0` means
+    /// alive (render normally); any nonzero value means the preprocessing
+    /// pass must skip this slot, excluding it from the GPU-derived indirect
+    /// instance count. Default zero-initialization keeps ordinary CPU-driven
+    /// meshes alive automatically; GPU simulations opt in by writing a
+    /// nonzero value for dead slots.
+    pub dead: f32,
 }
 
 /// A GPU buffer that holds the information needed to cull meshes on GPU.
@@ -1703,16 +1714,21 @@ impl MeshCullingData {
     /// Returns a new [`MeshCullingData`] initialized with the given AABB.
     ///
     /// If no AABB is provided, an infinitely-large one is conservatively
-    /// chosen.
-    fn new(aabb: Option<&Aabb>) -> Self {
+    /// chosen. The slot is alive (`dead == 0.0`) until a simulation
+    /// explicitly marks it dead.
+    pub(crate) fn new(aabb: Option<&Aabb>) -> Self {
         match aabb {
             Some(aabb) => MeshCullingData {
-                aabb_center: aabb.center.extend(0.0),
-                aabb_half_extents: aabb.half_extents.extend(0.0),
+                aabb_center: aabb.center.into(),
+                _pad: 0.0,
+                aabb_half_extents: aabb.half_extents.into(),
+                dead: 0.0,
             },
             None => MeshCullingData {
-                aabb_center: Vec3::ZERO.extend(0.0),
-                aabb_half_extents: Vec3::INFINITY.extend(0.0),
+                aabb_center: Vec3::ZERO,
+                _pad: 0.0,
+                aabb_half_extents: Vec3::INFINITY,
+                dead: 0.0,
             },
         }
     }
