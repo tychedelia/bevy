@@ -84,27 +84,17 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let slot = params.base_input_index + i;
     var state = particle_state[i];
 
-    // Lazy init: a negative age indicates "unseeded." Seed over a
-    // large volume so the swarm starts visibly spread across the
-    // scene rather than clumped.
     if state.pos.w < 0.0 {
         let seed = hash_vec3(i) * 9.0;
         state.pos = vec4<f32>(seed, 0.0);
         state.vel = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
 
-    // Attractor: pull toward the mouse position with long-range 1/r
-    // fall-off (rather than 1/r^2) so particles far from the cursor
-    // still feel a pull — makes the swarm large and responsive rather
-    // than collapsed.
     let to_mouse = params.mouse_world_pos.xyz - state.pos.xyz;
     let dist = sqrt(dot(to_mouse, to_mouse) + 0.5);
     let force_mag = min(14.0 / dist, 40.0);
     let accel = (to_mouse / dist) * force_mag;
 
-    // Integrate velocity with damping, then position. Slightly lower
-    // damping than the original so motion has more momentum and the
-    // swarm sloshes rather than snapping to the cursor.
     let damping = exp(-1.0 * params.dt);
     state.vel = vec4<f32>(state.vel.xyz * damping + accel * params.dt, 0.0);
     state.pos = vec4<f32>(
@@ -114,15 +104,22 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     particle_state[i] = state;
 
-    // Build translation matrix (identity rotation, translated to pos).
+    let forward = normalize(to_mouse / dist);
+    let world_up = vec3<f32>(0.0, 1.0, 0.0);
+    var right: vec3<f32>;
+    if abs(dot(forward, world_up)) > 0.999 {
+        right = vec3<f32>(1.0, 0.0, 0.0);
+    } else {
+        right = normalize(cross(world_up, forward));
+    }
+    let up = cross(forward, right);
+
     mesh_input_buffer[slot].world_from_local = mat3x4<f32>(
-        vec4<f32>(1.0, 0.0, 0.0, state.pos.x),
-        vec4<f32>(0.0, 1.0, 0.0, state.pos.y),
-        vec4<f32>(0.0, 0.0, 1.0, state.pos.z),
+        vec4<f32>(right.x, up.x, forward.x, state.pos.x),
+        vec4<f32>(right.y, up.y, forward.y, state.pos.y),
+        vec4<f32>(right.z, up.z, forward.z, state.pos.z),
     );
 
-    // Model-space culling AABB. The particle mesh is a small cube
-    // centered on its own origin, so center = 0.
     mesh_culling_buffer[slot].aabb_center = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     mesh_culling_buffer[slot].aabb_half_extents = vec4<f32>(0.2, 0.2, 0.2, 0.0);
 }

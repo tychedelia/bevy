@@ -103,16 +103,18 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // GPU-authored particle batch. Material is polished copper — high
-    // metallic + low roughness so each particle picks up sharp specular
-    // highlights from the multi-source lighting rig, showcasing that
-    // batched instances go through the full PBR material pipeline.
-    let particle_mesh = meshes.add(Sphere::new(0.18).mesh().ico(2).unwrap());
+    // GPU-authored particle batch. Soft dielectric material — no
+    // metallic, high roughness — so the lighting response is primarily
+    // diffuse with gentle specular. Colored point lights paint the
+    // base color differently across the swarm; cubes let per-instance
+    // orientation be visible as faces catch the key light at
+    // different angles.
+    let particle_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
     let particle_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.95, 0.55, 0.38),
-        metallic: 1.0,
-        perceptual_roughness: 0.18,
-        reflectance: 0.7,
+        base_color: Color::srgb(0.92, 0.78, 0.66),
+        metallic: 0.0,
+        perceptual_roughness: 0.55,
+        reflectance: 0.3,
         ..default()
     });
 
