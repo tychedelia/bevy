@@ -2354,33 +2354,25 @@ pub(crate) fn specialize_shadows(
 
                 // GPU instance batches always cast shadows (no
                 // `NotShadowCaster` opt-out).
-                for (main_entity, batch) in render_mesh_instance_batches.iter() {
+                for resolved in render_mesh_instance_batches.iter_resolved(
+                    &render_material_instances,
+                    &render_materials,
+                    &render_meshes,
+                ) {
                     if maybe_specialized_shadow_material_pipeline_cache
                         .as_ref()
-                        .is_some_and(|cache| cache.contains_key(main_entity))
+                        .is_some_and(|cache| cache.contains_key(resolved.main_entity))
                     {
                         continue;
                     }
-
-                    let Some(material_instance) =
-                        render_material_instances.instances.get(main_entity)
-                    else {
-                        continue;
-                    };
-                    let Some(material) = render_materials.get(material_instance.asset_id) else {
-                        continue;
-                    };
-                    if !material.properties.shadows_enabled {
+                    if !resolved.material.properties.shadows_enabled {
                         continue;
                     }
-                    let Some(mesh) = render_meshes.get(batch.asset_id) else {
-                        continue;
-                    };
 
-                    let mut mesh_key =
-                        *light_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+                    let mut mesh_key = *light_key
+                        | MeshPipelineKey::from_bits_retain(resolved.mesh.key_bits.bits());
 
-                    mesh_key |= match material.properties.alpha_mode {
+                    mesh_key |= match resolved.material.properties.alpha_mode {
                         AlphaMode::Mask(_)
                         | AlphaMode::Blend
                         | AlphaMode::Premultiplied
@@ -2390,12 +2382,12 @@ pub(crate) fn specialize_shadows(
                     };
 
                     work_items.push(ShadowSpecializationWorkItem {
-                        visible_entity: *main_entity,
+                        visible_entity: *resolved.main_entity,
                         retained_view_entity: extracted_view_light.retained_view_entity,
                         mesh_key,
-                        layout: mesh.layout.clone(),
-                        properties: material.properties.clone(),
-                        material_type_id: material_instance.asset_id.type_id(),
+                        layout: resolved.mesh.layout.clone(),
+                        properties: resolved.material.properties.clone(),
+                        material_type_id: resolved.material_instance.asset_id.type_id(),
                     });
                 }
             }

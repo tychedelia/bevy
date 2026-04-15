@@ -163,6 +163,16 @@ pub fn extract_gpu_instance_batches(
 ) {
     extracted.batches.clear();
     for (entity, batch) in query.iter() {
+        // Zero-capacity batches would panic the downstream allocators
+        // (`add_many_with` / `push_many_identical` both require count > 0)
+        // and have no rendering meaning anyway.
+        if batch.max_capacity == 0 {
+            warn!(
+                "GpuInstanceBatch on {entity} has max_capacity = 0; ignoring. \
+                 Set a positive capacity to render any instances."
+            );
+            continue;
+        }
         extracted.batches.insert(
             MainEntity::from(entity),
             ExtractedGpuInstanceBatch {
@@ -283,6 +293,17 @@ pub fn allocate_gpu_instance_batch_reservations(
         let culling_buffer_base =
             culling_data_buffer.push_many_identical(culling_data, batch.max_capacity);
 
+        // The preprocessing shader uses a single `input_index` to address
+        // both `current_input` and `mesh_culling_data`, so the two
+        // allocators must hand out matching bases. They have independent
+        // free lists but operate in lockstep here; if this ever fires, the
+        // two free lists have drifted and the shader will pair each
+        // instance's transform with the wrong AABB.
+        debug_assert_eq!(
+            input_buffer_base, culling_buffer_base,
+            "input-buffer and culling-buffer reservations diverged for {main_entity:?}",
+        );
+
         reservations.by_entity.insert(
             *main_entity,
             GpuInstanceBatchReservation {
@@ -293,9 +314,10 @@ pub fn allocate_gpu_instance_batch_reservations(
             },
         );
 
-        let Some(count) = NonZeroU32::new(batch.max_capacity) else {
-            continue;
-        };
+        // `extract_gpu_instance_batches` filters out zero-capacity batches,
+        // so this is infallible.
+        let count = NonZeroU32::new(batch.max_capacity)
+            .expect("zero-capacity batches must be filtered at extract time");
         render_mesh_instance_batches.insert(
             *main_entity,
             RenderMeshInstanceBatch {

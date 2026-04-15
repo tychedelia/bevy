@@ -1004,6 +1004,10 @@ where
 /// For example, for 3D meshes, this is the index of the `MeshInputUniform` in
 /// the buffer.
 ///
+/// For GPU instance batches (`RenderInstanceBatchBin`), this is the *base*
+/// input index of a contiguous range of `count` slots — every slot in the
+/// batch lives at `[base, base + count)` in the input buffer.
+///
 /// This field is ignored if GPU preprocessing isn't in use, such as (currently)
 /// in the case of 2D meshes. In that case, it can be safely set to
 /// [`core::default::Default::default`].

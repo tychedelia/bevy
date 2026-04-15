@@ -40,6 +40,7 @@ use bevy_mesh::{
 };
 use bevy_platform::collections::{hash_map::Entry, HashMap};
 use bevy_render::batching::gpu_preprocessing::{FreeRunList, PreviousInstanceInputUniformBuffer};
+use bevy_render::erased_render_asset::ErasedRenderAssets;
 use bevy_render::impl_atomic_pod;
 use bevy_render::mesh::allocator::{MeshSlabId, MeshSlabs};
 use bevy_render::mesh::morph::{
@@ -1273,6 +1274,46 @@ pub struct RenderMeshInstanceBatch {
 /// [`RenderMeshInstances`]. Populated only on the GPU preprocessing path.
 #[derive(Resource, Default, Deref, DerefMut)]
 pub struct RenderMeshInstanceBatches(pub MainEntityHashMap<RenderMeshInstanceBatch>);
+
+/// A batch joined with the render-world data its queueing systems need:
+/// the current material instance, the prepared material, and the prepared
+/// mesh. Returned by [`RenderMeshInstanceBatches::iter_resolved`].
+pub struct ResolvedBatch<'a> {
+    pub main_entity: &'a MainEntity,
+    pub batch: &'a RenderMeshInstanceBatch,
+    pub material_instance: &'a RenderMaterialInstance,
+    pub material: &'a PreparedMaterial,
+    pub mesh: &'a RenderMesh,
+}
+
+impl RenderMeshInstanceBatches {
+    /// Iterates batches, joining each with its current material instance,
+    /// prepared material, and prepared mesh. Skips entries whose material or
+    /// mesh hasn't been prepared yet (common on the spawn frame); the same
+    /// batch will resolve on a later frame once those assets are ready.
+    ///
+    /// Replaces the four-`let-else` lookup boilerplate that the opaque,
+    /// shadow, and prepass queueing systems would otherwise repeat.
+    pub fn iter_resolved<'a>(
+        &'a self,
+        material_instances: &'a RenderMaterialInstances,
+        materials: &'a ErasedRenderAssets<PreparedMaterial>,
+        meshes: &'a RenderAssets<RenderMesh>,
+    ) -> impl Iterator<Item = ResolvedBatch<'a>> + 'a {
+        self.iter().filter_map(move |(main_entity, batch)| {
+            let material_instance = material_instances.instances.get(main_entity)?;
+            let material = materials.get(material_instance.asset_id)?;
+            let mesh = meshes.get(batch.asset_id)?;
+            Some(ResolvedBatch {
+                main_entity,
+                batch,
+                material_instance,
+                material,
+                mesh,
+            })
+        })
+    }
+}
 
 impl RenderMeshInstances {
     /// Creates a new [`RenderMeshInstances`] instance.

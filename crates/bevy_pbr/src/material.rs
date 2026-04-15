@@ -1078,42 +1078,35 @@ pub(crate) fn specialize_material_meshes(
             // Batches bypass `dirty_specializations` (driven by `Mesh3d`
             // change-detection). Check the cache directly and specialize any
             // batch that isn't cached yet.
-            for (main_entity, batch) in render_mesh_instance_batches.iter() {
-                if let Some(view_cache) = maybe_specialized_material_pipeline_cache.as_ref() {
-                    if view_cache.contains_key(main_entity) {
-                        continue;
-                    }
+            for resolved in render_mesh_instance_batches.iter_resolved(
+                &render_material_instances,
+                &render_materials,
+                &render_meshes,
+            ) {
+                if maybe_specialized_material_pipeline_cache
+                    .as_ref()
+                    .is_some_and(|cache| cache.contains_key(resolved.main_entity))
+                {
+                    continue;
                 }
 
-                let Some(material_instance) =
-                    render_material_instances.instances.get(main_entity)
-                else {
-                    continue;
-                };
-                let Some(mesh) = render_meshes.get(batch.asset_id) else {
-                    continue;
-                };
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
-                    continue;
-                };
-
                 let mut mesh_pipeline_key_bits: MeshPipelineKey =
-                    material.properties.mesh_pipeline_key_bits.downcast();
+                    resolved.material.properties.mesh_pipeline_key_bits.downcast();
                 mesh_pipeline_key_bits.insert(alpha_mode_pipeline_key(
-                    material.properties.alpha_mode,
+                    resolved.material.properties.alpha_mode,
                     &Msaa::from_samples(view_key.msaa_samples()),
                 ));
                 let mesh_key = *view_key
-                    | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits())
+                    | MeshPipelineKey::from_bits_retain(resolved.mesh.key_bits.bits())
                     | mesh_pipeline_key_bits;
 
                 work_items.push(SpecializationWorkItem {
-                    visible_entity: *main_entity,
+                    visible_entity: *resolved.main_entity,
                     retained_view_entity: view.retained_view_entity,
                     mesh_key,
-                    layout: mesh.layout.clone(),
-                    properties: material.properties.clone(),
-                    material_type_id: material_instance.asset_id.type_id(),
+                    layout: resolved.mesh.layout.clone(),
+                    properties: resolved.material.properties.clone(),
+                    material_type_id: resolved.material_instance.asset_id.type_id(),
                 });
             }
         }

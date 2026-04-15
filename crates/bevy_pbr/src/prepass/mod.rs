@@ -1106,36 +1106,28 @@ pub(crate) fn specialize_prepass_material_meshes(
             // GPU instance batches bypass `dirty_specializations`. No
             // lightmap / visibility-range / skinning / motion-vector support
             // — simpler key derivation than the per-entity path above.
-            for (main_entity, batch) in render_mesh_instance_batches.iter() {
+            for resolved in render_mesh_instance_batches.iter_resolved(
+                &render_material_instances,
+                &render_materials,
+                &render_meshes,
+            ) {
                 if maybe_specialized_prepass_material_pipeline_cache
                     .as_ref()
-                    .is_some_and(|cache| cache.contains_key(main_entity))
+                    .is_some_and(|cache| cache.contains_key(resolved.main_entity))
                 {
                     continue;
                 }
-
-                let Some(material_instance) =
-                    render_material_instances.instances.get(main_entity)
-                else {
-                    continue;
-                };
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
-                    continue;
-                };
-                if !material.properties.prepass_enabled {
+                if !resolved.material.properties.prepass_enabled {
                     continue;
                 }
-                if material.properties.reads_view_transmission_texture {
+                if resolved.material.properties.reads_view_transmission_texture {
                     continue;
                 }
-                let Some(mesh) = render_meshes.get(batch.asset_id) else {
-                    continue;
-                };
 
                 let mut mesh_key =
-                    *view_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+                    *view_key | MeshPipelineKey::from_bits_retain(resolved.mesh.key_bits.bits());
 
-                let alpha_mode = material.properties.alpha_mode;
+                let alpha_mode = resolved.material.properties.alpha_mode;
                 match alpha_mode {
                     AlphaMode::Opaque | AlphaMode::AlphaToCoverage | AlphaMode::Mask(_) => {
                         mesh_key |= alpha_mode_pipeline_key(alpha_mode, msaa);
@@ -1148,7 +1140,7 @@ pub(crate) fn specialize_prepass_material_meshes(
                     }
                 }
 
-                let forward = match material.properties.render_method {
+                let forward = match resolved.material.properties.render_method {
                     OpaqueRendererMethod::Forward => true,
                     OpaqueRendererMethod::Deferred => false,
                     OpaqueRendererMethod::Auto => unreachable!(),
@@ -1159,12 +1151,12 @@ pub(crate) fn specialize_prepass_material_meshes(
                 }
 
                 work_items.push(PrepassSpecializationWorkItem {
-                    visible_entity: *main_entity,
+                    visible_entity: *resolved.main_entity,
                     retained_view_entity: extracted_view.retained_view_entity,
                     mesh_key,
-                    layout: mesh.layout.clone(),
-                    properties: material.properties.clone(),
-                    material_type_id: material_instance.asset_id.type_id(),
+                    layout: resolved.mesh.layout.clone(),
+                    properties: resolved.material.properties.clone(),
+                    material_type_id: resolved.material_instance.asset_id.type_id(),
                 });
             }
         }
