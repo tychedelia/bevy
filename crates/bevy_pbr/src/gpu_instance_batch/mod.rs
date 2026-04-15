@@ -155,11 +155,6 @@ impl Plugin for GpuInstanceBatchPlugin {
     }
 }
 
-/// Extracts [`GpuInstanceBatch`] components from the main world into the
-/// render world's [`ExtractedGpuInstanceBatches`] resource.
-///
-/// Runs unconditionally (all batches every frame, not change-detected) since
-/// the expected batch count is small — dozens, typically.
 pub fn extract_gpu_instance_batches(
     mut extracted: ResMut<ExtractedGpuInstanceBatches>,
     query: Extract<Query<(Entity, &GpuInstanceBatch)>>,
@@ -178,10 +173,6 @@ pub fn extract_gpu_instance_batches(
     }
 }
 
-/// Allocates input-buffer and culling-buffer ranges for newly-seen batches,
-/// registers them in [`RenderMeshInstanceBatches`] so the bevy-side queue
-/// systems can emit phase items, and frees ranges for batches no longer
-/// present.
 pub fn allocate_gpu_instance_batch_reservations(
     extracted: Res<ExtractedGpuInstanceBatches>,
     mut reservations: ResMut<GpuInstanceBatchReservations>,
@@ -200,9 +191,10 @@ pub fn allocate_gpu_instance_batch_reservations(
 
     let input_uniform_buffer = &mut batched_instance_buffers.current_input_buffer;
 
-    // Free reservations for batches no longer present this frame, and
-    // remove them from the render-world registry so queue systems stop
-    // emitting phase items for them.
+    // Despawned batches: release their input-buffer slots and drop the
+    // registry entry so queue systems stop emitting for them.
+    // `MeshCullingDataBuffer` has no range-free yet; dead slots leak
+    // until the buffer is rebuilt.
     let alive_entities: HashSet<MainEntity> = extracted.batches.keys().copied().collect();
     reservations.by_entity.retain(|entity, reservation| {
         if alive_entities.contains(entity) {
@@ -211,37 +203,27 @@ pub fn allocate_gpu_instance_batch_reservations(
             input_uniform_buffer
                 .remove_range(reservation.input_buffer_base, reservation.max_capacity);
             render_mesh_instance_batches.remove(entity);
-            // `MeshCullingDataBuffer` does not support freeing ranges yet;
-            // slots persist until the app exits. Acceptable for v1 because
-            // batches are expected to be long-lived.
             false
         }
     });
 
-    // Allocate reservations for newly-seen batches.
     for (main_entity, batch) in extracted.batches.iter() {
         if reservations.by_entity.contains_key(main_entity) {
             continue;
         }
 
-        // Look up the material binding for this batch's material. The
-        // material is extracted independently by `MaterialPlugin<M>` via
-        // `MeshMaterial3d<M>`.
+        // Material / mesh may not be ready on the first frame after spawn;
+        // skip and retry next frame.
         let Some(material_instance) = render_material_instances.instances.get(main_entity) else {
-            // Material not yet extracted (e.g. first frame); retry next frame.
             continue;
         };
         let Some(material_binding) = render_material_bindings
             .get(&material_instance.asset_id)
             .copied()
         else {
-            // Material not yet prepared; retry next frame.
             continue;
         };
-
-        // Look up the mesh's location in the mesh allocator.
         let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&batch.mesh_asset_id) else {
-            // Mesh not yet uploaded; retry next frame.
             continue;
         };
         let first_vertex_index = vertex_slice.range.start;
@@ -263,27 +245,21 @@ pub fn allocate_gpu_instance_batch_reservations(
         };
 
         let material_slot = u32::from(material_binding.slot);
-        // Lightmap slot is set to u16::MAX (no lightmap) for v1.
         let lightmap_slot = u16::MAX as u32;
         let material_and_lightmap_bind_group_slot = material_slot | (lightmap_slot << 16);
 
-        // The low 16 bits of `MeshFlags` encode the visibility-range /
-        // LOD index. `u16::MAX` is the sentinel for "no LOD" and makes
-        // `mesh_preprocess.wgsl` skip the visibility-range cull
-        // (otherwise the default low-bit value of 0 causes it to index
-        // `visibility_ranges[0]` — usually zeroed — and early-return).
-        // Users spawning `GpuInstanceBatch` shouldn't need to think
-        // about this encoding, so we OR the sentinel in here rather
-        // than requiring them to set it on the component's `flags`.
+        // The low 16 bits of `MeshFlags` are the visibility-range / LOD
+        // index. `mesh_preprocess.wgsl` reads them as an index into
+        // `visibility_ranges` — `u16::MAX` is the sentinel for "no LOD"
+        // that tells the shader to skip the cull. Leaving this at 0
+        // causes a silent early-return against `visibility_ranges[0]`.
         let lod_sentinel = u16::MAX as u32;
         let resolved_flags = batch.flags.bits() | lod_sentinel;
 
         let template = MeshInputUniform {
-            // Zeroed; the user's compute shader overwrites this every frame.
             world_from_local: [Vec4::ZERO; 3],
             lightmap_uv_rect: UVec2::ZERO,
             flags: resolved_flags,
-            // No TAA / motion vector support for batches in v1.
             previous_input_index: u32::MAX,
             timestamp: frame_count.0,
             first_vertex_index,
@@ -315,13 +291,7 @@ pub fn allocate_gpu_instance_batch_reservations(
             },
         );
 
-        // Register the batch in the render-world registry. Queue systems
-        // (`queue_material_meshes`, shadow, prepass, deferred) iterate
-        // this map and emit one `BinnedRenderPhaseType::InstanceBatch`
-        // phase item per entry.
         let Some(count) = NonZeroU32::new(batch.max_capacity) else {
-            // max_capacity == 0 shouldn't happen in practice; `add_many_with`
-            // panics on zero counts. Skip registration defensively.
             continue;
         };
         render_mesh_instance_batches.insert(
@@ -336,13 +306,3 @@ pub fn allocate_gpu_instance_batch_reservations(
         );
     }
 }
-
-// Rendering integration is now complete via the companion bevy patch
-// that introduced `RenderMeshInstanceBatch` + `RenderMeshInstanceBatches`
-// plus the `BinnedRenderPhaseType::InstanceBatch` variant. Each batch
-// inserted into `RenderMeshInstanceBatches` by
-// `allocate_gpu_instance_batch_reservations` is picked up by the
-// bevy-side queue systems (`queue_material_meshes`, shadow, prepass,
-// deferred) which emit range-variant phase items. The shared GPU
-// preprocessing + indirect build + draw path handles the rest, rendering
-// batches across all supported phases.

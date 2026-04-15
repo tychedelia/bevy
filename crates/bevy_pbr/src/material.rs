@@ -1075,13 +1075,9 @@ pub(crate) fn specialize_material_meshes(
                 });
             }
 
-            // Specialize pipelines for GPU instance batches.
-            //
-            // Batches don't go through `dirty_specializations` (which is
-            // driven by `Mesh3d` change-detection). We check the cache
-            // directly each frame and specialize any batch that doesn't
-            // have a cached pipeline yet. Once specialized, batches stay
-            // cached for the lifetime of the entity.
+            // Batches bypass `dirty_specializations` (driven by `Mesh3d`
+            // change-detection). Check the cache directly and specialize any
+            // batch that isn't cached yet.
             for (main_entity, batch) in render_mesh_instance_batches.iter() {
                 if let Some(view_cache) = maybe_specialized_material_pipeline_cache.as_ref() {
                     if view_cache.contains_key(main_entity) {
@@ -1377,21 +1373,9 @@ pub fn queue_material_meshes(
             }
         }
 
-        // Queue GPU instance batches into the opaque phase.
-        //
-        // This is the parallel iteration to the per-entity loop above, but
-        // sourced from `RenderMeshInstanceBatches` rather than from
-        // `RenderVisibleEntities + RenderMeshInstances`. Each batch entry
-        // already represents a pre-batched N-instance draw; we emit one
-        // `BinnedRenderPhaseType::InstanceBatch` phase item per entry and
-        // `batch_and_prepare_binned_render_phase` expands it into N
-        // preprocessing work items.
-        //
-        // V1 limitations: opaque / forward only. Sorted phases (transparent)
-        // are structurally incompatible with GPU-authored depths.
-        // Alpha-mask, transmissive, and `OpaqueRendererMethod::Deferred`
-        // are out of scope for this PR; future extensions can add per-phase
-        // routing here.
+        // GPU instance batches: forward opaque only. Sorted phases can't
+        // interleave GPU-authored depths; alpha-mask / transmissive /
+        // deferred paths aren't wired up yet.
         for (main_entity, batch) in render_mesh_instance_batches.iter() {
             let Some(pipeline_id) = view_specialized_material_pipeline_cache
                 .get(main_entity)
@@ -1411,7 +1395,6 @@ pub fn queue_material_meshes(
                 continue;
             };
 
-            // V1: only forward opaque batches.
             if !matches!(material.properties.render_phase_type, RenderPhaseType::Opaque) {
                 continue;
             }

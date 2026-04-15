@@ -581,34 +581,25 @@ where
         index
     }
 
-    /// Reserves a contiguous range of `count` default-initialized slots and
-    /// returns the base index.
-    ///
-    /// All newly-allocated slots are marked dirty so they will be uploaded on
-    /// the next [`Self::write_buffers`] call. Callers are expected to use
-    /// [`Self::set`] to overwrite the default blob with actual per-slot values
-    /// before the upload runs.
-    ///
-    /// If `count` is zero, returns the current length without modifying the
-    /// buffer.
+    /// Reserves `count` contiguous default-initialized slots, marks the
+    /// touched pages dirty, and returns the base index. Callers overwrite
+    /// the defaults via [`Self::set`] before the next upload. Zero-count
+    /// returns the current length unchanged.
     pub fn push_many(&mut self, count: u32) -> u32 {
         let base = self.values.len() as u32;
         if count == 0 {
             return base;
         }
 
-        // Extend the CPU-side blob vec with default blobs for every new slot.
         self.values
             .resize_with((base + count) as usize, T::Blob::default);
 
-        // Ensure `dirty_pages` has enough words to cover the highest new page.
         let last_page = self.index_to_page(base + count - 1);
         let required_words = (last_page / PAGES_PER_DIRTY_WORD) as usize + 1;
         while self.dirty_pages.len() < required_words {
             self.dirty_pages.push(AtomicU64::default());
         }
 
-        // Mark every page touched by the new range as dirty.
         let first_page = self.index_to_page(base);
         for page in first_page..=last_page {
             let (word_idx, bit_idx) = (page / PAGES_PER_DIRTY_WORD, page % PAGES_PER_DIRTY_WORD);
@@ -1083,13 +1074,10 @@ mod tests {
 
     #[test]
     fn push_many_marks_every_touched_page_dirty() {
-        // Page size = 4 (1 << 2), so a range that spans several pages should
-        // have each page's bit set in `dirty_pages`.
+        // Page size = 4 (1 << 2); 10 slots starting at 0 span pages 0, 1, 2.
         let mut buffer: AtomicSparseBufferVec<TestData> =
             AtomicSparseBufferVec::new(BufferUsages::STORAGE, 2, Arc::from("test"));
 
-        // Allocate 10 slots starting at 0: touches pages 0, 1, 2 (indices
-        // 0..3, 4..7, 8..11 respectively — final slot is index 9, on page 2).
         let base = buffer.push_many(10);
         assert_eq!(base, 0);
         let dirty = dirty_page_bits(&buffer);
@@ -1110,8 +1098,6 @@ mod tests {
         assert_eq!(c, 5);
         assert_eq!(buffer.len(), 6);
 
-        // Writes through `set` to the bulk-reserved range should be visible
-        // via `get`.
         buffer.set(b + 2, TestData(99));
         assert_eq!(buffer.get(b + 2), TestData(99));
     }

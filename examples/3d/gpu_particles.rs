@@ -75,8 +75,6 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    // Ground plane — dark, semi-glossy so the colored point lights
-    // spill onto it and give the scene some depth.
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(32.0, 32.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -88,10 +86,8 @@ fn setup(
         Transform::from_xyz(0.0, -2.0, 0.0),
     ));
 
-    // A tall obstacle in the center of the swarm area. Particles that
-    // pass behind it should be depth-occluded — confirming that batched
-    // GPU-authored instances correctly participate in the opaque
-    // depth-tested pipeline.
+    // Obstacle in the swarm area: particles passing behind it should be
+    // depth-occluded, confirming batches hit the depth-tested pipeline.
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(1.5, 4.0, 1.5))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -103,12 +99,6 @@ fn setup(
         Transform::from_xyz(0.0, 0.0, 0.0),
     ));
 
-    // GPU-authored particle batch. Soft dielectric material — no
-    // metallic, high roughness — so the lighting response is primarily
-    // diffuse with gentle specular. Colored point lights paint the
-    // base color differently across the swarm; cubes let per-instance
-    // orientation be visible as faces catch the key light at
-    // different angles.
     let particle_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
     let particle_material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.92, 0.78, 0.66),
@@ -133,9 +123,6 @@ fn setup(
         Visibility::default(),
     ));
 
-    // Multi-light setup — several colored sources at different angles
-    // so the metallic highlights vary per-particle as they move
-    // through the scene.
     commands.spawn((
         DirectionalLight {
             illuminance: 5_000.0,
@@ -252,9 +239,7 @@ struct ParticleSimParams {
     mouse_world_pos: Vec4,
 }
 
-/// Per-batch persistent state buffer: `count * PARTICLE_STATE_SIZE`
-/// bytes holding `(position, velocity)` for each particle. Allocated
-/// lazily the first time we see the batch's reservation.
+/// Per-batch persistent `(position, velocity)` state, lazily allocated.
 #[derive(Resource, Default)]
 struct ParticleStateBuffers {
     per_batch: MainEntityHashMap<Buffer>,
@@ -337,15 +322,6 @@ fn prepare_particle_sim_bind_groups(
     };
 
     for (main_entity, reservation) in reservations.by_entity.iter() {
-        // Lazy-allocate the per-particle state buffer on first
-        // encounter. The shader seeds its contents on first dispatch
-        // (via the `pos.w < 0.0` "uninitialized" sentinel); we
-        // initialize to zeros here and rely on the shader-side seed
-        // shifting `pos.w` to -1 as part of wgpu's default
-        // zero-initialization... actually simpler: zero-init works
-        // because age starts at 0 which is not < 0, so we'd skip seed.
-        // Instead, create the buffer with an explicit "uninit"
-        // marker.
         let state_buffer = state_buffers
             .per_batch
             .entry(*main_entity)
@@ -357,13 +333,11 @@ fn prepare_particle_sim_bind_groups(
                     usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                // Seed with `pos.w = -1.0` so the shader treats every
-                // slot as uninitialized on its first dispatch and
-                // scatters them into a sphere.
+                // Seed `pos.w = -1.0` so the shader runs its first-dispatch
+                // init path and scatters slots into a sphere.
                 let mut seed =
                     vec![0u8; reservation.max_capacity as usize * PARTICLE_STATE_SIZE as usize];
                 for i in 0..reservation.max_capacity as usize {
-                    // pos.w is at byte offset 12..16 of each 32-byte slot.
                     let base = i * PARTICLE_STATE_SIZE as usize;
                     let bytes = (-1.0f32).to_ne_bytes();
                     seed[base + 12..base + 16].copy_from_slice(&bytes);

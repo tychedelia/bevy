@@ -1103,14 +1103,9 @@ pub(crate) fn specialize_prepass_material_meshes(
                 });
             }
 
-            // Specialize prepass (and deferred-prepass) pipelines for GPU
-            // instance batches. Batches participate in whichever of prepass
-            // or deferred their material targets, via the same cache and
-            // work-item mechanism as normal mesh entities.
-            //
-            // V1 batches don't support lightmaps, visibility ranges,
-            // skinning, or motion vectors, so the key derivation is
-            // intentionally simpler than the per-entity path above.
+            // GPU instance batches bypass `dirty_specializations`. No
+            // lightmap / visibility-range / skinning / motion-vector support
+            // — simpler key derivation than the per-entity path above.
             for (main_entity, batch) in render_mesh_instance_batches.iter() {
                 if maybe_specialized_prepass_material_pipeline_cache
                     .as_ref()
@@ -1469,9 +1464,7 @@ pub fn queue_prepass_material_meshes(
             }
         }
 
-        // Queue GPU instance batches into the prepass / deferred-prepass
-        // phases. V1 only handles opaque batches; alpha-mask batches are
-        // out of scope (drops through).
+        // GPU instance batches: opaque only. Alpha-mask batches drop through.
         for (main_entity, batch) in render_mesh_instance_batches.iter() {
             let Some(&(_, pipeline_id, draw_function)) =
                 view_specialized_material_pipeline_cache.get(main_entity)

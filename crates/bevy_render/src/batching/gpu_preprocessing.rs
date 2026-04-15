@@ -346,16 +346,10 @@ where
         self.free_uniform_indices.push(uniform_index);
     }
 
-    /// Reserves a contiguous range of `count` slots at the end of the buffer,
-    /// invokes `f` once per newly-allocated absolute index to produce the
-    /// value written into that slot, and returns the base index.
-    ///
-    /// Unlike [`Self::add`], this method never consults the free list —
-    /// contiguous ranges are always appended. This is appropriate for
-    /// long-lived reservations whose per-slot data is supplied from a side
-    /// channel (e.g. GPU-authored transforms), where fragmentation from
-    /// freeing individual slots would otherwise prevent future bulk
-    /// allocations from finding a contiguous range.
+    /// Appends `count` contiguous slots, invokes `f` on each absolute index
+    /// to produce the slot's value, and returns the base index. Never
+    /// consults the free list — required for callers that need a stable
+    /// contiguous range (e.g. GPU-authored transforms).
     ///
     /// # Panics
     /// if `count` is zero.
@@ -371,13 +365,9 @@ where
         base
     }
 
-    /// Marks a previously-reserved contiguous range of `count` slots starting
-    /// at `base` as free.
-    ///
-    /// The freed slots become available for reuse by subsequent [`Self::add`]
-    /// calls (which consume free slots individually). The range is not
-    /// coalesced and the underlying buffer is not shrunk; future bulk
-    /// reservations via [`Self::add_many_with`] will still append at the end.
+    /// Frees a contiguous range of `count` slots starting at `base`. Freed
+    /// slots are returned to the single-slot free list; the buffer is not
+    /// shrunk and future [`Self::add_many_with`] calls still append.
     pub fn remove_range(&mut self, base: u32, count: u32) {
         self.free_uniform_indices.reserve(count as usize);
         for i in 0..count {
@@ -2082,43 +2072,19 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
             }
         }
 
-        // Prepare GPU-authored instance batches.
-        //
-        // Each entry in `phase.instance_batches` is already a batch: one
-        // phase item representing `count` instances. We expand each into
-        // `count` preprocess work items and `count` output slots, and
-        // allocate one indirect-parameters slot (or none, in direct mode).
-        //
-        // Unlike batchable meshes, which are grouped into batches across
-        // entities in a bin, instance batches are emitted one draw per
-        // entity — each is its own pre-batched N-instance draw. The
-        // resulting draw records go into `phase.instance_batch_draws`, a
-        // parallel collection to `phase.batch_sets` that the render path
-        // iterates separately.
-        //
-        // Instance batches do not participate in late-phase occlusion
-        // culling; they use early frustum culling only.
-        //
-        // IMPORTANT: this runs before the multidrawable path below.
-        // `PartialBufferVec` enforces that CPU-initialized
-        // (`push_init`) elements precede GPU-initialized
-        // (`push_multiple_uninit`) ones. The multidrawable path reserves
-        // uninit work-item slots that the bin-unpacking shader fills on
-        // GPU, so any `push_init` calls (including ours) must come
-        // first.
+        // GPU-authored instance batches. Must run before the multidrawable
+        // path below: `PartialBufferVec` requires `push_init` elements to
+        // precede the `push_multiple_uninit` slots the multidrawable path
+        // reserves for GPU-side bin unpacking.
         for (key, bin) in &phase.instance_batches {
             let indexed = key.0.indexed();
 
             for (&main_entity, &(input_uniform_index, count)) in bin.entries() {
                 let count_u32 = count.get();
 
-                // Allocate N contiguous output slots.
                 let output_base = data_buffer.add_multiple(count_u32 as usize) as u32;
 
                 let extra_index = if no_indirect_drawing {
-                    // Direct mode: each work item writes its own output
-                    // slot; one draw is emitted per instance range via
-                    // `instance_range`.
                     for i in 0..count_u32 {
                         work_item_buffer.push(
                             indexed,
@@ -2130,22 +2096,6 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                     }
                     PhaseItemExtraIndex::None
                 } else {
-                    // Indirect mode: all N work items reference one
-                    // indirect-parameters slot; the preprocess shader
-                    // atomically increments `early_instance_count`, and
-                    // the final `multi_draw_indexed_indirect` draws only
-                    // the GPU-frustum-culled survivors.
-                    //
-                    // `batch_set_index` in the CPU metadata is still set
-                    // via `get_next_batch_set_index` so the batch set
-                    // index bookkeeping stays consistent with unbatchable
-                    // / batchable paths; `add_batch_set` is called below.
-                    // However we store `None` in the phase item's
-                    // `extra_index` so that `DrawMesh` uses plain
-                    // `multi_draw_indexed_indirect` with draw count = 1
-                    // (our `range` length is always 1). Using
-                    // `multi_draw_indirect_count` would add no benefit
-                    // here and would require backend support checks.
                     let indirect_parameters_index = phase_indirect_parameters_buffers
                         .buffers
                         .allocate(indexed, 1);
@@ -2882,12 +2832,9 @@ mod tests {
     #[test]
     fn add_many_with_reserves_contiguous_range() {
         let mut instance_buffer = InstanceInputUniformBuffer::new();
-
-        // First, scatter some single adds so the buffer is non-empty.
         instance_buffer.add(TestData(100));
         instance_buffer.add(TestData(101));
 
-        // Bulk-reserve a range of 5 slots.
         let base = instance_buffer.add_many_with(5, |idx| TestData(idx));
         assert_eq!(base, 2);
         for i in 0..5 {
@@ -2898,8 +2845,6 @@ mod tests {
 
     #[test]
     fn add_many_with_ignores_free_list() {
-        // Freed individual slots must not be reused for bulk allocations —
-        // the range would otherwise collide with live data.
         let mut instance_buffer = InstanceInputUniformBuffer::new();
 
         let a = instance_buffer.add(TestData(0));
@@ -2908,7 +2853,6 @@ mod tests {
         instance_buffer.remove(b);
 
         let base = instance_buffer.add_many_with(3, |_| TestData(42));
-        // Bulk allocation appends past the free slots.
         assert_eq!(base, 2);
         assert_eq!(instance_buffer.buffer().len(), 5);
     }
@@ -2920,12 +2864,10 @@ mod tests {
         let base = instance_buffer.add_many_with(4, |_| TestData(7));
         instance_buffer.remove_range(base, 4);
 
-        // Freed slots become individually visible as `None` from `get`.
         for i in 0..4 {
             assert_eq!(instance_buffer.get(base + i), None);
         }
 
-        // They're reusable one-at-a-time by `add`.
         let reused = instance_buffer.add(TestData(9));
         assert!((base..base + 4).contains(&reused));
     }

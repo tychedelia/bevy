@@ -2352,12 +2352,8 @@ pub(crate) fn specialize_shadows(
                     });
                 }
 
-                // Specialize shadow pipelines for GPU instance batches.
-                //
-                // Batches cast shadows by default in v1 (no
-                // `NotShadowCaster` opt-out yet). We check the per-view
-                // shadow pipeline cache and push work items for any batch
-                // that isn't cached yet.
+                // GPU instance batches always cast shadows (no
+                // `NotShadowCaster` opt-out).
                 for (main_entity, batch) in render_mesh_instance_batches.iter() {
                     if maybe_specialized_shadow_material_pipeline_cache
                         .as_ref()
@@ -2606,12 +2602,6 @@ pub fn queue_shadows(
                 );
             }
 
-            // Queue GPU instance batches into the shadow phase.
-            //
-            // All batches cast shadows in v1. Per-particle GPU frustum
-            // culling (driven by per-slot `MeshCullingData` written by
-            // the user's simulation) determines which instances
-            // actually contribute to the shadow map.
             for (main_entity, batch) in render_mesh_instance_batches.iter() {
                 let Some(&(pipeline_id, draw_function)) =
                     view_specialized_material_pipeline_cache.get(main_entity)

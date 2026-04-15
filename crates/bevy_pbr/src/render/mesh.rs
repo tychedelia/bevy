@@ -646,12 +646,8 @@ pub struct MeshCullingData {
 pub struct MeshCullingDataBuffer(AtomicSparseBufferVec<MeshCullingData>);
 
 impl MeshCullingDataBuffer {
-    /// Reserves a contiguous range of `count` slots and writes `value` into
-    /// every newly-allocated slot, returning the base index.
-    ///
-    /// This is intended for reservations that share a single AABB across all
-    /// instances (for example, a batch of GPU-authored instances that all live
-    /// within the same parent bounds).
+    /// Reserves `count` contiguous slots all initialized to `value` and
+    /// returns the base index.
     ///
     /// # Panics
     /// if `count` is zero.
@@ -1223,69 +1219,25 @@ pub struct RenderMeshInstancesCpu(MainEntityHashMap<RenderMeshInstanceCpu>);
 #[derive(Default, Deref, DerefMut)]
 pub struct RenderMeshInstancesGpu(MainEntityHashMap<RenderMeshInstanceGpu>);
 
-/// A contiguous range of GPU-authored mesh instances rendered as a single
-/// indirect draw of `count` instances.
-///
-/// Unlike [`RenderMeshInstance`] — which represents a single ECS entity
-/// rendered as one instance — an entry here represents a batch-level draw
-/// whose per-instance transforms and visibility are authored by the user's
-/// compute shaders directly into a contiguous range of the GPU preprocessing
-/// input buffer. The registry that contains these entries is
-/// [`RenderMeshInstanceBatches`].
-///
-/// This is the rendering-side companion to
-/// `bevy_pbr::gpu_instance_batch::GpuInstanceBatch` (the main-world
-/// component). Queue systems iterate [`RenderMeshInstanceBatches`] in
-/// addition to [`RenderMeshInstances`] and emit range-variant phase items
-/// for each entry, which [`batch_and_prepare_binned_render_phase`] expands
-/// into `count` preprocessing work items and a single indirect parameters
-/// slot. The resulting `multi_draw_indexed_indirect` call renders whichever
-/// slots survive GPU frustum culling, which the user's simulation shader
-/// controls via per-slot culling data.
-///
-/// [`RenderMeshInstance`]: RenderMeshInstanceGpu
-/// [`batch_and_prepare_binned_render_phase`]:
-///     bevy_render::batching::gpu_preprocessing::batch_and_prepare_binned_render_phase
+/// A batch of `count` GPU-authored mesh instances rendered as a single
+/// indirect draw. Per-instance transforms live in a contiguous range of the
+/// preprocessing input buffer populated by the user's compute shaders.
 #[derive(Clone, Debug)]
 pub struct RenderMeshInstanceBatch {
-    /// The mesh that all `count` instances in this batch draw.
     pub asset_id: AssetId<Mesh>,
-    /// The material binding used when drawing the batch. All instances
-    /// share one material; heterogeneous materials require multiple
-    /// batches.
     pub material_binding: MaterialBindingId,
-    /// The base index into the GPU preprocessing input uniform buffer.
-    ///
-    /// Instance `i` of the batch reads `MeshInputUniform[base_input_index +
-    /// i]`. The corresponding [`MeshCullingData`] lives at the same offset
-    /// in the culling data buffer.
     pub base_input_index: u32,
-    /// The number of contiguous instances in the batch.
-    ///
-    /// This is an upper bound — the actual number drawn is whichever of the
-    /// `count` slots survive frustum culling, determined on the GPU.
+    /// Upper bound on instances drawn; the final count is whichever slots
+    /// survive GPU frustum culling.
     pub count: NonZeroU32,
-    /// Per-mesh flags stamped into every slot of the batch.
-    ///
-    /// Note that `MeshFlags::NO_TRANSFORM_CHANGE` is semantically incoherent
-    /// for batches (the user's simulation rewrites transforms every frame);
-    /// consumers should not set it.
+    /// `MeshFlags::NO_TRANSFORM_CHANGE` is semantically incoherent for
+    /// batches (transforms are rewritten every frame); don't set it.
     pub flags: MeshFlags,
 }
 
-/// Render-world registry of [`RenderMeshInstanceBatch`] entries, keyed by the
-/// batch's [`MainEntity`] (the entity in the main world that declared the
-/// batch).
-///
-/// Populated by the consumer of the batch system (e.g. the
-/// `GpuInstanceBatchPlugin` in `bevy_pbr::gpu_instance_batch`). Consumed by
-/// queue systems (`queue_material_meshes`, shadow / prepass / deferred
-/// queueing) alongside [`RenderMeshInstances`], emitting one range-variant
-/// phase item per entry.
-///
-/// This registry is populated only on the GPU preprocessing path. On the CPU
-/// building path the resource is still present but will typically be empty —
-/// batches require GPU preprocessing to be meaningful.
+/// Render-world registry of [`RenderMeshInstanceBatch`] entries. Consumed by
+/// `queue_material_meshes`, shadow, prepass, and deferred queueing alongside
+/// [`RenderMeshInstances`]. Populated only on the GPU preprocessing path.
 #[derive(Resource, Default, Deref, DerefMut)]
 pub struct RenderMeshInstanceBatches(pub MainEntityHashMap<RenderMeshInstanceBatch>);
 
@@ -4419,8 +4371,6 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
 
         let entity = &item.main_entity();
 
-        // Fall back to `RenderMeshInstanceBatches` if not found in the
-        // singular-instance registry.
         let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(*entity).or_else(|| {
             render_mesh_instance_batches
                 .get(entity)
@@ -4592,9 +4542,6 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         let indirect_parameters_buffer = indirect_parameters_buffer.into_inner();
         let mesh_allocator = mesh_allocator.into_inner();
 
-        // GPU instance batches (`RenderMeshInstanceBatch`) live in a separate
-        // registry from normal `RenderMeshInstances`. Fall back to the batch
-        // registry when the singular instance lookup misses.
         let Some(mesh_asset_id) = mesh_instances
             .mesh_asset_id(item.main_entity())
             .or_else(|| {

@@ -147,15 +147,10 @@ where
     /// See the `custom_phase_item` example for an example of how to use this.
     pub non_mesh_items: IndexMap<(BPI::BatchSetKey, BPI::BinKey), NonMeshEntities>,
 
-    /// GPU-authored instance batches — phase items where one ECS entity
-    /// represents `count` contiguous instances.
-    ///
-    /// Unlike [`Self::batchable_meshes`], where multiple entities' phase
-    /// items in the same bin get batched together into a single
-    /// indirect draw, entries here are *already* batches: each entry
-    /// corresponds to one entity whose phase item describes a range of
-    /// `count` instances. `batch_and_prepare_binned_render_phase`
-    /// expands each entry into `count` preprocessing work items.
+    /// GPU-authored instance batches. Unlike [`Self::batchable_meshes`],
+    /// where entities in a bin get grouped at batch-and-prepare time, each
+    /// entry here is *already* an N-instance batch described by one phase
+    /// item.
     pub instance_batches: IndexMap<(BPI::BatchSetKey, BPI::BinKey), RenderInstanceBatchBin>,
 
     /// Information on each batch set.
@@ -170,22 +165,11 @@ where
     /// unbatchable entities.
     pub(crate) batch_sets: BinnedRenderPhaseBatchSets<BPI::BinKey>,
 
-    /// Pre-computed draw records for entries in [`Self::instance_batches`].
-    ///
-    /// Populated by
-    /// [`batch_and_prepare_binned_render_phase`][bapbrp], cleared by
-    /// [`Self::prepare_for_new_frame`]. Each entry records one
-    /// pre-batched indirect draw (or one N-instance direct draw when
-    /// indirect drawing is disabled).
-    ///
-    /// Kept parallel to — rather than merged with — [`Self::batch_sets`]
-    /// because the rendering path for batchable and multidrawable meshes
-    /// zips `batch_sets` with bin-map keys, assuming one batch per bin
-    /// key. [`Self::instance_batches`] can contain multiple pre-batched
-    /// draws per bin (one per batch entity), which doesn't fit that
-    /// invariant.
-    ///
-    /// [bapbrp]: crate::batching::gpu_preprocessing::batch_and_prepare_binned_render_phase
+    /// Pre-computed draw records for [`Self::instance_batches`]. Kept
+    /// parallel to [`Self::batch_sets`] because the batchable/multidrawable
+    /// render path zips `batch_sets` with bin-map keys (one batch per bin
+    /// key), and instance batches can have multiple pre-batched draws per
+    /// bin key.
     pub(crate) instance_batch_draws: Vec<InstanceBatchDraw<BPI>>,
 
     /// The batch and bin key for each entity.
@@ -209,30 +193,14 @@ pub struct RenderBin {
     entities: IndexMap<MainEntity, InputUniformIndex, EntityHash>,
 }
 
-/// A bin of GPU-authored instance batches sharing a mesh and material.
-///
-/// Each entry here corresponds to one logical batch: a single ECS entity
-/// whose phase item represents a contiguous range of `count` instances in
-/// the GPU preprocessing input buffer. This is distinct from [`RenderBin`],
-/// which bins one-instance-per-entity meshes and relies on
-/// `batch_and_prepare_binned_render_phase` to group them into a batched
-/// draw.
-///
-/// Phase items land here via
-/// [`BinnedRenderPhaseType::InstanceBatch`].
+/// A bin of GPU-authored instance batches. Each entry is one batch entity;
+/// values are `(base_input_index, count)`.
 #[derive(Default)]
 pub struct RenderInstanceBatchBin {
-    /// Per-entity records: the base index into the preprocessing input
-    /// buffer, and the number of contiguous instances that follow.
-    ///
-    /// An entity can only have one entry in a given bin (keyed insertion),
-    /// matching the 1-entity-to-1-batch relationship for GPU instance
-    /// batches.
     entries: IndexMap<MainEntity, (InputUniformIndex, NonZeroU32), EntityHash>,
 }
 
 impl RenderInstanceBatchBin {
-    /// Creates a new bin containing a single instance-batch entry.
     fn from_entity(
         main_entity: MainEntity,
         input_uniform_index: InputUniformIndex,
@@ -243,8 +211,6 @@ impl RenderInstanceBatchBin {
         RenderInstanceBatchBin { entries }
     }
 
-    /// Inserts an entry into the bin, replacing any existing entry for the
-    /// same entity.
     fn insert(
         &mut self,
         main_entity: MainEntity,
@@ -254,20 +220,14 @@ impl RenderInstanceBatchBin {
         self.entries.insert(main_entity, (input_uniform_index, count));
     }
 
-    /// Removes the entry for the given entity, if present.
     fn remove(&mut self, main_entity: MainEntity) {
         self.entries.swap_remove(&main_entity);
     }
 
-    /// Returns true if the bin contains no entries.
     fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Returns the entries in this bin, keyed by the batch entity.
-    ///
-    /// Values are `(base_input_index, count)` — the base index in the
-    /// preprocessing input buffer and the number of contiguous instances.
     pub fn entries(&self) -> &IndexMap<MainEntity, (InputUniformIndex, NonZeroU32), EntityHash> {
         &self.entries
     }
@@ -897,22 +857,13 @@ pub struct BinnedRenderPhaseBatch {
     pub extra_index: PhaseItemExtraIndex,
 }
 
-/// A pre-computed draw record for one GPU-authored instance batch entry.
-///
-/// Populated by `batch_and_prepare_binned_render_phase` from each entry in
-/// [`BinnedRenderPhase::instance_batches`]. The render path iterates this
-/// vector separately from [`BinnedRenderPhase::batch_sets`], because unlike
-/// batchable/multidrawable bins (which produce one batch per bin key),
-/// `instance_batches` can produce multiple pre-batched draws per bin key.
+/// A pre-computed draw record for one GPU-authored instance batch.
 pub(crate) struct InstanceBatchDraw<BPI>
 where
     BPI: BinnedPhaseItem,
 {
-    /// The batch set key under which to render this draw.
     pub(crate) batch_set_key: BPI::BatchSetKey,
-    /// The bin key under which to render this draw.
     pub(crate) bin_key: BPI::BinKey,
-    /// The draw record — instance range and indirect parameters handle.
     pub(crate) batch: BinnedRenderPhaseBatch,
 }
 
@@ -1001,28 +952,11 @@ pub enum BinnedRenderPhaseType {
     /// available for use in your application and/or plugins.
     NonMesh,
 
-    /// The item represents a GPU-authored batch of `count` instances rendered
-    /// as a single indirect draw.
-    ///
-    /// Unlike [`BinnedRenderPhaseType::BatchableMesh`] (where each phase item
-    /// is one instance and multiple items in the same bin get batched
-    /// together into one draw), a phase item of this variant is already a
-    /// batch: it represents a contiguous range `[input_uniform_index ..
-    /// input_uniform_index + count)` in the GPU preprocessing input buffer,
-    /// authored externally (e.g. by a GPU particle simulation).
-    ///
-    /// The `input_uniform_index` passed to [`BinnedRenderPhase::add`] is the
-    /// *base* of that range.
-    ///
-    /// `batch_and_prepare_binned_render_phase` handles this variant by
-    /// pushing `count` preprocessing work items and allocating `count`
-    /// contiguous output slots, reusing the shared indirect-parameters and
-    /// GPU culling infrastructure.
-    InstanceBatch {
-        /// The number of contiguous instances represented by this phase
-        /// item.
-        count: NonZeroU32,
-    },
+    /// A GPU-authored batch of `count` instances rendered as one indirect
+    /// draw. The phase item's `input_uniform_index` is the base of the
+    /// contiguous range `[base .. base + count)` in the preprocessing
+    /// input buffer.
+    InstanceBatch { count: NonZeroU32 },
 }
 
 impl<T> From<GpuArrayBufferIndex<T>> for UnbatchableBinnedEntityIndices
@@ -1234,14 +1168,6 @@ where
         Ok(())
     }
 
-    /// Renders all pre-batched GPU instance batches queued in this phase.
-    ///
-    /// Unlike [`Self::render_batchable_meshes`] — which iterates per-entity
-    /// bins and zips them with [`Self::batch_sets`] — this method iterates
-    /// [`Self::instance_batch_draws`] directly. Each draw is already a
-    /// full batch (one `multi_draw_indexed_indirect` call rendering the
-    /// batch's live instance count as determined by GPU culling), so no
-    /// zipping is required.
     fn render_instance_batches<'w>(
         &self,
         render_pass: &mut TrackedRenderPass<'w>,
