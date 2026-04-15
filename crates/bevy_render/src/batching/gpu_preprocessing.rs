@@ -40,9 +40,10 @@ use crate::{
         ViewSortedRenderPhases,
     },
     render_resource::{
-        AtomicPod, AtomicRawBufferVec, AtomicSparseBufferVec, Buffer, GpuArrayBufferable,
-        PartialBufferVec, PipelineCache, RawBufferVec, SparseBufferUpdateBindGroups,
-        SparseBufferUpdateJobs, SparseBufferUpdatePipelines, UninitBufferVec,
+        AtomicPod, AtomicRawBufferVec, AtomicSparseBufferVec, BindGroup, Buffer,
+        GpuArrayBufferable, PartialBufferVec, PipelineCache, RawBufferVec,
+        SparseBufferUpdateBindGroups, SparseBufferUpdateJobs, SparseBufferUpdatePipelines,
+        UniformBuffer, UninitBufferVec,
     },
     renderer::{RenderAdapter, RenderAdapterInfo, RenderDevice, RenderQueue, WgpuWrapper},
     sync_world::{MainEntity, MainEntityHashMap},
@@ -562,6 +563,10 @@ pub enum PreprocessWorkItemBuffers {
         indexed: PartialBufferVec<PreprocessWorkItem>,
         /// The buffer of work items corresponding to non-indexed meshes.
         non_indexed: PartialBufferVec<PreprocessWorkItem>,
+        /// Range entries for indexed GPU-authored instance batches.
+        ranges_indexed: RangeWorkItemBuffer,
+        /// Range entries for non-indexed GPU-authored instance batches.
+        ranges_non_indexed: RangeWorkItemBuffer,
         /// The work item buffers we use when GPU occlusion culling is in use.
         gpu_occlusion_culling: Option<GpuOcclusionCullingWorkItemBuffers>,
     },
@@ -657,6 +662,10 @@ where
                         BufferUsages::STORAGE,
                         "non-indexed preprocess work item buffer".to_owned(),
                     ),
+                    ranges_indexed: RangeWorkItemBuffer::new("indexed instance batch ranges"),
+                    ranges_non_indexed: RangeWorkItemBuffer::new(
+                        "non-indexed instance batch ranges",
+                    ),
                     // We fill this in below if `enable_gpu_occlusion_culling`
                     // is set.
                     gpu_occlusion_culling: None,
@@ -738,6 +747,7 @@ impl PreprocessWorkItemBuffers {
                 indexed: ref mut indexed_buffer,
                 non_indexed: ref mut non_indexed_buffer,
                 ref mut gpu_occlusion_culling,
+                ..
             } => {
                 if indexed {
                     indexed_buffer.push_init(preprocess_work_item);
@@ -756,6 +766,64 @@ impl PreprocessWorkItemBuffers {
         }
     }
 
+    /// Pushes a range entry for a GPU-authored instance batch and reserves
+    /// `count` uninit work-item slots that the `range_unpack` shader will
+    /// populate. Returns the base index of the reserved slots, or `None`
+    /// in direct (no-indirect) mode where instance batches don't apply.
+    ///
+    /// Unlike [`Self::push`], this is O(1) on CPU and uploads `O(1)` per
+    /// batch — replacing the per-instance push loop.
+    pub fn push_range(
+        &mut self,
+        indexed: bool,
+        base_input_index: u32,
+        base_output_or_indirect_parameters_index: u32,
+        count: u32,
+    ) -> Option<u32> {
+        let PreprocessWorkItemBuffers::Indirect {
+            indexed: ref mut indexed_buffer,
+            non_indexed: ref mut non_indexed_buffer,
+            ref mut ranges_indexed,
+            ref mut ranges_non_indexed,
+            ref mut gpu_occlusion_culling,
+        } = *self
+        else {
+            return None;
+        };
+
+        let (work_buf, ranges) = if indexed {
+            (indexed_buffer, ranges_indexed)
+        } else {
+            (non_indexed_buffer, ranges_non_indexed)
+        };
+
+        let work_item_base = work_buf.push_multiple_uninit(count as usize) as u32;
+        if ranges.buffer.is_empty() {
+            ranges.work_item_base = work_item_base;
+        }
+        let cumulative_offset = ranges.total_instance_count;
+        ranges.buffer.push(RangeWorkItem {
+            base_input_index,
+            base_output_or_indirect_parameters_index,
+            count,
+            cumulative_offset,
+        });
+        ranges.total_instance_count += count;
+
+        if let Some(occ) = gpu_occlusion_culling {
+            let late = if indexed {
+                &mut occ.late_indexed
+            } else {
+                &mut occ.late_non_indexed
+            };
+            for _ in 0..count {
+                late.add();
+            }
+        }
+
+        Some(work_item_base)
+    }
+
     /// Clears out the GPU work item buffers in preparation for a new frame.
     pub fn clear(&mut self) {
         match *self {
@@ -765,10 +833,14 @@ impl PreprocessWorkItemBuffers {
             PreprocessWorkItemBuffers::Indirect {
                 indexed: ref mut indexed_buffer,
                 non_indexed: ref mut non_indexed_buffer,
+                ref mut ranges_indexed,
+                ref mut ranges_non_indexed,
                 ref mut gpu_occlusion_culling,
             } => {
                 indexed_buffer.clear();
                 non_indexed_buffer.clear();
+                ranges_indexed.clear();
+                ranges_non_indexed.clear();
 
                 if let Some(ref mut gpu_occlusion_culling) = *gpu_occlusion_culling {
                     gpu_occlusion_culling.late_indexed.clear();
@@ -798,6 +870,93 @@ pub struct PreprocessWorkItem {
     /// `IndirectParametersBuffers::indexed_metadata` or
     /// `IndirectParametersBuffers::non_indexed_metadata`.
     pub output_or_indirect_parameters_index: u32,
+}
+
+/// Per-dispatch metadata for the `unpack_ranges` shader.
+#[derive(Clone, Copy, Default, Pod, Zeroable, ShaderType)]
+#[repr(C)]
+pub struct GpuRangeUnpackingMetadata {
+    /// Number of entries in the range storage buffer.
+    pub range_count: u32,
+    /// Sum of every range's `count`.
+    pub total_instance_count: u32,
+    /// Index of the first reserved work-item slot.
+    pub work_item_base: u32,
+    /// Padding to round up to 16 bytes.
+    pub pad: u32,
+}
+
+/// One GPU-authored instance batch in a [`RangeWorkItemBuffer`].
+///
+/// The `range_unpack` shader expands each entry into `count` individual
+/// [`PreprocessWorkItem`]s with sequential `input_index`es starting at
+/// `base_input_index` and a constant `output_or_indirect_parameters_index`.
+#[derive(Clone, Copy, Default, Pod, Zeroable, ShaderType)]
+#[repr(C)]
+pub struct RangeWorkItem {
+    /// Base index into the `MeshInputUniform` buffer.
+    pub base_input_index: u32,
+    /// Index of the [`IndirectParametersGpuMetadata`] slot the expanded
+    /// work items reference. Identical for all instances in the range.
+    pub base_output_or_indirect_parameters_index: u32,
+    /// Number of contiguous instances in the range.
+    pub count: u32,
+    /// Sum of `count` for all earlier ranges in the same buffer. Lets the
+    /// shader find which range a given thread belongs to via linear
+    /// scan over the small range array.
+    pub cumulative_offset: u32,
+}
+
+/// Per-(view, phase, indexed-ness) range entries plus bookkeeping for the
+/// contiguous block of work items they expand into.
+///
+/// Range entries pack `count` instances into a single CPU/GPU upload —
+/// avoiding the O(N) work-item push that GPU-authored instance batches
+/// would otherwise incur each frame. The `range_unpack` shader expands
+/// them on-GPU into the contiguous block of [`PreprocessWorkItem`]s
+/// reserved at `work_item_base`.
+pub struct RangeWorkItemBuffer {
+    /// Range entries pushed this frame, backed by a GPU storage buffer.
+    pub buffer: RawBufferVec<RangeWorkItem>,
+    /// Per-dispatch metadata uniform, populated from `work_item_base` and
+    /// `total_instance_count` during bind-group preparation.
+    pub metadata: UniformBuffer<GpuRangeUnpackingMetadata>,
+    /// Bind group for the `unpack_ranges` dispatch. Populated by
+    /// bevy_pbr's prepare system once the work-item GPU buffer exists.
+    pub bind_group: Option<BindGroup>,
+    /// Index of the first reserved work-item slot in the matching work-item
+    /// `PartialBufferVec`. Ranges are contiguous in the work-item buffer,
+    /// so range `r`'s outputs land at
+    /// `work_item_base + buffer.values()[r].cumulative_offset`.
+    pub work_item_base: u32,
+    /// Total instance count = sum of every entry's `count`.
+    pub total_instance_count: u32,
+}
+
+impl RangeWorkItemBuffer {
+    /// Creates an empty range buffer with the given debug label.
+    pub fn new(label: &str) -> Self {
+        let mut buffer = RawBufferVec::new(BufferUsages::STORAGE);
+        buffer.set_label(Some(label));
+        Self {
+            buffer,
+            metadata: UniformBuffer::default(),
+            bind_group: None,
+            work_item_base: 0,
+            total_instance_count: 0,
+        }
+    }
+
+    /// Resets CPU-side state for a new frame. Preserves the GPU buffer
+    /// allocations for reuse; the bind group is dropped because the
+    /// underlying work-item buffer may be reallocated on subsequent
+    /// `write_buffer` calls.
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.bind_group = None;
+        self.work_item_base = 0;
+        self.total_instance_count = 0;
+    }
 }
 
 /// The `wgpu` indirect parameters structure that specifies a GPU draw command.
@@ -2072,10 +2231,9 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
             }
         }
 
-        // GPU-authored instance batches. Must run before the multidrawable
-        // path below: `PartialBufferVec` requires `push_init` elements to
-        // precede the `push_multiple_uninit` slots the multidrawable path
-        // reserves for GPU-side bin unpacking.
+        // GPU-authored instance batches. In indirect mode, range_unpack
+        // expands one CPU-side range entry into N work items GPU-side —
+        // O(1) CPU + upload per batch instead of O(N).
         for (key, bin) in &phase.instance_batches {
             let indexed = key.0.indexed();
 
@@ -2111,15 +2269,12 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         indirect_parameters_index,
                     );
 
-                    for i in 0..count_u32 {
-                        work_item_buffer.push(
-                            indexed,
-                            PreprocessWorkItem {
-                                input_index: input_uniform_index.0 + i,
-                                output_or_indirect_parameters_index: indirect_parameters_index,
-                            },
-                        );
-                    }
+                    work_item_buffer.push_range(
+                        indexed,
+                        input_uniform_index.0,
+                        indirect_parameters_index,
+                        count_u32,
+                    );
 
                     phase_indirect_parameters_buffers
                         .buffers
@@ -2151,6 +2306,7 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                 indexed: ref mut indexed_work_item_buffer,
                 non_indexed: ref mut non_indexed_work_item_buffer,
                 gpu_occlusion_culling: ref mut gpu_occlusion_culling_buffers,
+                ..
             },
         ) = (&mut phase.batch_sets, &mut *work_item_buffer)
         {
@@ -2477,10 +2633,18 @@ pub fn write_batched_instance_buffers<GFBD>(
                         PreprocessWorkItemBuffers::Indirect {
                             ref mut indexed,
                             ref mut non_indexed,
+                            ref mut ranges_indexed,
+                            ref mut ranges_non_indexed,
                             ref mut gpu_occlusion_culling,
                         } => {
                             indexed.write_buffer(render_device, render_queue);
                             non_indexed.write_buffer(render_device, render_queue);
+                            ranges_indexed
+                                .buffer
+                                .write_buffer(render_device, render_queue);
+                            ranges_non_indexed
+                                .buffer
+                                .write_buffer(render_device, render_queue);
 
                             if let Some(GpuOcclusionCullingWorkItemBuffers {
                                 ref mut late_indexed,
