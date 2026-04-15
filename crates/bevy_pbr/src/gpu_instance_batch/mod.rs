@@ -36,8 +36,6 @@
 //! - **Motion vectors / TAA**: `previous_input_index = u32::MAX` always;
 //!   slot mapping isn't stable across frames when simulations compact
 //!   particles.
-//! - **Late-phase occlusion culling**: batches participate only in the
-//!   early frustum-culling pass.
 //! - **Per-instance attributes beyond transform**: not yet plumbed.
 //! - **`max_capacity`**: CPU-declared, mutable only from the main world.
 
@@ -191,10 +189,11 @@ pub fn allocate_gpu_instance_batch_reservations(
 
     let input_uniform_buffer = &mut batched_instance_buffers.current_input_buffer;
 
-    // Despawned batches: release their input-buffer slots and drop the
-    // registry entry so queue systems stop emitting for them.
-    // `MeshCullingDataBuffer` has no range-free yet; dead slots leak
-    // until the buffer is rebuilt.
+    // Despawned batches: release their input-buffer and culling-data
+    // slots and drop the registry entry so queue systems stop emitting
+    // for them. The two buffers are indexed in lockstep (the culling
+    // shader reads `mesh_culling_data[input_index]`), so both frees
+    // must cover the same range.
     let alive_entities: HashSet<MainEntity> = extracted.batches.keys().copied().collect();
     reservations.by_entity.retain(|entity, reservation| {
         if alive_entities.contains(entity) {
@@ -202,6 +201,8 @@ pub fn allocate_gpu_instance_batch_reservations(
         } else {
             input_uniform_buffer
                 .remove_range(reservation.input_buffer_base, reservation.max_capacity);
+            culling_data_buffer
+                .remove_range(reservation.culling_buffer_base, reservation.max_capacity);
             render_mesh_instance_batches.remove(entity);
             false
         }

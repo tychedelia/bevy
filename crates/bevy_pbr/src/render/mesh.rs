@@ -39,7 +39,7 @@ use bevy_mesh::{
     VertexAttributeDescriptor,
 };
 use bevy_platform::collections::{hash_map::Entry, HashMap};
-use bevy_render::batching::gpu_preprocessing::PreviousInstanceInputUniformBuffer;
+use bevy_render::batching::gpu_preprocessing::{FreeRunList, PreviousInstanceInputUniformBuffer};
 use bevy_render::impl_atomic_pod;
 use bevy_render::mesh::allocator::{MeshSlabId, MeshSlabs};
 use bevy_render::mesh::morph::{
@@ -643,21 +643,43 @@ pub struct MeshCullingData {
 /// To avoid wasting CPU time in the CPU culling case, this buffer will be empty
 /// if GPU culling isn't in use.
 #[derive(Resource, Deref, DerefMut)]
-pub struct MeshCullingDataBuffer(AtomicSparseBufferVec<MeshCullingData>);
+pub struct MeshCullingDataBuffer {
+    #[deref]
+    buffer: AtomicSparseBufferVec<MeshCullingData>,
+    /// Range-shaped free list. Populated by [`Self::remove_range`],
+    /// consumed by [`Self::push_many_identical`]. Kept symmetric with
+    /// [`InstanceInputUniformBuffer`]'s run-shaped free list: both
+    /// buffers' slots are indexed by the same `input_index` in the
+    /// culling shader, so paired range allocs and frees produce
+    /// identical bases from both allocators.
+    free_runs: FreeRunList,
+}
 
 impl MeshCullingDataBuffer {
     /// Reserves `count` contiguous slots all initialized to `value` and
-    /// returns the base index.
+    /// returns the base index. First-fits a previously-freed range from
+    /// [`Self::free_runs`]; falls back to appending past the end.
     ///
     /// # Panics
     /// if `count` is zero.
     pub fn push_many_identical(&mut self, value: MeshCullingData, count: u32) -> u32 {
         assert!(count > 0, "push_many_identical requires count > 0");
-        let base = self.0.push_many(count);
+        let base = match self.free_runs.allocate(count) {
+            Some(base) => base,
+            None => self.buffer.push_many(count),
+        };
         for i in 0..count {
-            self.0.set(base + i, value);
+            self.buffer.set(base + i, value);
         }
         base
+    }
+
+    /// Releases a contiguous range of `count` slots starting at `base`.
+    /// The range is coalesced into [`Self::free_runs`]; the buffer is
+    /// not shrunk. Stale GPU-side data in freed slots is harmless
+    /// because [`PreprocessWorkItem`]s no longer reference them.
+    pub fn remove_range(&mut self, base: u32, count: u32) {
+        self.free_runs.free(base, count);
     }
 }
 
@@ -1712,11 +1734,14 @@ impl MeshCullingData {
 impl Default for MeshCullingDataBuffer {
     #[inline]
     fn default() -> Self {
-        Self(AtomicSparseBufferVec::new(
-            BufferUsages::STORAGE,
-            8,
-            Arc::from("mesh culling data buffer"),
-        ))
+        Self {
+            buffer: AtomicSparseBufferVec::new(
+                BufferUsages::STORAGE,
+                8,
+                Arc::from("mesh culling data buffer"),
+            ),
+            free_runs: FreeRunList::default(),
+        }
     }
 }
 

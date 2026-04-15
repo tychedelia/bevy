@@ -292,11 +292,20 @@ where
     /// The buffer containing the data that will be uploaded to the GPU.
     buffer: AtomicSparseBufferVec<BDI>,
 
-    /// Indices of slots that are free within the buffer.
-    ///
-    /// When adding data, we preferentially overwrite these slots first before
-    /// growing the buffer itself.
+    /// Single-slot free list populated by [`Self::remove`] and consumed
+    /// by [`Self::add`]. Keeps the per-entity hot path O(1).
     free_uniform_indices: Vec<u32>,
+
+    /// Range-shaped free list populated by [`Self::remove_range`] and
+    /// consumed by [`Self::add_many_with`]. Coalesces adjacent frees so
+    /// that churning GPU-authored batches (e.g. VFX emitters) reclaim
+    /// their own holes instead of growing the buffer monotonically.
+    ///
+    /// This list is disjoint from `free_uniform_indices`: a slot is on
+    /// either list or neither, never both. The two allocators do not
+    /// cross-consume, which keeps the invariants simple at the cost of
+    /// leaving range-shaped holes reserved for future range allocs.
+    free_uniform_runs: FreeRunList,
 }
 
 impl<BDI> InstanceInputUniformBuffer<BDI>
@@ -312,6 +321,7 @@ where
                 Arc::from("instance input uniform buffer"),
             ),
             free_uniform_indices: vec![],
+            free_uniform_runs: FreeRunList::default(),
         }
     }
 
@@ -319,6 +329,7 @@ where
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.free_uniform_indices.clear();
+        self.free_uniform_runs.clear();
     }
 
     /// Returns the [`AtomicSparseBufferVec`] corresponding to this input
@@ -347,10 +358,11 @@ where
         self.free_uniform_indices.push(uniform_index);
     }
 
-    /// Appends `count` contiguous slots, invokes `f` on each absolute index
-    /// to produce the slot's value, and returns the base index. Never
-    /// consults the free list — required for callers that need a stable
-    /// contiguous range (e.g. GPU-authored transforms).
+    /// Reserves `count` contiguous slots, invokes `f` on each absolute
+    /// index to produce the slot's value, and returns the base index.
+    /// First-fits a previously-freed range from
+    /// [`Self::free_uniform_runs`]; falls back to appending past the
+    /// end of the buffer.
     ///
     /// # Panics
     /// if `count` is zero.
@@ -359,28 +371,31 @@ where
         F: FnMut(u32) -> BDI,
     {
         assert!(count > 0, "add_many_with requires count > 0");
-        let base = self.buffer.push_many(count);
+        let base = match self.free_uniform_runs.allocate(count) {
+            Some(base) => base,
+            None => self.buffer.push_many(count),
+        };
         for i in 0..count {
             self.buffer.set(base + i, f(base + i));
         }
         base
     }
 
-    /// Frees a contiguous range of `count` slots starting at `base`. Freed
-    /// slots are returned to the single-slot free list; the buffer is not
-    /// shrunk and future [`Self::add_many_with`] calls still append.
+    /// Frees a contiguous range of `count` slots starting at `base`. The
+    /// range is coalesced into [`Self::free_uniform_runs`]; the buffer
+    /// is not shrunk. A subsequent [`Self::add_many_with`] call with a
+    /// matching size will reuse this range before growing.
     pub fn remove_range(&mut self, base: u32, count: u32) {
-        self.free_uniform_indices.reserve(count as usize);
-        for i in 0..count {
-            self.free_uniform_indices.push(base + i);
-        }
+        self.free_uniform_runs.free(base, count);
     }
 
     /// Returns the piece of buffered data at the given index.
     ///
     /// Returns [`None`] if the index is out of bounds or the data is removed.
     pub fn get(&self, uniform_index: u32) -> Option<BDI> {
-        if uniform_index >= self.buffer.len() || self.free_uniform_indices.contains(&uniform_index)
+        if uniform_index >= self.buffer.len()
+            || self.free_uniform_indices.contains(&uniform_index)
+            || self.free_uniform_runs.contains(uniform_index)
         {
             None
         } else {
@@ -437,6 +452,89 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A sorted, coalesced list of disjoint free runs over some index space.
+///
+/// Used by buffers that service range-shaped allocations (contiguous
+/// reservations of `N` slots) and range-shaped frees, to reclaim holes
+/// without growing the backing store. Runs are kept sorted by `start`
+/// and adjacent runs are always merged, so the list size is bounded by
+/// the number of non-adjacent freed regions.
+#[derive(Default, Clone, Debug)]
+pub struct FreeRunList {
+    /// Sorted by `start`, with no overlapping or adjacent runs.
+    runs: Vec<Range<u32>>,
+}
+
+impl FreeRunList {
+    /// Inserts `[base, base + count)` into the list, merging with any
+    /// adjacent or overlapping runs. No-op if `count` is zero. Panics
+    /// in debug if the new range strictly overlaps an existing run (a
+    /// double-free bug).
+    pub fn free(&mut self, base: u32, count: u32) {
+        if count == 0 {
+            return;
+        }
+        let mut merged = base..base + count;
+
+        // First run that is not strictly before `merged`. The backward-
+        // adjacent neighbor (r.end == merged.start) lands here; runs
+        // strictly before (r.end < merged.start) are already skipped.
+        let idx = self.runs.partition_point(|r| r.end < merged.start);
+
+        // Absorb each overlapping / adjacent run into `merged`.
+        while idx < self.runs.len() && self.runs[idx].start <= merged.end {
+            debug_assert!(
+                self.runs[idx].end <= merged.start || self.runs[idx].start >= merged.end,
+                "FreeRunList::free: range {:?} overlaps existing run {:?} (double-free?)",
+                base..base + count,
+                self.runs[idx],
+            );
+            merged.start = merged.start.min(self.runs[idx].start);
+            merged.end = merged.end.max(self.runs[idx].end);
+            self.runs.remove(idx);
+        }
+
+        self.runs.insert(idx, merged);
+    }
+
+    /// First-fit allocation of `count` contiguous slots. Returns the
+    /// base index on success, `None` if no run is large enough. Splits
+    /// the chosen run, leaving the remainder on the list.
+    pub fn allocate(&mut self, count: u32) -> Option<u32> {
+        if count == 0 {
+            return None;
+        }
+        for i in 0..self.runs.len() {
+            let run = &mut self.runs[i];
+            if run.end - run.start >= count {
+                let base = run.start;
+                run.start += count;
+                if run.start == run.end {
+                    self.runs.remove(i);
+                }
+                return Some(base);
+            }
+        }
+        None
+    }
+
+    /// Whether `index` falls within any free run.
+    pub fn contains(&self, index: u32) -> bool {
+        let idx = self.runs.partition_point(|r| r.end <= index);
+        idx < self.runs.len() && self.runs[idx].start <= index
+    }
+
+    /// Removes all free runs. Does not shrink capacity.
+    pub fn clear(&mut self) {
+        self.runs.clear();
+    }
+
+    /// Whether the list has no free runs.
+    pub fn is_empty(&self) -> bool {
+        self.runs.is_empty()
     }
 }
 
@@ -816,9 +914,7 @@ impl PreprocessWorkItemBuffers {
             } else {
                 &mut occ.late_non_indexed
             };
-            for _ in 0..count {
-                late.add();
-            }
+            late.add_multiple(count as usize);
         }
 
         Some(work_item_base)
@@ -3022,7 +3118,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_range_frees_every_slot() {
+    fn remove_range_marks_every_slot_free() {
         let mut instance_buffer = InstanceInputUniformBuffer::new();
 
         let base = instance_buffer.add_many_with(4, |_| TestData(7));
@@ -3031,8 +3127,104 @@ mod tests {
         for i in 0..4 {
             assert_eq!(instance_buffer.get(base + i), None);
         }
+    }
 
-        let reused = instance_buffer.add(TestData(9));
-        assert!((base..base + 4).contains(&reused));
+    #[test]
+    fn add_many_with_reclaims_matching_range() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let base_a = instance_buffer.add_many_with(4, |_| TestData(1));
+        instance_buffer.remove_range(base_a, 4);
+
+        let base_b = instance_buffer.add_many_with(4, |idx| TestData(idx + 100));
+        assert_eq!(base_b, base_a);
+        assert_eq!(instance_buffer.buffer().len(), 4);
+    }
+
+    #[test]
+    fn add_many_with_first_fits_across_runs() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        // Four non-adjacent batches; free the small one (b) and the
+        // large one (d). The allocator must skip b's 2-slot hole and
+        // reuse d's 5-slot hole.
+        let _a = instance_buffer.add_many_with(3, |_| TestData(0));
+        let b = instance_buffer.add_many_with(2, |_| TestData(0));
+        let _c = instance_buffer.add_many_with(3, |_| TestData(0));
+        let d = instance_buffer.add_many_with(5, |_| TestData(0));
+        instance_buffer.remove_range(b, 2);
+        instance_buffer.remove_range(d, 5);
+
+        let reused = instance_buffer.add_many_with(4, |_| TestData(42));
+        assert_eq!(reused, d);
+    }
+
+    #[test]
+    fn single_slot_add_does_not_carve_range_holes() {
+        let mut instance_buffer = InstanceInputUniformBuffer::new();
+
+        let base = instance_buffer.add_many_with(4, |_| TestData(0));
+        instance_buffer.remove_range(base, 4);
+
+        let appended = instance_buffer.add(TestData(9));
+        assert_eq!(appended, 4);
+        assert_eq!(instance_buffer.buffer().len(), 5);
+
+        let reused = instance_buffer.add_many_with(4, |_| TestData(1));
+        assert_eq!(reused, base);
+    }
+
+    #[test]
+    fn free_run_list_coalesces_adjacent_frees() {
+        let mut list = FreeRunList::default();
+        list.free(10, 5);
+        list.free(20, 5);
+        list.free(15, 5);
+        assert_eq!(list.allocate(15), Some(10));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn free_run_list_coalesces_backward_and_forward() {
+        let mut list = FreeRunList::default();
+        list.free(10, 5);
+        list.free(20, 5);
+        list.free(15, 5);
+        list.free(25, 5);
+        assert_eq!(list.allocate(20), Some(10));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn free_run_list_allocate_splits_run() {
+        let mut list = FreeRunList::default();
+        list.free(0, 100);
+
+        assert_eq!(list.allocate(30), Some(0));
+        assert!(list.contains(30));
+        assert!(!list.contains(29));
+        assert_eq!(list.allocate(70), Some(30));
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn free_run_list_allocate_none_when_no_run_fits() {
+        let mut list = FreeRunList::default();
+        list.free(0, 10);
+        list.free(20, 10);
+        assert_eq!(list.allocate(15), None);
+        // Runs untouched.
+        assert!(list.contains(5));
+        assert!(list.contains(25));
+    }
+
+    #[test]
+    fn free_run_list_contains_boundary_cases() {
+        let mut list = FreeRunList::default();
+        list.free(5, 3);
+        assert!(!list.contains(4));
+        assert!(list.contains(5));
+        assert!(list.contains(7));
+        assert!(!list.contains(8));
     }
 }
