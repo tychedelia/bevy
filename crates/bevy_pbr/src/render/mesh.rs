@@ -626,9 +626,9 @@ impl_atomic_pod!(MeshInputUniform, MeshInputUniformBlob);
 /// Information about each mesh instance needed to cull it on GPU.
 ///
 /// Holds the axis-aligned bounding box (AABB) and a dead-slot flag used by
-/// GPU-authored instance batches (see [`GpuInstanceBatch`]).
+/// GPU-authored instance batches (see [`GpuBatchedMesh3d`]).
 ///
-/// [`GpuInstanceBatch`]: crate::gpu_instance_batch::GpuInstanceBatch
+/// [`GpuBatchedMesh3d`]: crate::gpu_instance_batch::GpuBatchedMesh3d
 #[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MeshCullingData {

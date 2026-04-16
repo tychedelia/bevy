@@ -34,7 +34,7 @@
 // Information about each mesh instance needed to cull it on GPU.
 //
 // Holds the axis-aligned bounding box (AABB) and a dead-slot flag used by
-// GPU-authored instance batches (see `GpuInstanceBatch`).
+// GPU-authored instance batches (see `GpuBatchedMesh3d`).
 struct MeshCullingData {
     // The 3D center of the AABB in model space.
     aabb_center: vec3<f32>,

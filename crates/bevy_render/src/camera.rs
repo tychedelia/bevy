@@ -967,6 +967,124 @@ impl DirtySpecializations {
             },
         ))
     }
+
+    /// Multi-class variant of [`Self::iter_to_specialize`] that iterates
+    /// over visible entities across multiple [`RenderVisibleEntitiesClass`]
+    /// buckets (e.g. `Mesh3d` and `GpuBatchedMesh3d`).
+    pub fn iter_to_specialize_multi<'a>(
+        &'a self,
+        view: RetainedViewEntity,
+        classes: &'a [&'a RenderVisibleEntitiesClass],
+        last_frame_view_pending_queues: &'a HashSet<(Entity, MainEntity)>,
+    ) -> impl Iterator<Item = (&'a Entity, &'a MainEntity)> {
+        let must_wipe = self.must_wipe_specializations_for_view(view);
+        classes
+            .iter()
+            .copied()
+            .flat_map(move |class| {
+                if must_wipe {
+                    Either::Left(class.iter_visible())
+                } else {
+                    Either::Right(
+                        class
+                            .added_entities()
+                            .iter()
+                            .map(|(entity, main_entity)| (entity, main_entity))
+                            .chain(self.changed_renderables.iter().filter_map(|main_entity| {
+                                self.entity_pair_from_visible_main_entity(class, main_entity)
+                            })),
+                    )
+                }
+            })
+            .chain(last_frame_view_pending_queues.iter().filter_map(
+                move |(entity, main_entity)| {
+                    if classes
+                        .iter()
+                        .any(|class| class.entity_pair_is_visible(*entity, *main_entity))
+                    {
+                        Some((entity, main_entity))
+                    } else {
+                        None
+                    }
+                },
+            ))
+    }
+
+    /// Multi-class variant of [`Self::iter_to_dequeue`].
+    pub fn iter_to_dequeue_multi<'a>(
+        &'a self,
+        view: RetainedViewEntity,
+        classes: &'a [&'a RenderVisibleEntitiesClass],
+    ) -> impl Iterator<Item = &'a MainEntity> {
+        let must_wipe = self.must_wipe_specializations_for_view(view);
+        let removed = classes
+            .iter()
+            .copied()
+            .flat_map(|class| class.removed_entities.iter().map(|(_, m)| m));
+        let body: Box<dyn Iterator<Item = &'a MainEntity> + 'a> = if must_wipe {
+            Box::new(
+                classes
+                    .iter()
+                    .copied()
+                    .flat_map(|class| class.iter_visible().map(|(_, m)| m)),
+            )
+        } else {
+            Box::new(
+                self.changed_renderables
+                    .iter()
+                    .chain(self.removed_renderables.iter()),
+            )
+        };
+        removed.chain(body)
+    }
+
+    /// Multi-class variant of [`Self::iter_to_queue`].
+    pub fn iter_to_queue_multi<'a>(
+        &'a self,
+        view: RetainedViewEntity,
+        classes: &'a [&'a RenderVisibleEntitiesClass],
+        last_frame_view_pending_queues: &'a HashSet<(Entity, MainEntity)>,
+    ) -> impl Iterator<Item = (&'a Entity, &'a MainEntity)> {
+        let must_wipe = self.must_wipe_specializations_for_view(view);
+        classes
+            .iter()
+            .copied()
+            .flat_map(move |class| {
+                if must_wipe {
+                    Either::Left(class.iter_visible())
+                } else {
+                    Either::Right(
+                        class
+                            .added_entities()
+                            .iter()
+                            .map(|(entity, main_entity)| (entity, main_entity))
+                            .chain(self.changed_renderables.iter().filter_map(|main_entity| {
+                                if class
+                                    .added_entities()
+                                    .binary_search_by_key(main_entity, |(_, m)| *m)
+                                    .is_err()
+                                {
+                                    self.entity_pair_from_visible_main_entity(class, main_entity)
+                                } else {
+                                    None
+                                }
+                            })),
+                    )
+                }
+            })
+            .chain(last_frame_view_pending_queues.iter().filter_map(
+                move |(entity, main_entity)| {
+                    if classes
+                        .iter()
+                        .any(|class| class.entity_pair_is_visible(*entity, *main_entity))
+                    {
+                        Some((entity, main_entity))
+                    } else {
+                        None
+                    }
+                },
+            ))
+    }
 }
 
 /// Stores information about all entities that have changed in such a way as to

@@ -1633,7 +1633,7 @@ doc-scrape-examples = true
 
 [package.metadata.example.gpu_particles]
 name = "GPU Instance Batches (Particles)"
-description = "Renders a GPU-authored batch of mesh instances using the GpuInstanceBatch API"
+description = "Renders a GPU-authored batch of mesh instances using the GpuBatchedMesh3d API"
 category = "3D Rendering"
 # Requires GPU preprocessing (compute shaders); not supported on WebGL.
 wasm = false

@@ -1,7 +1,7 @@
 //! GPU-authored instance batches: end-to-end example with mouse-driven
 //! fluid-ish simulation.
 //!
-//! Demonstrates the [`GpuInstanceBatch`] API — rendering many mesh
+//! Demonstrates the [`GpuBatchedMesh3d`] API — rendering many mesh
 //! instances whose per-instance transforms are authored on the GPU
 //! rather than extracted from ECS entities on the CPU. Each particle
 //! keeps persistent (position, velocity) state in a user-owned storage
@@ -24,9 +24,9 @@ use bevy::{
     pbr::{
         early_gpu_preprocess,
         gpu_instance_batch::{
-            GpuInstanceBatch, GpuInstanceBatchPlugin, GpuInstanceBatchReservations,
+            GpuBatchedMesh3d, GpuInstanceBatchPlugin, GpuInstanceBatchReservations,
         },
-        MeshCullingDataBuffer, MeshFlags, MeshInputUniform, MeshUniform,
+        MeshCullingDataBuffer, MeshInputUniform, MeshUniform,
     },
     post_process::bloom::Bloom,
     prelude::*,
@@ -109,18 +109,15 @@ fn setup(
     });
 
     commands.spawn((
-        GpuInstanceBatch {
+        GpuBatchedMesh3d {
             mesh: particle_mesh,
             max_capacity: PARTICLES_PER_EMITTER,
-            aabb: Aabb {
-                center: Vec3A::ZERO,
-                half_extents: Vec3A::splat(16.0),
-            },
-            flags: MeshFlags::empty(),
+        },
+        Aabb {
+            center: Vec3A::ZERO,
+            half_extents: Vec3A::splat(16.0),
         },
         MeshMaterial3d(particle_material),
-        Transform::default(),
-        Visibility::default(),
     ));
 
     commands.spawn((

@@ -1,4 +1,5 @@
 use crate::*;
+use smallvec::SmallVec;
 use alloc::sync::Arc;
 use bevy_asset::UntypedAssetId;
 use bevy_camera::primitives::{
@@ -2253,16 +2254,28 @@ pub(crate) fn specialize_shadows(
                 // NOTE: Lights with shadow mapping disabled will have no visible entities
                 // so no meshes will be queued
 
-                let Some(visible_entities) = visible_entities.get::<Mesh3d>() else {
+                let mut classes: SmallVec<[&_; 2]> = SmallVec::new();
+                if let Some(c) = visible_entities.get::<Mesh3d>() {
+                    classes.push(c);
+                }
+                if let Some(c) =
+                    visible_entities.get::<gpu_instance_batch::GpuBatchedMesh3d>()
+                {
+                    classes.push(c);
+                }
+                if classes.is_empty() {
                     continue;
-                };
+                }
 
-                // Now process all shadow meshes that need to be re-specialized.
-                for (render_entity, visible_entity) in dirty_specializations.iter_to_specialize(
-                    extracted_view_light.retained_view_entity,
-                    visible_entities,
-                    &view_pending_shadow_queues.prev_frame,
-                ) {
+                // Now process all shadow meshes (atomic + batch) that need
+                // to be re-specialized.
+                for (render_entity, visible_entity) in dirty_specializations
+                    .iter_to_specialize_multi(
+                        extracted_view_light.retained_view_entity,
+                        &classes[..],
+                        &view_pending_shadow_queues.prev_frame,
+                    )
+                {
                     if maybe_specialized_shadow_material_pipeline_cache
                         .as_ref()
                         .is_some_and(|specialized_shadow_material_pipeline_cache| {
@@ -2275,30 +2288,12 @@ pub(crate) fn specialize_shadows(
                     let Some(material_instance) =
                         render_material_instances.instances.get(visible_entity)
                     else {
-                        // We couldn't fetch the material, probably because the
-                        // material hasn't been loaded yet. Add the entity to
-                        // the list of pending shadows and bail.
-                        view_pending_shadow_queues
-                            .current_frame
-                            .insert((*render_entity, *visible_entity));
-                        continue;
-                    };
-
-                    let Some(mesh_instance) =
-                        render_mesh_instances.render_mesh_queue_data(*visible_entity)
-                    else {
-                        // We couldn't fetch the mesh, probably because it
-                        // hasn't loaded yet. Add the entity to the list of
-                        // pending shadows and bail.
                         view_pending_shadow_queues
                             .current_frame
                             .insert((*render_entity, *visible_entity));
                         continue;
                     };
                     let Some(material) = render_materials.get(material_instance.asset_id) else {
-                        // We couldn't fetch the material, probably because the
-                        // material hasn't been loaded yet. Add the entity to
-                        // the list of pending shadows and bail.
                         view_pending_shadow_queues
                             .current_frame
                             .insert((*render_entity, *visible_entity));
@@ -2308,27 +2303,51 @@ pub(crate) fn specialize_shadows(
                         // If the material is not a shadow caster, we don't need to specialize it.
                         continue;
                     }
-                    if !mesh_instance
-                        .flags()
-                        .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
+
+                    // Resolve the registry divergence at a single dispatch
+                    // point; everything downstream is shared.
+                    let (mesh_asset_id, maybe_mesh_instance) = if let Some(mi) =
+                        render_mesh_instances.render_mesh_queue_data(*visible_entity)
                     {
-                        continue;
-                    }
-                    let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
+                        (mi.mesh_asset_id(), Some(mi))
+                    } else if let Some(batch) =
+                        render_mesh_instance_batches.get(visible_entity)
+                    {
+                        // GPU-authored batches always cast shadows (no
+                        // `NotShadowCaster` opt-out for batches).
+                        (batch.asset_id, None)
+                    } else {
+                        view_pending_shadow_queues
+                            .current_frame
+                            .insert((*render_entity, *visible_entity));
                         continue;
                     };
 
-                    let mut mesh_key =
-                        *light_key | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+                    // Atomic-only: honor the `NotShadowCaster` opt-out.
+                    if let Some(mesh_instance) = maybe_mesh_instance.as_ref() {
+                        if !mesh_instance
+                            .flags()
+                            .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
+                        {
+                            continue;
+                        }
+                    }
 
-                    // Even though we don't use the lightmap in the shadow map, the
-                    // `SetMeshBindGroup` render command will bind the data for it. So
-                    // we need to include the appropriate flag in the mesh pipeline key
-                    // to ensure that the necessary bind group layout entries are
-                    // present.
-                    if render_lightmaps
-                        .render_lightmaps
-                        .contains_key(visible_entity)
+                    let Some(mesh) = render_meshes.get(mesh_asset_id) else {
+                        continue;
+                    };
+
+                    let mut mesh_key = *light_key
+                        | MeshPipelineKey::from_bits_retain(mesh.key_bits.bits());
+
+                    // Even though we don't use the lightmap in the shadow
+                    // map, the `SetMeshBindGroup` render command will bind
+                    // the data for it. So we need to include the appropriate
+                    // flag in the mesh pipeline key to ensure that the
+                    // necessary bind group layout entries are present.
+                    // Batches never have lightmaps.
+                    if maybe_mesh_instance.is_some()
+                        && render_lightmaps.render_lightmaps.contains_key(visible_entity)
                     {
                         mesh_key |= MeshPipelineKey::LIGHTMAPPED;
                     }
@@ -2349,45 +2368,6 @@ pub(crate) fn specialize_shadows(
                         layout: mesh.layout.clone(),
                         properties: material.properties.clone(),
                         material_type_id: material_instance.asset_id.type_id(),
-                    });
-                }
-
-                // GPU instance batches always cast shadows (no
-                // `NotShadowCaster` opt-out).
-                for resolved in render_mesh_instance_batches.iter_resolved(
-                    &render_material_instances,
-                    &render_materials,
-                    &render_meshes,
-                ) {
-                    if maybe_specialized_shadow_material_pipeline_cache
-                        .as_ref()
-                        .is_some_and(|cache| cache.contains_key(resolved.main_entity))
-                    {
-                        continue;
-                    }
-                    if !resolved.material.properties.shadows_enabled {
-                        continue;
-                    }
-
-                    let mut mesh_key = *light_key
-                        | MeshPipelineKey::from_bits_retain(resolved.mesh.key_bits.bits());
-
-                    mesh_key |= match resolved.material.properties.alpha_mode {
-                        AlphaMode::Mask(_)
-                        | AlphaMode::Blend
-                        | AlphaMode::Premultiplied
-                        | AlphaMode::Add
-                        | AlphaMode::AlphaToCoverage => MeshPipelineKey::MAY_DISCARD,
-                        _ => MeshPipelineKey::NONE,
-                    };
-
-                    work_items.push(ShadowSpecializationWorkItem {
-                        visible_entity: *resolved.main_entity,
-                        retained_view_entity: extracted_view_light.retained_view_entity,
-                        mesh_key,
-                        layout: resolved.mesh.layout.clone(),
-                        properties: resolved.material.properties.clone(),
-                        material_type_id: resolved.material_instance.asset_id.type_id(),
                     });
                 }
             }
@@ -2498,21 +2478,32 @@ pub fn queue_shadows(
                 extracted_view_light,
             );
 
-            let Some(visible_entities) = visible_entities.get::<Mesh3d>() else {
+            let mut classes: SmallVec<[&_; 2]> = SmallVec::new();
+            if let Some(c) = visible_entities.get::<Mesh3d>() {
+                classes.push(c);
+            }
+            if let Some(c) = visible_entities.get::<gpu_instance_batch::GpuBatchedMesh3d>() {
+                classes.push(c);
+            }
+            if classes.is_empty() {
                 continue;
-            };
+            }
 
-            // First, remove meshes that need to be respecialized, and those that were removed, from the bins.
-            for &main_entity in dirty_specializations
-                .iter_to_dequeue(extracted_view_light.retained_view_entity, visible_entities)
-            {
+            // First, remove meshes that need to be respecialized, and those
+            // that were removed, from the bins.
+            for &main_entity in dirty_specializations.iter_to_dequeue_multi(
+                extracted_view_light.retained_view_entity,
+                &classes[..],
+            ) {
                 shadow_phase.remove(main_entity);
             }
 
-            // Now iterate through all newly-visible entities and those needing respecialization.
-            for (render_entity, main_entity) in dirty_specializations.iter_to_queue(
+            // Now iterate through all newly-visible entities and those
+            // needing respecialization (atomic `Mesh3d` + GPU-authored
+            // `GpuBatchedMesh3d`).
+            for (render_entity, main_entity) in dirty_specializations.iter_to_queue_multi(
                 extracted_view_light.retained_view_entity,
-                visible_entities,
+                &classes[..],
                 &view_pending_shadow_queues.prev_frame,
             ) {
                 let Some(&(pipeline_id, draw_function)) =
@@ -2521,91 +2512,14 @@ pub fn queue_shadows(
                     continue;
                 };
 
-                let Some(mesh_instance) =
-                    render_mesh_instances.render_mesh_queue_data(*main_entity)
-                else {
-                    // We couldn't fetch the mesh, probably because it hasn't
-                    // loaded yet. Add the entity to the list of pending shadows
-                    // and bail.
-                    view_pending_shadow_queues
-                        .current_frame
-                        .insert((*render_entity, *main_entity));
-                    continue;
-                };
-                if !mesh_instance
-                    .flags()
-                    .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
-                {
-                    continue;
-                }
-
-                let mesh_layers = mesh_instance.render_layers.as_ref().unwrap_or_default();
-                let camera_layers = camera_layers.unwrap_or_default();
-                if !camera_layers.intersects(mesh_layers) {
-                    continue;
-                }
-
                 let Some(material_instance) = render_material_instances.instances.get(main_entity)
                 else {
                     continue;
                 };
                 let Some(material) = render_materials.get(material_instance.asset_id) else {
-                    // We couldn't fetch the material, probably because the
-                    // material hasn't been loaded yet. Add the entity to the
-                    // list of pending shadows and bail.
                     view_pending_shadow_queues
                         .current_frame
                         .insert((*render_entity, *main_entity));
-                    continue;
-                };
-
-                let depth_only_draw_function = material
-                    .properties
-                    .get_draw_function(ShadowsDepthOnlyDrawFunction);
-                let material_bind_group_index = if Some(draw_function) == depth_only_draw_function {
-                    None
-                } else {
-                    Some(material.binding.group.0)
-                };
-
-                let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id())
-                else {
-                    continue;
-                };
-
-                let batch_set_key = ShadowBatchSetKey {
-                    pipeline: pipeline_id,
-                    draw_function,
-                    material_bind_group_index,
-                    slabs: mesh_slabs,
-                };
-
-                shadow_phase.add(
-                    batch_set_key,
-                    ShadowBinKey {
-                        asset_id: mesh_instance.mesh_asset_id().into(),
-                    },
-                    (*render_entity, *main_entity),
-                    mesh_instance.current_uniform_index,
-                    BinnedRenderPhaseType::mesh(
-                        mesh_instance.should_batch(),
-                        &gpu_preprocessing_support,
-                    ),
-                );
-            }
-
-            for (main_entity, batch) in render_mesh_instance_batches.iter() {
-                let Some(&(pipeline_id, draw_function)) =
-                    view_specialized_material_pipeline_cache.get(main_entity)
-                else {
-                    continue;
-                };
-
-                let Some(material_instance) = render_material_instances.instances.get(main_entity)
-                else {
-                    continue;
-                };
-                let Some(material) = render_materials.get(material_instance.asset_id) else {
                     continue;
                 };
 
@@ -2619,7 +2533,45 @@ pub fn queue_shadows(
                         Some(material.binding.group.0)
                     };
 
-                let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&batch.asset_id) else {
+                // Resolve the registry divergence at a single dispatch
+                // point; everything downstream is shared.
+                let (mesh_asset_id, uniform_index, phase_type, representative_entity) =
+                    if let Some(mi) = render_mesh_instances.render_mesh_queue_data(*main_entity)
+                    {
+                        if !mi.flags().contains(RenderMeshInstanceFlags::SHADOW_CASTER) {
+                            continue;
+                        }
+
+                        let mesh_layers = mi.render_layers.as_ref().unwrap_or_default();
+                        let camera_layers = camera_layers.unwrap_or_default();
+                        if !camera_layers.intersects(mesh_layers) {
+                            continue;
+                        }
+
+                        (
+                            mi.mesh_asset_id(),
+                            mi.current_uniform_index,
+                            BinnedRenderPhaseType::mesh(
+                                mi.should_batch(),
+                                &gpu_preprocessing_support,
+                            ),
+                            (*render_entity, *main_entity),
+                        )
+                    } else if let Some(batch) = render_mesh_instance_batches.get(main_entity) {
+                        (
+                            batch.asset_id,
+                            InputUniformIndex(batch.base_input_index),
+                            BinnedRenderPhaseType::InstanceBatch { count: batch.count },
+                            (Entity::PLACEHOLDER, *main_entity),
+                        )
+                    } else {
+                        view_pending_shadow_queues
+                            .current_frame
+                            .insert((*render_entity, *main_entity));
+                        continue;
+                    };
+
+                let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id) else {
                     continue;
                 };
 
@@ -2633,11 +2585,11 @@ pub fn queue_shadows(
                 shadow_phase.add(
                     batch_set_key,
                     ShadowBinKey {
-                        asset_id: batch.asset_id.into(),
+                        asset_id: mesh_asset_id.into(),
                     },
-                    (Entity::PLACEHOLDER, *main_entity),
-                    InputUniformIndex(batch.base_input_index),
-                    BinnedRenderPhaseType::InstanceBatch { count: batch.count },
+                    representative_entity,
+                    uniform_index,
+                    phase_type,
                 );
             }
         }
