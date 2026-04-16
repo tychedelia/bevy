@@ -97,8 +97,6 @@ pub struct GpuBatchedMesh3d {
     pub max_capacity: u32,
 }
 
-/// `on_add` hook: adds `GpuBatchedMesh3d`'s `TypeId` to the entity's
-/// [`VisibilityClass`] bucket, and warns if [`Mesh3d`] is also present.
 fn gpu_batched_mesh_3d_on_add(mut world: DeferredWorld<'_>, ctx: HookContext) {
     add_visibility_class::<GpuBatchedMesh3d>(world.reborrow(), ctx);
     if world.get::<Mesh3d>(ctx.entity).is_some() {
@@ -110,30 +108,21 @@ fn gpu_batched_mesh_3d_on_add(mut world: DeferredWorld<'_>, ctx: HookContext) {
     }
 }
 
-/// Extracted (diff) state of a single [`GpuBatchedMesh3d`] entity.
 #[derive(Clone)]
 pub struct ExtractedGpuBatchedMesh {
     pub mesh_asset_id: AssetId<Mesh>,
     pub max_capacity: u32,
-    /// Emitter-level AABB, if the entity has a sibling [`Aabb`]. When
-    /// `None`, the reservation uses the "infinitely-large" path of
-    /// [`MeshCullingData::new`].
     pub aabb: Option<Aabb>,
 }
 
-/// Per-frame diff of [`GpuBatchedMesh3d`] extractions.
-///
-/// Populated by [`extract_gpu_batched_mesh_changes`] and consumed by
-/// [`prepare_gpu_batched_mesh_reservations`].
 #[derive(Resource, Default)]
 pub struct ExtractedGpuBatchedMeshChanges {
     pub added_or_changed: MainEntityHashMap<ExtractedGpuBatchedMesh>,
     pub removed: HashSet<MainEntity>,
 }
 
-/// Stable per-batch allocation handles. The input-buffer and
-/// culling-buffer ranges persist until the batch is removed from the
-/// main world.
+/// Reservation handles persist until the batch entity is despawned, so user
+/// compute shaders can cache `input_buffer_base` across frames.
 #[derive(Clone, Copy)]
 pub struct GpuInstanceBatchReservation {
     pub input_buffer_base: u32,
@@ -147,9 +136,8 @@ pub struct GpuInstanceBatchReservations {
     pub by_entity: HashMap<MainEntity, GpuInstanceBatchReservation>,
 }
 
-/// Registers [`GpuBatchedMesh3d`] extraction and reservation. On devices
-/// without GPU preprocessing, logs a warning and the plugin's systems
-/// no-op.
+/// Registers [`GpuBatchedMesh3d`] extraction and reservation. Warns and
+/// no-ops on devices without GPU preprocessing.
 pub struct GpuInstanceBatchPlugin;
 
 impl Plugin for GpuInstanceBatchPlugin {
@@ -193,11 +181,8 @@ impl Plugin for GpuInstanceBatchPlugin {
     }
 }
 
-/// Main-world sibling of
-/// [`bevy_mesh::mark_3d_meshes_as_changed_if_their_assets_changed`] for
-/// [`GpuBatchedMesh3d`]: when the mesh asset the batch points at is
-/// modified, trigger a `Changed<GpuBatchedMesh3d>` signal so downstream
-/// change-tracking re-specializes the batch.
+/// Sibling of [`bevy_mesh::mark_3d_meshes_as_changed_if_their_assets_changed`]
+/// for [`GpuBatchedMesh3d`].
 pub fn mark_gpu_batched_meshes_as_changed_if_their_assets_changed(
     mut batched_meshes: Query<&mut GpuBatchedMesh3d>,
     mut mesh_asset_events: MessageReader<AssetEvent<Mesh>>,
@@ -220,11 +205,8 @@ pub fn mark_gpu_batched_meshes_as_changed_if_their_assets_changed(
     }
 }
 
-/// Warn once per entity (throttled via `Local`) if both [`Mesh3d`] and
-/// [`GpuBatchedMesh3d`] are present. The on-add hook catches the case
-/// where `GpuBatchedMesh3d` is added to an entity that already has
-/// `Mesh3d`; this system catches the other insertion order and the case
-/// where both are present from separate spawns.
+/// Catches `Mesh3d`-added-after-`GpuBatchedMesh3d` (the reverse case is
+/// handled by the on-add hook on `GpuBatchedMesh3d`).
 pub fn warn_on_gpu_batched_mesh_mesh3d_overlap(
     offenders: Query<Entity, (With<Mesh3d>, With<GpuBatchedMesh3d>)>,
     mut already_warned: Local<HashSet<Entity>>,
@@ -240,12 +222,9 @@ pub fn warn_on_gpu_batched_mesh_mesh3d_overlap(
     }
 }
 
-/// Diff-based extract of [`GpuBatchedMesh3d`] entities.
-///
-/// Clears the previous frame's `added_or_changed` (which the prepare
-/// system consumed) and `removed` (which it also consumed), then writes
-/// this frame's diff. `RemovedComponents` must be read here since it
-/// only fires once per reader.
+/// `added_or_changed` entries persist across frames until the prepare
+/// system successfully reserves them (material/mesh may not be loaded on
+/// the spawn frame).
 pub fn extract_gpu_batched_mesh_changes(
     mut extracted: ResMut<ExtractedGpuBatchedMeshChanges>,
     query: Extract<
@@ -260,11 +239,6 @@ pub fn extract_gpu_batched_mesh_changes(
     >,
     mut removed: Extract<RemovedComponents<GpuBatchedMesh3d>>,
 ) {
-    // `removed` is a message reader — each event fires exactly once per
-    // reader. We accumulate into `extracted.removed`; the consumer drains
-    // it. `added_or_changed` is *not* cleared here — entries stay around
-    // until the consumer successfully reserves them (material/mesh might
-    // not be ready this frame; retry next frame).
     for entity in removed.read() {
         let main_entity = MainEntity::from(entity);
         extracted.added_or_changed.remove(&main_entity);
@@ -313,10 +287,8 @@ pub fn prepare_gpu_batched_mesh_reservations(
 
     let input_uniform_buffer = &mut batched_instance_buffers.current_input_buffer;
 
-    // Release buffer ranges for removed entities. The two buffers are
-    // indexed in lockstep (the culling shader reads
-    // `mesh_culling_data[input_index]`), so both frees must cover the
-    // same range.
+    // The input and culling buffers are indexed in lockstep by `input_index`;
+    // both frees must cover the same range.
     for main_entity in extracted.removed.drain() {
         if let Some(reservation) = reservations.by_entity.remove(&main_entity) {
             input_uniform_buffer
@@ -327,25 +299,16 @@ pub fn prepare_gpu_batched_mesh_reservations(
         }
     }
 
-    // Allocate reservations for added/changed entities not already
-    // reserved. For entities already reserved, treat the diff as a
-    // notification only — `max_capacity` and mesh changes that require
-    // re-reservation aren't supported here. (Mesh *asset* changes
-    // propagate through extract_meshes_for_gpu_building's slab metadata,
-    // and the specialization re-fires via
-    // mark_gpu_batched_meshes_as_changed_if_their_assets_changed which
-    // routes through DirtySpecializations.)
-    //
-    // Entries are retained in `added_or_changed` until they successfully
-    // reserve; on the spawn frame the material/mesh may not be ready yet.
+    // Changing `max_capacity` post-spawn isn't supported. Mesh-asset
+    // changes re-fire specialization via
+    // `mark_gpu_batched_meshes_as_changed_if_their_assets_changed`; the
+    // reservation itself stays put.
     extracted.added_or_changed.retain(|main_entity, batch| {
         if reservations.by_entity.contains_key(main_entity) {
-            // Already reserved — drop from the pending-diff map.
             return false;
         }
 
-        // Material / mesh may not be ready on the first frame after spawn;
-        // retain this entry and retry next frame.
+        // Material / mesh not loaded yet on the spawn frame; retain and retry.
         let Some(material_instance) = render_material_instances.instances.get(main_entity) else {
             return true;
         };
@@ -431,8 +394,6 @@ pub fn prepare_gpu_batched_mesh_reservations(
             },
         );
 
-        // `extract_gpu_batched_mesh_changes` filters out zero-capacity
-        // batches, so this is infallible.
         let count = NonZeroU32::new(batch.max_capacity)
             .expect("zero-capacity batches must be filtered at extract time");
         render_mesh_instance_batches.insert(

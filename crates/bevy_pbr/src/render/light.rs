@@ -2247,7 +2247,6 @@ pub(crate) fn specialize_shadows(
                     }
                 }
 
-                // Initialize the pending queues.
                 let view_pending_shadow_queues = pending_shadow_queues
                     .prepare_for_new_frame(extracted_view_light.retained_view_entity);
 
@@ -2267,8 +2266,6 @@ pub(crate) fn specialize_shadows(
                     continue;
                 }
 
-                // Now process all shadow meshes (atomic + batch) that need
-                // to be re-specialized.
                 for (render_entity, visible_entity) in dirty_specializations
                     .iter_to_specialize_multi(
                         extracted_view_light.retained_view_entity,
@@ -2304,8 +2301,6 @@ pub(crate) fn specialize_shadows(
                         continue;
                     }
 
-                    // Resolve the registry divergence at a single dispatch
-                    // point; everything downstream is shared.
                     let (mesh_asset_id, maybe_mesh_instance) = if let Some(mi) =
                         render_mesh_instances.render_mesh_queue_data(*visible_entity)
                     {
@@ -2313,8 +2308,6 @@ pub(crate) fn specialize_shadows(
                     } else if let Some(batch) =
                         render_mesh_instance_batches.get(visible_entity)
                     {
-                        // GPU-authored batches always cast shadows (no
-                        // `NotShadowCaster` opt-out for batches).
                         (batch.asset_id, None)
                     } else {
                         view_pending_shadow_queues
@@ -2323,7 +2316,7 @@ pub(crate) fn specialize_shadows(
                         continue;
                     };
 
-                    // Atomic-only: honor the `NotShadowCaster` opt-out.
+                    // Batches have no `NotShadowCaster` opt-out; they always cast.
                     if let Some(mesh_instance) = maybe_mesh_instance.as_ref() {
                         if !mesh_instance
                             .flags()
@@ -2465,7 +2458,6 @@ pub fn queue_shadows(
                 continue;
             };
 
-            // Fetch the pending mesh material queues for this view.
             let view_pending_shadow_queues = pending_shadow_queues
                 .get_mut(&extracted_view_light.retained_view_entity)
                 .expect(
@@ -2489,8 +2481,6 @@ pub fn queue_shadows(
                 continue;
             }
 
-            // First, remove meshes that need to be respecialized, and those
-            // that were removed, from the bins.
             for &main_entity in dirty_specializations.iter_to_dequeue_multi(
                 extracted_view_light.retained_view_entity,
                 &classes[..],
@@ -2498,9 +2488,6 @@ pub fn queue_shadows(
                 shadow_phase.remove(main_entity);
             }
 
-            // Now iterate through all newly-visible entities and those
-            // needing respecialization (atomic `Mesh3d` + GPU-authored
-            // `GpuBatchedMesh3d`).
             for (render_entity, main_entity) in dirty_specializations.iter_to_queue_multi(
                 extracted_view_light.retained_view_entity,
                 &classes[..],
@@ -2533,8 +2520,6 @@ pub fn queue_shadows(
                         Some(material.binding.group.0)
                     };
 
-                // Resolve the registry divergence at a single dispatch
-                // point; everything downstream is shared.
                 let (mesh_asset_id, uniform_index, phase_type, representative_entity) =
                     if let Some(mi) = render_mesh_instances.render_mesh_queue_data(*main_entity)
                     {

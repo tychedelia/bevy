@@ -950,11 +950,9 @@ pub(crate) fn specialize_prepass_material_meshes(
                 continue;
             }
 
-            // Fetch the pending mesh material queues for this view.
             let view_pending_prepass_mesh_material_queues = pending_prepass_mesh_material_queues
                 .prepare_for_new_frame(extracted_view.retained_view_entity);
 
-            // Initialize the pending queues.
             let mut maybe_specialized_prepass_material_pipeline_cache =
                 specialized_prepass_material_pipeline_cache
                     .get_mut(&extracted_view.retained_view_entity);
@@ -975,8 +973,6 @@ pub(crate) fn specialize_prepass_material_meshes(
                 }
             }
 
-            // Now process all meshes (atomic `Mesh3d` + GPU-authored
-            // `GpuBatchedMesh3d`) that need to be specialized.
             for (render_entity, visible_entity) in dirty_specializations.iter_to_specialize_multi(
                 extracted_view.retained_view_entity,
                 &classes[..],
@@ -1019,8 +1015,6 @@ pub(crate) fn specialize_prepass_material_meshes(
                     continue;
                 }
 
-                // Resolve the registry divergence at a single dispatch
-                // point; everything downstream is shared.
                 let (mesh_asset_id, maybe_mesh_instance) = if let Some(mi) =
                     render_mesh_instances.render_mesh_queue_data(*visible_entity)
                 {
@@ -1067,9 +1061,6 @@ pub(crate) fn specialize_prepass_material_meshes(
                     mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
                 }
 
-                // Atomic-only enhancements: lightmap, visibility-range,
-                // previous-frame skin/morph. Batches omit these by
-                // construction.
                 if let Some(mesh_instance) = maybe_mesh_instance {
                     if let Some(lightmap) =
                         render_lightmaps.render_lightmaps.get(visible_entity)
@@ -1246,7 +1237,6 @@ pub fn queue_prepass_material_meshes(
             continue;
         }
 
-        // Fetch the pending mesh material queues for this view.
         let view_pending_prepass_mesh_material_queues = pending_prepass_mesh_material_queues
             .get_mut(&extracted_view.retained_view_entity)
             .expect(
@@ -1254,8 +1244,6 @@ pub fn queue_prepass_material_meshes(
                  `specialize_prepass_material_meshes`",
             );
 
-        // First, remove meshes that need to be respecialized, and those
-        // that were removed, from the bins.
         for &main_entity in dirty_specializations
             .iter_to_dequeue_multi(extracted_view.retained_view_entity, &classes[..])
         {
@@ -1273,9 +1261,6 @@ pub fn queue_prepass_material_meshes(
             }
         }
 
-        // Now iterate through all newly-visible entities and those needing
-        // respecialization (atomic `Mesh3d` + GPU-authored
-        // `GpuBatchedMesh3d`).
         for (render_entity, visible_entity) in dirty_specializations.iter_to_queue_multi(
             extracted_view.retained_view_entity,
             &classes[..],
@@ -1307,8 +1292,6 @@ pub fn queue_prepass_material_meshes(
                 OpaqueRendererMethod::Auto => unreachable!(),
             };
 
-            // Resolve the registry divergence at a single dispatch point;
-            // everything downstream is shared.
             let (mesh_asset_id, uniform_index, phase_type, representative_entity) =
                 if let Some(mi) = render_mesh_instances.render_mesh_queue_data(*visible_entity) {
                     (
