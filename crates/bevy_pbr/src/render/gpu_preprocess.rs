@@ -210,10 +210,6 @@ pub struct BinUnpackingPipeline {
 }
 
 /// The pipeline for the `unpack_ranges` compute shader.
-///
-/// Sibling to [`BinUnpackingPipeline`]. Expands GPU-authored instance-batch
-/// range entries into individual [`PreprocessWorkItem`]s on the GPU,
-/// avoiding O(N) CPU pushes and uploads per batch.
 #[derive(Clone)]
 pub struct RangeUnpackingPipeline {
     pub bind_group_layout: BindGroupLayoutDescriptor,
@@ -614,9 +610,8 @@ pub fn unpack_bins(
     pass_span.end(&mut compute_pass);
 }
 
-/// Populates each [`RangeWorkItemBuffer`]'s metadata uniform and bind group
-/// for the [`unpack_ranges`] dispatch. Runs in `PrepareBindGroups` after the
-/// work-item GPU buffers have been allocated by `write_batched_instance_buffers`.
+/// Writes the metadata uniform and builds the bind group for each
+/// [`unpack_ranges`] dispatch.
 pub fn prepare_range_unpacking_bind_groups(
     pipeline_cache: Res<PipelineCache>,
     preprocess_pipelines: Res<PreprocessPipelines>,
@@ -688,8 +683,7 @@ pub fn prepare_range_unpacking_bind_groups(
 }
 
 /// Dispatches `unpack_ranges` for every (view, phase, indexed/non-indexed)
-/// that has GPU-authored instance batches this frame. Sibling to
-/// [`unpack_bins`] — runs in the same chain, before mesh preprocessing.
+/// that has GPU-authored instance batches this frame.
 pub fn unpack_ranges(
     current_view: ViewQuery<Option<&ViewLightEntities>, Without<SkipGpuPreprocess>>,
     view_query: Query<&ExtractedView, Without<SkipGpuPreprocess>>,
@@ -1812,12 +1806,9 @@ pub fn prepare_preprocess_pipelines(
             );
     }
 
-    // Prepare the bin unpacking compute pipeline.
     preprocess_pipelines
         .bin_unpacking
         .prepare(&pipeline_cache, &mut specialized_bin_unpacking_pipelines);
-
-    // Prepare the range unpacking compute pipeline.
     preprocess_pipelines
         .range_unpacking
         .prepare(&pipeline_cache, &mut specialized_range_unpacking_pipelines);

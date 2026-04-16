@@ -40,7 +40,6 @@ use bevy_mesh::{
 };
 use bevy_platform::collections::{hash_map::Entry, HashMap};
 use bevy_render::batching::gpu_preprocessing::{FreeRunList, PreviousInstanceInputUniformBuffer};
-use bevy_render::erased_render_asset::ErasedRenderAssets;
 use bevy_render::impl_atomic_pod;
 use bevy_render::mesh::allocator::{MeshSlabId, MeshSlabs};
 use bevy_render::mesh::morph::{
@@ -623,28 +622,17 @@ pub struct MeshInputUniform {
 
 impl_atomic_pod!(MeshInputUniform, MeshInputUniformBlob);
 
-/// Information about each mesh instance needed to cull it on GPU.
-///
-/// Holds the axis-aligned bounding box (AABB) and a dead-slot flag used by
-/// GPU-authored instance batches (see [`GpuBatchedMesh3d`]).
-///
-/// [`GpuBatchedMesh3d`]: crate::gpu_instance_batch::GpuBatchedMesh3d
+/// AABB plus a dead-slot flag used by GPU-authored instance batches.
 #[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
 #[repr(C)]
 pub struct MeshCullingData {
-    /// The 3D center of the AABB in model space.
     pub aabb_center: Vec3,
-    /// Padding so `aabb_half_extents` lands on the 16-byte alignment WGSL
-    /// requires for the following `vec3<f32>`.
     _pad: f32,
-    /// The 3D extents of the AABB in model space, divided by two.
     pub aabb_half_extents: Vec3,
-    /// Dead-slot flag used by GPU-authored instance batches. `0.0` means
-    /// alive (render normally); any nonzero value means the preprocessing
-    /// pass must skip this slot, excluding it from the GPU-derived indirect
-    /// instance count. Default zero-initialization keeps ordinary CPU-driven
-    /// meshes alive automatically; GPU simulations opt in by writing a
-    /// nonzero value for dead slots.
+    /// `0.0` = alive, nonzero = skip in preprocessing. Used by GPU
+    /// simulations to retire slots in a [`GpuBatchedMesh3d`] reservation.
+    ///
+    /// [`GpuBatchedMesh3d`]: crate::gpu_instance_batch::GpuBatchedMesh3d
     pub dead: f32,
 }
 
@@ -658,20 +646,10 @@ pub struct MeshCullingData {
 pub struct MeshCullingDataBuffer {
     #[deref]
     buffer: AtomicSparseBufferVec<MeshCullingData>,
-    /// Range-shaped free list. Populated by [`Self::remove_range`],
-    /// consumed by [`Self::push_many_identical`]. Kept symmetric with
-    /// [`InstanceInputUniformBuffer`]'s run-shaped free list: both
-    /// buffers' slots are indexed by the same `input_index` in the
-    /// culling shader, so paired range allocs and frees produce
-    /// identical bases from both allocators.
     free_runs: FreeRunList,
 }
 
 impl MeshCullingDataBuffer {
-    /// Reserves `count` contiguous slots all initialized to `value` and
-    /// returns the base index. First-fits a previously-freed range from
-    /// [`Self::free_runs`]; falls back to appending past the end.
-    ///
     /// # Panics
     /// if `count` is zero.
     pub fn push_many_identical(&mut self, value: MeshCullingData, count: u32) -> u32 {
@@ -686,10 +664,6 @@ impl MeshCullingDataBuffer {
         base
     }
 
-    /// Releases a contiguous range of `count` slots starting at `base`.
-    /// The range is coalesced into [`Self::free_runs`]; the buffer is
-    /// not shrunk. Stale GPU-side data in freed slots is harmless
-    /// because [`PreprocessWorkItem`]s no longer reference them.
     pub fn remove_range(&mut self, base: u32, count: u32) {
         self.free_runs.free(base, count);
     }
@@ -1254,66 +1228,18 @@ pub struct RenderMeshInstancesCpu(MainEntityHashMap<RenderMeshInstanceCpu>);
 pub struct RenderMeshInstancesGpu(MainEntityHashMap<RenderMeshInstanceGpu>);
 
 /// A batch of `count` GPU-authored mesh instances rendered as a single
-/// indirect draw. Per-instance transforms live in a contiguous range of the
-/// preprocessing input buffer populated by the user's compute shaders.
+/// indirect draw.
 #[derive(Clone, Debug)]
 pub struct RenderMeshInstanceBatch {
     pub asset_id: AssetId<Mesh>,
     pub material_binding: MaterialBindingId,
     pub base_input_index: u32,
-    /// Upper bound on instances drawn; the final count is whichever slots
-    /// survive GPU frustum culling.
     pub count: NonZeroU32,
-    /// `MeshFlags::NO_TRANSFORM_CHANGE` is semantically incoherent for
-    /// batches (transforms are rewritten every frame); don't set it.
     pub flags: MeshFlags,
 }
 
-/// Render-world registry of [`RenderMeshInstanceBatch`] entries. Consumed by
-/// `queue_material_meshes`, shadow, prepass, and deferred queueing alongside
-/// [`RenderMeshInstances`]. Populated only on the GPU preprocessing path.
 #[derive(Resource, Default, Deref, DerefMut)]
 pub struct RenderMeshInstanceBatches(pub MainEntityHashMap<RenderMeshInstanceBatch>);
-
-/// A batch joined with the render-world data its queueing systems need:
-/// the current material instance, the prepared material, and the prepared
-/// mesh. Returned by [`RenderMeshInstanceBatches::iter_resolved`].
-pub struct ResolvedBatch<'a> {
-    pub main_entity: &'a MainEntity,
-    pub batch: &'a RenderMeshInstanceBatch,
-    pub material_instance: &'a RenderMaterialInstance,
-    pub material: &'a PreparedMaterial,
-    pub mesh: &'a RenderMesh,
-}
-
-impl RenderMeshInstanceBatches {
-    /// Iterates batches, joining each with its current material instance,
-    /// prepared material, and prepared mesh. Skips entries whose material or
-    /// mesh hasn't been prepared yet (common on the spawn frame); the same
-    /// batch will resolve on a later frame once those assets are ready.
-    ///
-    /// Replaces the four-`let-else` lookup boilerplate that the opaque,
-    /// shadow, and prepass queueing systems would otherwise repeat.
-    pub fn iter_resolved<'a>(
-        &'a self,
-        material_instances: &'a RenderMaterialInstances,
-        materials: &'a ErasedRenderAssets<PreparedMaterial>,
-        meshes: &'a RenderAssets<RenderMesh>,
-    ) -> impl Iterator<Item = ResolvedBatch<'a>> + 'a {
-        self.iter().filter_map(move |(main_entity, batch)| {
-            let material_instance = material_instances.instances.get(main_entity)?;
-            let material = materials.get(material_instance.asset_id)?;
-            let mesh = meshes.get(batch.asset_id)?;
-            Some(ResolvedBatch {
-                main_entity,
-                batch,
-                material_instance,
-                material,
-                mesh,
-            })
-        })
-    }
-}
 
 impl RenderMeshInstances {
     /// Creates a new [`RenderMeshInstances`] instance.
@@ -1755,8 +1681,7 @@ impl MeshCullingData {
     /// Returns a new [`MeshCullingData`] initialized with the given AABB.
     ///
     /// If no AABB is provided, an infinitely-large one is conservatively
-    /// chosen. The slot is alive (`dead == 0.0`) until a simulation
-    /// explicitly marks it dead.
+    /// chosen.
     pub(crate) fn new(aabb: Option<&Aabb>) -> Self {
         match aabb {
             Some(aabb) => MeshCullingData {

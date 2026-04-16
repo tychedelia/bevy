@@ -31,22 +31,12 @@
 #import bevy_render::maths
 #import bevy_render::view::View
 
-// Information about each mesh instance needed to cull it on GPU.
-//
-// Holds the axis-aligned bounding box (AABB) and a dead-slot flag used by
-// GPU-authored instance batches (see `GpuBatchedMesh3d`).
+// AABB plus a dead-slot flag used by GPU-authored instance batches.
 struct MeshCullingData {
-    // The 3D center of the AABB in model space.
     aabb_center: vec3<f32>,
-    // Padding so `aabb_half_extents` lands on the 16-byte alignment WGSL
-    // requires for the following `vec3<f32>`.
     _pad: f32,
-    // The 3D extents of the AABB in model space, divided by two.
     aabb_half_extents: vec3<f32>,
-    // Dead-slot flag. `0.0` means alive (render normally); any nonzero value
-    // means this slot is dead and preprocessing must skip it entirely.
-    // Default-zero initialization keeps CPU-driven meshes alive automatically;
-    // GPU simulations opt in by writing a nonzero value for dead slots.
+    // 0.0 = alive, nonzero = skip in preprocessing.
     dead: f32,
 }
 
@@ -202,10 +192,6 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     let world_from_local = maths::affine3_to_square(world_from_local_affine_transpose);
 
 #ifdef FRUSTUM_CULLING
-    // Skip slots explicitly marked dead by a GPU-authored simulation.
-    // `dead == 0.0` means alive (default); nonzero means dead.
-    // Returning here excludes this slot from the atomic instance counter that
-    // drives the indirect draw, so dead slots cost nothing past this point.
     if (mesh_culling_data[input_index].dead != 0.0) {
         return;
     }

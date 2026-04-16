@@ -292,19 +292,13 @@ where
     /// The buffer containing the data that will be uploaded to the GPU.
     buffer: AtomicSparseBufferVec<BDI>,
 
-    /// Single-slot free list populated by [`Self::remove`] and consumed
-    /// by [`Self::add`]. Keeps the per-entity hot path O(1).
+    /// Single-slot free list. Populated by [`Self::remove`], consumed by
+    /// [`Self::add`].
     free_uniform_indices: Vec<u32>,
 
-    /// Range-shaped free list populated by [`Self::remove_range`] and
-    /// consumed by [`Self::add_many_with`]. Coalesces adjacent frees so
-    /// that churning GPU-authored batches (e.g. VFX emitters) reclaim
-    /// their own holes instead of growing the buffer monotonically.
-    ///
-    /// This list is disjoint from `free_uniform_indices`: a slot is on
-    /// either list or neither, never both. The two allocators do not
-    /// cross-consume, which keeps the invariants simple at the cost of
-    /// leaving range-shaped holes reserved for future range allocs.
+    /// Range-shaped free list, disjoint from `free_uniform_indices`.
+    /// Populated by [`Self::remove_range`], consumed by
+    /// [`Self::add_many_with`].
     free_uniform_runs: FreeRunList,
 }
 
@@ -360,9 +354,6 @@ where
 
     /// Reserves `count` contiguous slots, invokes `f` on each absolute
     /// index to produce the slot's value, and returns the base index.
-    /// First-fits a previously-freed range from
-    /// [`Self::free_uniform_runs`]; falls back to appending past the
-    /// end of the buffer.
     ///
     /// # Panics
     /// if `count` is zero.
@@ -381,10 +372,7 @@ where
         base
     }
 
-    /// Frees a contiguous range of `count` slots starting at `base`. The
-    /// range is coalesced into [`Self::free_uniform_runs`]; the buffer
-    /// is not shrunk. A subsequent [`Self::add_many_with`] call with a
-    /// matching size will reuse this range before growing.
+    /// Frees a contiguous range of `count` slots starting at `base`.
     pub fn remove_range(&mut self, base: u32, count: u32) {
         self.free_uniform_runs.free(base, count);
     }
@@ -456,35 +444,22 @@ where
 }
 
 /// A sorted, coalesced list of disjoint free runs over some index space.
-///
-/// Used by buffers that service range-shaped allocations (contiguous
-/// reservations of `N` slots) and range-shaped frees, to reclaim holes
-/// without growing the backing store. Runs are kept sorted by `start`
-/// and adjacent runs are always merged, so the list size is bounded by
-/// the number of non-adjacent freed regions.
 #[derive(Default, Clone, Debug)]
 pub struct FreeRunList {
-    /// Sorted by `start`, with no overlapping or adjacent runs.
     runs: Vec<Range<u32>>,
 }
 
 impl FreeRunList {
-    /// Inserts `[base, base + count)` into the list, merging with any
-    /// adjacent or overlapping runs. No-op if `count` is zero. Panics
-    /// in debug if the new range strictly overlaps an existing run (a
-    /// double-free bug).
+    /// Inserts `[base, base + count)` into the list, merging with adjacent
+    /// or overlapping runs. No-op if `count` is zero.
     pub fn free(&mut self, base: u32, count: u32) {
         if count == 0 {
             return;
         }
         let mut merged = base..base + count;
 
-        // First run that is not strictly before `merged`. The backward-
-        // adjacent neighbor (r.end == merged.start) lands here; runs
-        // strictly before (r.end < merged.start) are already skipped.
         let idx = self.runs.partition_point(|r| r.end < merged.start);
 
-        // Absorb each overlapping / adjacent run into `merged`.
         while idx < self.runs.len() && self.runs[idx].start <= merged.end {
             debug_assert!(
                 self.runs[idx].end <= merged.start || self.runs[idx].start >= merged.end,
@@ -500,9 +475,8 @@ impl FreeRunList {
         self.runs.insert(idx, merged);
     }
 
-    /// First-fit allocation of `count` contiguous slots. Returns the
-    /// base index on success, `None` if no run is large enough. Splits
-    /// the chosen run, leaving the remainder on the list.
+    /// First-fit allocation of `count` contiguous slots. Splits the chosen
+    /// run, leaving the remainder on the list.
     pub fn allocate(&mut self, count: u32) -> Option<u32> {
         if count == 0 {
             return None;
@@ -867,10 +841,7 @@ impl PreprocessWorkItemBuffers {
     /// Pushes a range entry for a GPU-authored instance batch and reserves
     /// `count` uninit work-item slots that the `range_unpack` shader will
     /// populate. Returns the base index of the reserved slots, or `None`
-    /// in direct (no-indirect) mode where instance batches don't apply.
-    ///
-    /// Unlike [`Self::push`], this is O(1) on CPU and uploads `O(1)` per
-    /// batch — replacing the per-instance push loop.
+    /// in direct (no-indirect) mode.
     pub fn push_range(
         &mut self,
         indexed: bool,
@@ -972,65 +943,35 @@ pub struct PreprocessWorkItem {
 #[derive(Clone, Copy, Default, Pod, Zeroable, ShaderType)]
 #[repr(C)]
 pub struct GpuRangeUnpackingMetadata {
-    /// Number of entries in the range storage buffer.
     pub range_count: u32,
-    /// Sum of every range's `count`.
     pub total_instance_count: u32,
-    /// Index of the first reserved work-item slot.
     pub work_item_base: u32,
-    /// Padding to round up to 16 bytes.
     pub pad: u32,
 }
 
-/// One GPU-authored instance batch in a [`RangeWorkItemBuffer`].
-///
-/// The `range_unpack` shader expands each entry into `count` individual
-/// [`PreprocessWorkItem`]s with sequential `input_index`es starting at
-/// `base_input_index` and a constant `output_or_indirect_parameters_index`.
+/// One GPU-authored instance batch in a [`RangeWorkItemBuffer`]. Expanded
+/// by `unpack_ranges.wgsl` into `count` individual [`PreprocessWorkItem`]s.
 #[derive(Clone, Copy, Default, Pod, Zeroable, ShaderType)]
 #[repr(C)]
 pub struct RangeWorkItem {
-    /// Base index into the `MeshInputUniform` buffer.
     pub base_input_index: u32,
-    /// Index of the [`IndirectParametersGpuMetadata`] slot the expanded
-    /// work items reference. Identical for all instances in the range.
     pub base_output_or_indirect_parameters_index: u32,
-    /// Number of contiguous instances in the range.
     pub count: u32,
-    /// Sum of `count` for all earlier ranges in the same buffer. Lets the
-    /// shader find which range a given thread belongs to via linear
-    /// scan over the small range array.
+    /// Sum of `count` for all earlier ranges in the same buffer.
     pub cumulative_offset: u32,
 }
 
 /// Per-(view, phase, indexed-ness) range entries plus bookkeeping for the
 /// contiguous block of work items they expand into.
-///
-/// Range entries pack `count` instances into a single CPU/GPU upload —
-/// avoiding the O(N) work-item push that GPU-authored instance batches
-/// would otherwise incur each frame. The `range_unpack` shader expands
-/// them on-GPU into the contiguous block of [`PreprocessWorkItem`]s
-/// reserved at `work_item_base`.
 pub struct RangeWorkItemBuffer {
-    /// Range entries pushed this frame, backed by a GPU storage buffer.
     pub buffer: RawBufferVec<RangeWorkItem>,
-    /// Per-dispatch metadata uniform, populated from `work_item_base` and
-    /// `total_instance_count` during bind-group preparation.
     pub metadata: UniformBuffer<GpuRangeUnpackingMetadata>,
-    /// Bind group for the `unpack_ranges` dispatch. Populated by
-    /// bevy_pbr's prepare system once the work-item GPU buffer exists.
     pub bind_group: Option<BindGroup>,
-    /// Index of the first reserved work-item slot in the matching work-item
-    /// `PartialBufferVec`. Ranges are contiguous in the work-item buffer,
-    /// so range `r`'s outputs land at
-    /// `work_item_base + buffer.values()[r].cumulative_offset`.
     pub work_item_base: u32,
-    /// Total instance count = sum of every entry's `count`.
     pub total_instance_count: u32,
 }
 
 impl RangeWorkItemBuffer {
-    /// Creates an empty range buffer with the given debug label.
     pub fn new(label: &str) -> Self {
         let mut buffer = RawBufferVec::new(BufferUsages::STORAGE);
         buffer.set_label(Some(label));
@@ -1043,10 +984,6 @@ impl RangeWorkItemBuffer {
         }
     }
 
-    /// Resets CPU-side state for a new frame. Preserves the GPU buffer
-    /// allocations for reuse; the bind group is dropped because the
-    /// underlying work-item buffer may be reallocated on subsequent
-    /// `write_buffer` calls.
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.bind_group = None;
@@ -2327,9 +2264,6 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
             }
         }
 
-        // GPU-authored instance batches. In indirect mode, range_unpack
-        // expands one CPU-side range entry into N work items GPU-side —
-        // O(1) CPU + upload per batch instead of O(N).
         for (key, bin) in &phase.instance_batches {
             let indexed = key.0.indexed();
 
@@ -3145,9 +3079,6 @@ mod tests {
     fn add_many_with_first_fits_across_runs() {
         let mut instance_buffer = InstanceInputUniformBuffer::new();
 
-        // Four non-adjacent batches; free the small one (b) and the
-        // large one (d). The allocator must skip b's 2-slot hole and
-        // reuse d's 5-slot hole.
         let _a = instance_buffer.add_many_with(3, |_| TestData(0));
         let b = instance_buffer.add_many_with(2, |_| TestData(0));
         let _c = instance_buffer.add_many_with(3, |_| TestData(0));
@@ -3213,7 +3144,6 @@ mod tests {
         list.free(0, 10);
         list.free(20, 10);
         assert_eq!(list.allocate(15), None);
-        // Runs untouched.
         assert!(list.contains(5));
         assert!(list.contains(25));
     }

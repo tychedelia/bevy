@@ -1,47 +1,9 @@
-//! GPU-authored instance batches: rendering `N` instances of a `Mesh`
-//! whose per-instance transforms are written into the GPU preprocessing
-//! input buffer by the user's own compute shaders, rather than extracted
-//! from ECS entities on the CPU.
+//! GPU-authored instance batches: per-instance transforms are written into
+//! the preprocessing input buffer by user compute shaders rather than
+//! extracted from ECS entities.
 //!
-//! Useful for GPU-driven particle systems, foliage scatter, point clouds,
-//! GPU-baked animation output, and similar "N instances of one (mesh,
-//! material)" workloads.
-//!
-//! # Usage
-//!
-//! ```ignore
-//! commands.spawn((
-//!     GpuBatchedMesh3d {
-//!         mesh: mesh_handle,
-//!         max_capacity: 4096,
-//!     },
-//!     // Optional: sibling `Aabb` for CPU-side whole-batch frustum culling
-//!     // if you remove `NoFrustumCulling`. Per-slot GPU culling still uses
-//!     // the per-slot `MeshCullingData` the simulation writes.
-//!     MeshMaterial3d(material_handle),
-//! ));
-//! ```
-//!
-//! The user's compute shader then writes `world_from_local` (and
-//! optionally per-slot [`MeshCullingData`]) into the reserved range of
-//! bevy's shared input buffer each frame. To mark a slot as "dead", write
-//! a nonzero value into [`MeshCullingData::dead`] — the preprocessing pass
-//! skips it entirely, so it costs nothing past that point and the indirect
-//! draw's `instance_count` reflects only live instances. Slots default to
-//! alive (`dead == 0.0`) after reservation, so simulations only need to
-//! write the flag when retiring a slot.
-//!
-//! # Known limitations
-//!
-//! - **Transparent rendering**: unsupported. GPU-authored depths can't be
-//!   correctly interleaved with other transparent geometry via CPU sort
-//!   keys; [`SortedRenderPhase`] is structurally incompatible. Would
-//!   require OIT or per-particle GPU sort.
-//! - **Motion vectors / TAA**: `previous_input_index = u32::MAX` always;
-//!   slot mapping isn't stable across frames when simulations compact
-//!   particles.
-//! - **Per-instance attributes beyond transform**: not yet plumbed.
-//! - **`max_capacity`**: CPU-declared, mutable only from the main world.
+//! Transparent rendering, motion vectors, and per-instance attributes
+//! beyond the transform are not supported.
 
 use core::num::NonZeroU32;
 
@@ -73,27 +35,13 @@ use crate::{
     RenderMeshInstanceBatches,
 };
 
-/// An entity with this component represents a batch of up to
-/// `max_capacity` GPU-authored mesh instances.
-///
-/// The entity must also carry a `MeshMaterial3d<M>` so the existing
-/// `MaterialPlugin<M>` picks up its material. It must **not** carry a
-/// [`Mesh3d`] — that would cause the entity to also participate in
-/// normal mesh extraction and produce duplicate draws. A runtime warning
-/// fires if both are present.
-///
-/// `NoFrustumCulling` is required by default because per-instance GPU
-/// culling is the authoritative mechanism for batches. Removing it opts
-/// into CPU whole-batch frustum culling against a sibling [`Aabb`]
-/// component (if present).
+/// A batch of up to `max_capacity` GPU-authored mesh instances. Must be
+/// paired with a `MeshMaterial3d<M>` and must not carry a [`Mesh3d`].
 #[derive(Component, Clone)]
 #[component(on_add = gpu_batched_mesh_3d_on_add)]
 #[require(Transform, Visibility, VisibilityClass, NoFrustumCulling)]
 pub struct GpuBatchedMesh3d {
     pub mesh: bevy_asset::Handle<Mesh>,
-    /// Upper bound on live instances. Contiguous slots at this size are
-    /// reserved in the preprocessing input buffer, culling data buffer,
-    /// and work-item buffer.
     pub max_capacity: u32,
 }
 
@@ -121,8 +69,6 @@ pub struct ExtractedGpuBatchedMeshChanges {
     pub removed: HashSet<MainEntity>,
 }
 
-/// Reservation handles persist until the batch entity is despawned, so user
-/// compute shaders can cache `input_buffer_base` across frames.
 #[derive(Clone, Copy)]
 pub struct GpuInstanceBatchReservation {
     pub input_buffer_base: u32,
@@ -136,8 +82,6 @@ pub struct GpuInstanceBatchReservations {
     pub by_entity: HashMap<MainEntity, GpuInstanceBatchReservation>,
 }
 
-/// Registers [`GpuBatchedMesh3d`] extraction and reservation. Warns and
-/// no-ops on devices without GPU preprocessing.
 pub struct GpuInstanceBatchPlugin;
 
 impl Plugin for GpuInstanceBatchPlugin {
@@ -181,8 +125,6 @@ impl Plugin for GpuInstanceBatchPlugin {
     }
 }
 
-/// Sibling of [`bevy_mesh::mark_3d_meshes_as_changed_if_their_assets_changed`]
-/// for [`GpuBatchedMesh3d`].
 pub fn mark_gpu_batched_meshes_as_changed_if_their_assets_changed(
     mut batched_meshes: Query<&mut GpuBatchedMesh3d>,
     mut mesh_asset_events: MessageReader<AssetEvent<Mesh>>,
@@ -205,8 +147,6 @@ pub fn mark_gpu_batched_meshes_as_changed_if_their_assets_changed(
     }
 }
 
-/// Catches `Mesh3d`-added-after-`GpuBatchedMesh3d` (the reverse case is
-/// handled by the on-add hook on `GpuBatchedMesh3d`).
 pub fn warn_on_gpu_batched_mesh_mesh3d_overlap(
     offenders: Query<Entity, (With<Mesh3d>, With<GpuBatchedMesh3d>)>,
     mut already_warned: Local<HashSet<Entity>>,
@@ -222,9 +162,6 @@ pub fn warn_on_gpu_batched_mesh_mesh3d_overlap(
     }
 }
 
-/// `added_or_changed` entries persist across frames until the prepare
-/// system successfully reserves them (material/mesh may not be loaded on
-/// the spawn frame).
 pub fn extract_gpu_batched_mesh_changes(
     mut extracted: ResMut<ExtractedGpuBatchedMeshChanges>,
     query: Extract<
@@ -246,9 +183,6 @@ pub fn extract_gpu_batched_mesh_changes(
     }
 
     for (entity, batch, aabb, _view_visibility) in query.iter() {
-        // Zero-capacity batches would panic the downstream allocators
-        // (`add_many_with` / `push_many_identical` both require count > 0)
-        // and have no rendering meaning anyway.
         if batch.max_capacity == 0 {
             warn!(
                 "GpuBatchedMesh3d on {entity} has max_capacity = 0; ignoring. \
@@ -287,8 +221,6 @@ pub fn prepare_gpu_batched_mesh_reservations(
 
     let input_uniform_buffer = &mut batched_instance_buffers.current_input_buffer;
 
-    // The input and culling buffers are indexed in lockstep by `input_index`;
-    // both frees must cover the same range.
     for main_entity in extracted.removed.drain() {
         if let Some(reservation) = reservations.by_entity.remove(&main_entity) {
             input_uniform_buffer
@@ -299,16 +231,11 @@ pub fn prepare_gpu_batched_mesh_reservations(
         }
     }
 
-    // Changing `max_capacity` post-spawn isn't supported. Mesh-asset
-    // changes re-fire specialization via
-    // `mark_gpu_batched_meshes_as_changed_if_their_assets_changed`; the
-    // reservation itself stays put.
     extracted.added_or_changed.retain(|main_entity, batch| {
         if reservations.by_entity.contains_key(main_entity) {
             return false;
         }
 
-        // Material / mesh not loaded yet on the spawn frame; retain and retry.
         let Some(material_instance) = render_material_instances.instances.get(main_entity) else {
             return true;
         };
@@ -343,11 +270,8 @@ pub fn prepare_gpu_batched_mesh_reservations(
         let lightmap_slot = u16::MAX as u32;
         let material_and_lightmap_bind_group_slot = material_slot | (lightmap_slot << 16);
 
-        // The low 16 bits of `MeshFlags` are the visibility-range / LOD
-        // index. `mesh_preprocess.wgsl` reads them as an index into
-        // `visibility_ranges` — `u16::MAX` is the sentinel for "no LOD"
-        // that tells the shader to skip the cull. Leaving this at 0
-        // causes a silent early-return against `visibility_ranges[0]`.
+        // The low 16 bits of `MeshFlags` are an index into
+        // `visibility_ranges`; `u16::MAX` is the "no LOD" sentinel.
         let lod_sentinel = u16::MAX as u32;
         let resolved_flags = MeshFlags::empty().bits() | lod_sentinel;
 
@@ -373,12 +297,8 @@ pub fn prepare_gpu_batched_mesh_reservations(
         let culling_buffer_base =
             culling_data_buffer.push_many_identical(culling_data, batch.max_capacity);
 
-        // The preprocessing shader uses a single `input_index` to address
-        // both `current_input` and `mesh_culling_data`, so the two
-        // allocators must hand out matching bases. They have independent
-        // free lists but operate in lockstep here; if this ever fires, the
-        // two free lists have drifted and the shader will pair each
-        // instance's transform with the wrong AABB.
+        // The preprocessing shader uses one `input_index` to address both
+        // buffers, so the two allocators must hand out matching bases.
         debug_assert_eq!(
             input_buffer_base, culling_buffer_base,
             "input-buffer and culling-buffer reservations diverged for {main_entity:?}",
@@ -407,7 +327,6 @@ pub fn prepare_gpu_batched_mesh_reservations(
             },
         );
 
-        // Successfully reserved — drop from the pending-diff map.
         false
     });
 }

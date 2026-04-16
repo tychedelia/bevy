@@ -2316,7 +2316,6 @@ pub(crate) fn specialize_shadows(
                         continue;
                     };
 
-                    // Batches have no `NotShadowCaster` opt-out; they always cast.
                     if let Some(mesh_instance) = maybe_mesh_instance.as_ref() {
                         if !mesh_instance
                             .flags()
@@ -2338,7 +2337,6 @@ pub(crate) fn specialize_shadows(
                     // the data for it. So we need to include the appropriate
                     // flag in the mesh pipeline key to ensure that the
                     // necessary bind group layout entries are present.
-                    // Batches never have lightmaps.
                     if maybe_mesh_instance.is_some()
                         && render_lightmaps.render_lightmaps.contains_key(visible_entity)
                     {

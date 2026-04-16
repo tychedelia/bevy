@@ -1043,8 +1043,6 @@ pub(crate) fn specialize_material_meshes(
                 } else if let Some(batch) = render_mesh_instance_batches.get(visible_entity) {
                     (batch.asset_id, None)
                 } else {
-                    // Batch reservation runs in `PrepareResources`, after
-                    // this system; retry next frame.
                     view_pending_mesh_material_queues
                         .current_frame
                         .insert((*render_entity, *visible_entity));
@@ -1253,23 +1251,18 @@ pub fn queue_material_meshes(
                         None,
                     )
                 } else {
-                    // Neither ready yet — push to pending and retry next frame.
                     view_pending_mesh_material_queues
                         .current_frame
                         .insert((*render_entity, *visible_entity));
                     continue;
                 };
 
-            // Fetch the slabs that this mesh resides in.
             let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id) else {
                 continue;
             };
 
             match material.properties.render_phase_type {
                 RenderPhaseType::Transmissive => {
-                    // GPU-authored batches can't be correctly CPU-sorted
-                    // alongside atomic meshes (their per-instance depths
-                    // live on the GPU).
                     let Some(mesh_instance) = maybe_mesh_instance.as_ref() else {
                         continue;
                     };
@@ -1353,7 +1346,6 @@ pub fn queue_material_meshes(
                     );
                 }
                 RenderPhaseType::Transparent => {
-                    // GPU-authored batches can't be correctly CPU-sorted.
                     let Some(mesh_instance) = maybe_mesh_instance.as_ref() else {
                         continue;
                     };

@@ -147,10 +147,9 @@ where
     /// See the `custom_phase_item` example for an example of how to use this.
     pub non_mesh_items: IndexMap<(BPI::BatchSetKey, BPI::BinKey), NonMeshEntities>,
 
-    /// GPU-authored instance batches. Unlike [`Self::batchable_meshes`],
-    /// where entities in a bin get grouped at batch-and-prepare time, each
-    /// entry here is *already* an N-instance batch described by one phase
-    /// item.
+    /// GPU-authored instance batches. Each entry is already an N-instance
+    /// batch, in contrast to [`Self::batchable_meshes`] where entities are
+    /// grouped at batch-and-prepare time.
     pub instance_batches: IndexMap<(BPI::BatchSetKey, BPI::BinKey), RenderInstanceBatchBin>,
 
     /// Information on each batch set.
@@ -165,11 +164,7 @@ where
     /// unbatchable entities.
     pub(crate) batch_sets: BinnedRenderPhaseBatchSets<BPI::BinKey>,
 
-    /// Pre-computed draw records for [`Self::instance_batches`]. Kept
-    /// parallel to [`Self::batch_sets`] because the batchable/multidrawable
-    /// render path zips `batch_sets` with bin-map keys (one batch per bin
-    /// key), and instance batches can have multiple pre-batched draws per
-    /// bin key.
+    /// Pre-computed draw records for [`Self::instance_batches`].
     pub(crate) instance_batch_draws: Vec<InstanceBatchDraw<BPI>>,
 
     /// The batch and bin key for each entity.
@@ -193,8 +188,7 @@ pub struct RenderBin {
     entities: IndexMap<MainEntity, InputUniformIndex, EntityHash>,
 }
 
-/// A bin of GPU-authored instance batches. Each entry is one batch entity;
-/// values are `(base_input_index, count)`.
+/// A bin of GPU-authored instance batches.
 #[derive(Default)]
 pub struct RenderInstanceBatchBin {
     entries: IndexMap<MainEntity, (InputUniformIndex, NonZeroU32), EntityHash>,
@@ -953,9 +947,7 @@ pub enum BinnedRenderPhaseType {
     NonMesh,
 
     /// A GPU-authored batch of `count` instances rendered as one indirect
-    /// draw. The phase item's `input_uniform_index` is the base of the
-    /// contiguous range `[base .. base + count)` in the preprocessing
-    /// input buffer.
+    /// draw. `input_uniform_index` is the base of `[base .. base + count)`.
     InstanceBatch { count: NonZeroU32 },
 }
 
@@ -1002,11 +994,7 @@ where
 /// preprocessing is enabled.
 ///
 /// For example, for 3D meshes, this is the index of the `MeshInputUniform` in
-/// the buffer.
-///
-/// For GPU instance batches (`RenderInstanceBatchBin`), this is the *base*
-/// input index of a contiguous range of `count` slots — every slot in the
-/// batch lives at `[base, base + count)` in the input buffer.
+/// the buffer. For GPU instance batches it is the base of a contiguous range.
 ///
 /// This field is ignored if GPU preprocessing isn't in use, such as (currently)
 /// in the case of 2D meshes. In that case, it can be safely set to

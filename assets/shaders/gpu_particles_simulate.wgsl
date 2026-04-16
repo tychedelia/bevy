@@ -1,18 +1,4 @@
-// GPU particles simulation shader — mouse-attractor fluid-ish sim with
-// per-particle lifespans.
-//
-// Each particle has persistent (position, velocity) state in its own
-// storage buffer. Every frame:
-//   1. Lazy-init on first run (age < 0 sentinel).
-//   2. Advance age; if past its (hash-randomized) lifespan the particle is
-//      "dead" — the slot's `MeshCullingData.dead` flag is set so the
-//      preprocessing pass skips it entirely and it disappears from the
-//      indirect draw. After a short respawn delay it re-initializes at a
-//      new random position.
-//   3. For alive particles, force toward `mouse_world_pos` (1/r^2 falloff,
-//      clamped), Verlet-ish integration with linear drag.
-//   4. Write `world_from_local` to bevy's shared input buffer and a
-//      per-slot `MeshCullingData`.
+// GPU particles simulation: mouse attractor with per-particle lifespans.
 
 struct MeshInput {
     world_from_local: mat3x4<f32>,
@@ -33,17 +19,13 @@ struct MeshCullingData {
     aabb_center: vec3<f32>,
     _pad: f32,
     aabb_half_extents: vec3<f32>,
-    // Dead-slot flag: 0.0 = alive (render normally), nonzero = dead (the
-    // preprocessing pass skips this slot and it does not contribute to the
-    // GPU-derived indirect draw instance count).
+    // 0.0 = alive, nonzero = skip in preprocessing.
     dead: f32,
 }
 
 struct ParticleState {
-    // xyz = world position, w = age (in seconds). Age < 0 means
-    // uninitialized — first dispatch seeds the state.
+    // xyz = world position, w = age (s). w < 0 = uninitialized.
     pos: vec4<f32>,
-    // xyz = world velocity, w = unused (padding).
     vel: vec4<f32>,
 }
 
@@ -60,8 +42,6 @@ struct Params {
 @group(0) @binding(2) var<storage, read_write> particle_state: array<ParticleState>;
 @group(0) @binding(3) var<uniform> params: Params;
 
-// Cheap hash-based PRNG for init. Not high-quality, but deterministic
-// and enough for particle spawning.
 fn hash(n: u32) -> u32 {
     var x = n;
     x = (x ^ 61u) ^ (x >> 16u);
@@ -84,11 +64,8 @@ fn hash_vec3(n: u32) -> vec3<f32> {
     );
 }
 
-// Alive duration per particle is `ALIVE_MIN + hash * ALIVE_RANGE` seconds.
 const ALIVE_MIN: f32 = 1.5;
 const ALIVE_RANGE: f32 = 2.5;
-// After dying, a particle stays hidden for this long before respawning at a
-// fresh hash-driven position.
 const RESPAWN_DELAY: f32 = 0.4;
 
 @compute @workgroup_size(64)
@@ -103,10 +80,7 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let lifespan = ALIVE_MIN + hash_float(i ^ 0xabcd1234u) * ALIVE_RANGE;
 
-    // First-time init (age < 0 sentinel) or respawn after the death window.
     if state.pos.w < 0.0 || state.pos.w >= lifespan + RESPAWN_DELAY {
-        // Mix `params.time` into the seed on respawn so each cycle places
-        // the particle somewhere new. Scaled to a stable integer.
         let seed_key = i ^ u32(params.time * 997.0);
         let seed = hash_vec3(seed_key) * 9.0;
         state.pos = vec4<f32>(seed, 0.0);
@@ -128,15 +102,11 @@ fn simulate(@builtin(global_invocation_id) gid: vec3<u32>) {
             state.pos.w + params.dt,
         );
     } else {
-        // Dead — just advance age toward the respawn window, no physics.
         state.pos.w += params.dt;
     }
 
     particle_state[i] = state;
 
-    // Orient the billboard toward the mouse. For dead particles this is
-    // unused (preprocessing will skip the slot), but we compute it anyway so
-    // the transform write below is unconditional.
     let to_mouse = params.mouse_world_pos.xyz - state.pos.xyz;
     let dist = max(length(to_mouse), 1e-4);
     let forward = to_mouse / dist;

@@ -1,19 +1,5 @@
-//! GPU-authored instance batches: end-to-end example with mouse-driven
-//! fluid-ish simulation.
-//!
-//! Demonstrates the [`GpuBatchedMesh3d`] API — rendering many mesh
-//! instances whose per-instance transforms are authored on the GPU
-//! rather than extracted from ECS entities on the CPU. Each particle
-//! keeps persistent (position, velocity) state in a user-owned storage
-//! buffer; the compute shader applies a force toward the mouse cursor
-//! and integrates position each frame.
-//!
-//! Move the mouse — particles swarm toward the cursor.
-//!
-//! # Requirements
-//!
-//! Requires GPU preprocessing (compute shaders). The plugin warns and
-//! does nothing on unsupported devices (e.g. WebGL).
+//! GPU-authored instance batches: a particle swarm whose transforms are
+//! written by a compute shader. Move the mouse to attract the particles.
 
 use std::borrow::Cow;
 
@@ -49,7 +35,6 @@ use bevy::{
 const SHADER_ASSET_PATH: &str = "shaders/gpu_particles_simulate.wgsl";
 const WORKGROUP_SIZE: u32 = 64;
 const PARTICLES_PER_EMITTER: u32 = 4096;
-/// Size of `ParticleState` in the WGSL: two `vec4<f32>` = 32 bytes.
 const PARTICLE_STATE_SIZE: u64 = 32;
 
 fn main() {
@@ -62,10 +47,6 @@ fn main() {
         .add_systems(Update, update_mouse_world_pos)
         .run();
 }
-
-// ---------------------------------------------------------------------------
-// Main world: scene + mouse unprojection.
-// ---------------------------------------------------------------------------
 
 #[derive(Resource, Default, Clone, Copy, ExtractResource)]
 struct MouseWorldPos(Vec3);
@@ -86,8 +67,6 @@ fn setup(
         Transform::from_xyz(0.0, -2.0, 0.0),
     ));
 
-    // Obstacle in the swarm area: particles passing behind it should be
-    // depth-occluded, confirming batches hit the depth-tested pipeline.
     commands.spawn((
         Mesh3d(meshes.add(Cuboid::new(1.5, 4.0, 1.5))),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -168,8 +147,6 @@ fn setup(
 #[derive(Component)]
 struct MainCamera;
 
-/// Casts a ray from the mouse cursor through the camera and intersects
-/// with the y=0 plane to produce a world-space attractor position.
 fn update_mouse_world_pos(
     windows: Query<&Window>,
     camera: Single<(&Camera, &GlobalTransform), With<MainCamera>>,
@@ -185,7 +162,6 @@ fn update_mouse_world_pos(
     let Ok(ray) = camera.viewport_to_world(camera_transform, cursor) else {
         return;
     };
-    // Intersect with y=0 plane.
     if ray.direction.y.abs() < 1e-4 {
         return;
     }
@@ -194,10 +170,6 @@ fn update_mouse_world_pos(
         mouse_pos.0 = ray.origin + ray.direction * t;
     }
 }
-
-// ---------------------------------------------------------------------------
-// Compute plugin: pipeline + state buffer + per-frame bind groups + dispatch.
-// ---------------------------------------------------------------------------
 
 struct GpuParticlesSimulationPlugin;
 
@@ -236,7 +208,6 @@ struct ParticleSimParams {
     mouse_world_pos: Vec4,
 }
 
-/// Per-batch persistent `(position, velocity)` state, lazily allocated.
 #[derive(Resource, Default)]
 struct ParticleStateBuffers {
     per_batch: MainEntityHashMap<Buffer>,
@@ -262,13 +233,9 @@ fn init_particle_sim_pipeline(
         &BindGroupLayoutEntries::sequential(
             ShaderStages::COMPUTE,
             (
-                // (0) Bevy's shared `MeshInputUniform` buffer.
                 storage_buffer_sized(false, None),
-                // (1) Bevy's shared `MeshCullingData` buffer.
                 storage_buffer_sized(false, None),
-                // (2) Per-particle state (owned by this example).
                 storage_buffer_sized(false, None),
-                // (3) Per-dispatch parameters.
                 uniform_buffer::<ParticleSimParams>(false),
             ),
         ),
@@ -330,8 +297,7 @@ fn prepare_particle_sim_bind_groups(
                     usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 });
-                // Seed `pos.w = -1.0` so the shader runs its first-dispatch
-                // init path and scatters slots into a sphere.
+                // Seed `pos.w = -1.0` to trigger the shader's init path.
                 let mut seed =
                     vec![0u8; reservation.max_capacity as usize * PARTICLE_STATE_SIZE as usize];
                 for i in 0..reservation.max_capacity as usize {
