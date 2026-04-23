@@ -916,9 +916,7 @@ impl ViewTarget {
         self.main_texture_format
     }
 
-    /// The final texture this view will render to, if an output surface is
-    /// available this frame. Returns `None` when the render target is attached
-    /// but its output surface couldn't be acquired (e.g. occluded swap chain).
+    /// The final texture this view will render to.
     #[inline]
     pub fn out_texture(&self) -> Option<&TextureView> {
         self.out_texture.as_ref().map(|t| &t.view)
