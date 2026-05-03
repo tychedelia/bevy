@@ -76,6 +76,9 @@ pub fn derive_as_bind_group(ast: syn::DeriveInput) -> Result<TokenStream> {
     let mut non_bindless_binding_layouts = Vec::new();
     let mut bindless_resource_types = Vec::new();
     let mut bindless_buffer_descriptors = Vec::new();
+    let mut optional_storage_binding_indices: Vec<u32> = Vec::new();
+    let mut optional_storage_field_names: Vec<Ident> = Vec::new();
+    let mut optional_storage_layout_entries: Vec<proc_macro2::TokenStream> = Vec::new();
     // Whether this material needs buffer binding arrays (BUFFER_BINDING_ARRAY feature).
     // False when only #[data(...)], textures, and samplers are used.
     // NOTE: When wgpu adds support for buffer binding arrays on Metal
@@ -461,8 +464,33 @@ pub fn derive_as_bind_group(ast: syn::DeriveInput) -> Result<TokenStream> {
                         visibility.hygienic_quote(&quote! { #render_path::render_resource });
 
                     let field_name = field.ident.as_ref().unwrap();
+                    let is_optional = is_option_type(&field.ty);
 
-                    if buffer {
+                    if is_optional && buffer {
+                        return Err(Error::new_spanned(
+                            attr,
+                            "Optional storage bindings with `buffer` flag are not supported",
+                        ));
+                    }
+
+                    if is_optional {
+                        let layout_entry = quote! {
+                            #render_path::render_resource::BindGroupLayoutEntry {
+                                binding: #binding_index,
+                                visibility: #visibility,
+                                ty: #render_path::render_resource::BindingType::Buffer {
+                                    ty: #render_path::render_resource::BufferBindingType::Storage { read_only: #read_only },
+                                    has_dynamic_offset: false,
+                                    min_binding_size: None,
+                                },
+                                count: #actual_bindless_slot_count,
+                            }
+                        };
+
+                        optional_storage_binding_indices.push(binding_index);
+                        optional_storage_field_names.push(field_name.clone());
+                        optional_storage_layout_entries.push(layout_entry);
+                    } else if buffer {
                         binding_impls.push(quote! {
                             (
                                 #binding_index,
@@ -483,20 +511,22 @@ pub fn derive_as_bind_group(ast: syn::DeriveInput) -> Result<TokenStream> {
                         });
                     }
 
-                    non_bindless_binding_layouts.push(quote! {
-                        #bind_group_layout_entries.push(
-                            #render_path::render_resource::BindGroupLayoutEntry {
-                                binding: #binding_index,
-                                visibility: #visibility,
-                                ty: #render_path::render_resource::BindingType::Buffer {
-                                    ty: #render_path::render_resource::BufferBindingType::Storage { read_only: #read_only },
-                                    has_dynamic_offset: false,
-                                    min_binding_size: #FQOption::None,
-                                },
-                                count: #actual_bindless_slot_count,
-                            }
-                        );
-                    });
+                    if !is_optional {
+                        non_bindless_binding_layouts.push(quote! {
+                            #bind_group_layout_entries.push(
+                                #render_path::render_resource::BindGroupLayoutEntry {
+                                    binding: #binding_index,
+                                    visibility: #visibility,
+                                    ty: #render_path::render_resource::BindingType::Buffer {
+                                        ty: #render_path::render_resource::BufferBindingType::Storage { read_only: #read_only },
+                                        has_dynamic_offset: false,
+                                        min_binding_size: #FQOption::None,
+                                    },
+                                    count: #actual_bindless_slot_count,
+                                }
+                            );
+                        });
+                    }
 
                     if let Some(binding_array_binding) = binding_array_binding {
                         // Add the storage buffer to the `BindlessResourceType` list
@@ -1065,6 +1095,27 @@ pub fn derive_as_bind_group(ast: syn::DeriveInput) -> Result<TokenStream> {
             ),
         };
 
+    let instance_layout_method = if !optional_storage_field_names.is_empty() {
+        quote! {
+            fn instance_bind_group_layout_entries(
+                &self,
+                render_device: &#render_path::renderer::RenderDevice,
+                force_no_bindless: bool,
+            ) -> Vec<#render_path::render_resource::BindGroupLayoutEntry> {
+                let mut entries = Self::bind_group_layout_entries(render_device, force_no_bindless);
+                #(
+                    if self.#optional_storage_field_names.is_some() {
+                        #actual_bindless_slot_count_declaration
+                        entries.push(#optional_storage_layout_entries);
+                    }
+                )*
+                entries
+            }
+        }
+    } else {
+        quote! {}
+    };
+
     Ok(TokenStream::from(quote! {
         #(#field_struct_impls)*
 
@@ -1092,7 +1143,18 @@ pub fn derive_as_bind_group(ast: syn::DeriveInput) -> Result<TokenStream> {
             ) -> #FQResult<#render_path::render_resource::UnpreparedBindGroup, #render_path::render_resource::AsBindGroupError> {
                 #uniform_binding_type_declarations
 
-                let bindings = #render_path::render_resource::BindingResources(::std::vec![#(#binding_impls,)*]);
+                let mut bindings = #render_path::render_resource::BindingResources(::std::vec![#(#binding_impls,)*]);
+
+                #(
+                    if let Some(ref handle) = self.#optional_storage_field_names {
+                        bindings.0.push((
+                            #optional_storage_binding_indices,
+                            #render_path::render_resource::OwnedBindingResource::Buffer(
+                                storage_buffers.get(handle).ok_or_else(|| #render_path::render_resource::AsBindGroupError::RetryNextUpdate)?.buffer.clone()
+                            )
+                        ));
+                    }
+                )*
 
                 #FQResult::Ok(#render_path::render_resource::UnpreparedBindGroup {
                     bindings,
@@ -1139,6 +1201,8 @@ pub fn derive_as_bind_group(ast: syn::DeriveInput) -> Result<TokenStream> {
             fn bindless_descriptor() -> #FQOption<#render_path::render_resource::BindlessDescriptor> {
                 #bindless_descriptor_syntax
             }
+
+            #instance_layout_method
         }
     }))
 }
@@ -1807,6 +1871,15 @@ struct StorageAttrs {
 
 const READ_ONLY: Symbol = Symbol("read_only");
 const BUFFER: Symbol = Symbol("buffer");
+
+fn is_option_type(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(type_path) = ty {
+        if let Some(segment) = type_path.path.segments.last() {
+            return segment.ident == "Option";
+        }
+    }
+    false
+}
 
 fn get_storage_binding_attr(metas: Vec<Meta>) -> Result<StorageAttrs> {
     let mut visibility = ShaderStageVisibility::vertex_fragment();

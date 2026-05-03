@@ -277,6 +277,32 @@ impl<B: Material, E: MaterialExtension> AsBindGroup for ExtendedMaterial<B, E> {
             .collect()
     }
 
+    fn instance_bind_group_layout_entries(
+        &self,
+        render_device: &RenderDevice,
+        mut force_non_bindless: bool,
+    ) -> Vec<BindGroupLayoutEntry>
+    where
+        Self: Sized,
+    {
+        force_non_bindless = force_non_bindless || Self::bindless_slot_count().is_none();
+
+        let base_entries = self
+            .base
+            .instance_bind_group_layout_entries(render_device, force_non_bindless);
+        let extension_entries = self
+            .extension
+            .instance_bind_group_layout_entries(render_device, force_non_bindless);
+
+        let mut seen_bindings = HashSet::<u32>::with_hasher(FixedHasher);
+
+        base_entries
+            .into_iter()
+            .chain(extension_entries)
+            .filter(|entry| seen_bindings.insert(entry.binding))
+            .collect()
+    }
+
     fn bindless_descriptor() -> Option<BindlessDescriptor> {
         // We're going to combine the two bindless descriptors.
         let base_bindless_descriptor = B::bindless_descriptor()?;

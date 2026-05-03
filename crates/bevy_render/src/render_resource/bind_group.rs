@@ -601,6 +601,35 @@ pub trait AsBindGroup {
         }
     }
 
+    /// Instance-aware bind group layout entries. Types with optional storage
+    /// bindings (`Option<Handle<ShaderBuffer>>`) override this to exclude
+    /// entries for `None` fields. The default forwards to the type-level
+    /// [`Self::bind_group_layout_entries`].
+    fn instance_bind_group_layout_entries(
+        &self,
+        render_device: &RenderDevice,
+        force_no_bindless: bool,
+    ) -> Vec<BindGroupLayoutEntry>
+    where
+        Self: Sized,
+    {
+        Self::bind_group_layout_entries(render_device, force_no_bindless)
+    }
+
+    /// Instance-aware bind group layout descriptor.
+    fn instance_bind_group_layout_descriptor(
+        &self,
+        render_device: &RenderDevice,
+    ) -> BindGroupLayoutDescriptor
+    where
+        Self: Sized,
+    {
+        BindGroupLayoutDescriptor {
+            label: Self::label().into(),
+            entries: self.instance_bind_group_layout_entries(render_device, false),
+        }
+    }
+
     /// Returns a vec of bind group layout entries.
     ///
     /// Set `force_no_bindless` to true to require that bindless textures *not*
