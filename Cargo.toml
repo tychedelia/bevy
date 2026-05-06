@@ -3181,6 +3181,17 @@ category = "Shaders"
 wasm = false
 
 [[example]]
+name = "compute_vertex_displacement"
+path = "examples/shader_advanced/compute_vertex_displacement.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.compute_vertex_displacement]
+name = "Compute Vertex Displacement"
+description = "A compute shader displaces vertex positions on a mesh with per-attribute vertex buffer bindings"
+category = "Shaders"
+wasm = false
+
+[[example]]
 name = "array_texture"
 path = "examples/shader/array_texture.rs"
 doc-scrape-examples = true

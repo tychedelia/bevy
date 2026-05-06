@@ -72,6 +72,9 @@ pub struct RenderMesh {
     /// Combined with [`RenderMesh::buffer_info`], this specifies the complete
     /// layout of the buffers associated with this mesh.
     pub layout: MeshVertexBufferLayoutRef,
+
+    /// The number of vertex buffer bindings (GPU buffer slots) this mesh uses.
+    pub binding_count: u8,
 }
 
 impl RenderMesh {
@@ -205,11 +208,14 @@ impl RenderAsset for RenderMesh {
             );
         }
 
+        let binding_count = mesh_vertex_buffer_layout.0.binding_count() as u8;
+
         Ok(RenderMesh {
             vertex_count: mesh.count_vertices() as u32,
             buffer_info,
             key_bits,
             layout: mesh_vertex_buffer_layout,
+            binding_count,
         })
     }
 

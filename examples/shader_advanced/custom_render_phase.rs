@@ -191,7 +191,7 @@ impl SpecializedMeshPipeline for StencilPipeline {
             vertex_attributes.push(Mesh::ATTRIBUTE_POSITION.at_shader_location(0));
         }
         // This will automatically generate the correct `VertexBufferLayout` based on the vertex attributes
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layout(&vertex_attributes)?;
         let view_layout = self
             .mesh_pipeline
             .get_view_layout(MeshPipelineViewLayoutKey::from(key));
@@ -209,7 +209,7 @@ impl SpecializedMeshPipeline for StencilPipeline {
             ],
             vertex: VertexState {
                 shader: self.shader_handle.clone(),
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment: Some(FragmentState {
@@ -373,8 +373,8 @@ impl GetBatchData for StencilPipeline {
         };
         let mesh_instance = mesh_instances.get(&main_entity)?;
         let first_vertex_index =
-            match mesh_allocator.mesh_vertex_slice(&mesh_instance.mesh_asset_id()) {
-                Some(mesh_vertex_slice) => mesh_vertex_slice.range.start,
+            match mesh_allocator.mesh_base_vertex(&mesh_instance.mesh_asset_id()) {
+                Some(base_vertex) => base_vertex,
                 None => 0,
             };
         let mesh_uniform = {
@@ -438,8 +438,8 @@ impl GetFullBatchData for StencilPipeline {
         };
         let mesh_instance = mesh_instances.get(&main_entity)?;
         let first_vertex_index =
-            match mesh_allocator.mesh_vertex_slice(&mesh_instance.mesh_asset_id()) {
-                Some(mesh_vertex_slice) => mesh_vertex_slice.range.start,
+            match mesh_allocator.mesh_base_vertex(&mesh_instance.mesh_asset_id()) {
+                Some(base_vertex) => base_vertex,
                 None => 0,
             };
 

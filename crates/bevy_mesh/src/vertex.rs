@@ -69,6 +69,61 @@ impl MeshVertexAttribute {
     pub const fn at_shader_location(&self, shader_location: u32) -> VertexAttributeDescriptor {
         VertexAttributeDescriptor::new(shader_location, self.id, self.name)
     }
+
+    /// Pair this attribute with a vertex buffer index for use with
+    /// [`Mesh::insert_attribute`](crate::Mesh::insert_attribute).
+    ///
+    /// Attributes with the same buffer index will be interleaved in a single
+    /// GPU buffer. Attributes with different buffer indices will be placed in
+    /// separate buffers. Attributes without an explicit buffer default to
+    /// buffer 0.
+    ///
+    /// The buffer index is a grouping key — the actual GPU vertex buffer slots
+    /// are assigned in sorted order of the unique buffer indices. 
+    pub const fn in_buffer(self, buffer: u8) -> BufferedVertexAttribute {
+        BufferedVertexAttribute {
+            attribute: self,
+            buffer,
+        }
+    }
+}
+
+/// A vertex attribute paired with an explicit buffer index.
+///
+/// Created via [`MeshVertexAttribute::in_buffer`]. When passed to
+/// [`Mesh::insert_attribute`](crate::Mesh::insert_attribute), the attribute
+/// will share a GPU buffer with other attributes that have the same buffer
+/// index, rather than the default buffer 0.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BufferedVertexAttribute {
+    pub attribute: MeshVertexAttribute,
+    pub buffer: u8,
+}
+
+/// Trait allowing [`Mesh::insert_attribute`](crate::Mesh::insert_attribute)
+/// to accept both [`MeshVertexAttribute`] (defaults to buffer 0) and
+/// [`BufferedVertexAttribute`] (explicit buffer).
+pub trait IntoVertexAttributeBuffer {
+    fn attribute(&self) -> MeshVertexAttribute;
+    fn buffer_group(&self) -> u8;
+}
+
+impl IntoVertexAttributeBuffer for MeshVertexAttribute {
+    fn attribute(&self) -> MeshVertexAttribute {
+        *self
+    }
+    fn buffer_group(&self) -> u8 {
+        0
+    }
+}
+
+impl IntoVertexAttributeBuffer for BufferedVertexAttribute {
+    fn attribute(&self) -> MeshVertexAttribute {
+        self.attribute
+    }
+    fn buffer_group(&self) -> u8 {
+        self.buffer
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -81,66 +136,132 @@ impl From<MeshVertexAttribute> for MeshVertexAttributeId {
     }
 }
 
+/// A single vertex buffer binding slot. Contains one or more interleaved
+/// attributes that share a single GPU buffer. Maps to one
+/// `VkVertexInputBindingDescription` in Vulkan or one entry in
+/// `GPUVertexState.buffers` in WebGPU.
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct VertexBinding {
+    /// The attribute IDs in this binding, in order.
+    pub attribute_ids: Vec<MeshVertexAttributeId>,
+    /// The wgpu vertex buffer layout for this binding.
+    pub layout: VertexBufferLayout,
+}
+
+impl VertexBinding {
+    /// Returns the byte offset of the given attribute within this binding's
+    /// vertex stride, or `None` if the attribute is not in this binding.
+    pub fn attribute_offset(&self, attribute_id: impl Into<MeshVertexAttributeId>) -> Option<u64> {
+        let id = attribute_id.into();
+        let index = self.attribute_ids.iter().position(|a| *a == id)?;
+        Some(self.layout.attributes[index].offset)
+    }
+}
+
+/// Describes the complete vertex buffer layout for a mesh, potentially spanning
+/// multiple vertex bindings (GPU buffer slots).
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub struct MeshVertexBufferLayout {
-    pub(crate) attribute_ids: Vec<MeshVertexAttributeId>,
-    pub(crate) layout: VertexBufferLayout,
+    /// Per-binding information, ordered by binding index (0, 1, 2, ...).
+    pub(crate) bindings: Vec<VertexBinding>,
 }
 
 impl MeshVertexBufferLayout {
+    /// Creates a new layout with a single binding containing all the given
+    /// attributes.
     pub fn new(attribute_ids: Vec<MeshVertexAttributeId>, layout: VertexBufferLayout) -> Self {
         Self {
-            attribute_ids,
-            layout,
+            bindings: vec![VertexBinding {
+                attribute_ids,
+                layout,
+            }],
         }
     }
 
+    /// Creates a new layout from multiple bindings.
+    pub fn with_bindings(bindings: Vec<VertexBinding>) -> Self {
+        Self { bindings }
+    }
+
+    /// Returns the number of vertex bindings (GPU buffer slots).
+    #[inline]
+    pub fn binding_count(&self) -> usize {
+        self.bindings.len()
+    }
+
+    /// Returns the bindings.
+    #[inline]
+    pub fn bindings(&self) -> &[VertexBinding] {
+        &self.bindings
+    }
+
+    /// Returns true if any binding contains the given attribute.
     #[inline]
     pub fn contains(&self, attribute_id: impl Into<MeshVertexAttributeId>) -> bool {
-        self.attribute_ids.contains(&attribute_id.into())
+        let id = attribute_id.into();
+        self.bindings
+            .iter()
+            .any(|binding| binding.attribute_ids.contains(&id))
     }
 
-    #[inline]
-    pub fn attribute_ids(&self) -> &[MeshVertexAttributeId] {
-        &self.attribute_ids
+    /// Returns the binding index (slot) that contains the given attribute.
+    pub fn binding_index_for_attribute(
+        &self,
+        attribute_id: impl Into<MeshVertexAttributeId>,
+    ) -> Option<usize> {
+        let id = attribute_id.into();
+        self.bindings
+            .iter()
+            .position(|binding| binding.attribute_ids.contains(&id))
     }
 
-    #[inline]
-    pub fn layout(&self) -> &VertexBufferLayout {
-        &self.layout
-    }
-
+    /// Builds [`VertexBufferLayout`]s for the requested attributes, one per
+    /// binding. The returned `Vec` always has `self.bindings.len()` entries to
+    /// preserve index correspondence with GPU vertex buffer slots.
+    ///
+    /// Each binding's `array_stride` and `offset`s are preserved. The
+    /// `shader_location` for each attribute comes from the corresponding
+    /// [`VertexAttributeDescriptor`].
     pub fn get_layout(
         &self,
         attribute_descriptors: &[VertexAttributeDescriptor],
-    ) -> Result<VertexBufferLayout, MissingVertexAttributeError> {
-        let mut attributes = Vec::with_capacity(attribute_descriptors.len());
-        for attribute_descriptor in attribute_descriptors {
-            if let Some(index) = self
-                .attribute_ids
-                .iter()
-                .position(|id| *id == attribute_descriptor.id)
-            {
-                let layout_attribute = &self.layout.attributes[index];
-                attributes.push(VertexAttribute {
-                    format: layout_attribute.format,
-                    offset: layout_attribute.offset,
-                    shader_location: attribute_descriptor.shader_location,
-                });
-            } else {
+    ) -> Result<Vec<VertexBufferLayout>, MissingVertexAttributeError> {
+        // Verify all requested attributes exist in some binding.
+        for descriptor in attribute_descriptors {
+            if !self.contains(descriptor.id) {
                 return Err(MissingVertexAttributeError {
-                    id: attribute_descriptor.id,
-                    name: attribute_descriptor.name,
+                    id: descriptor.id,
+                    name: descriptor.name,
                     pipeline_type: None,
                 });
             }
         }
 
-        Ok(VertexBufferLayout {
-            array_stride: self.layout.array_stride,
-            step_mode: self.layout.step_mode,
-            attributes,
-        })
+        let mut result = Vec::with_capacity(self.bindings.len());
+        for binding in &self.bindings {
+            let mut attributes = Vec::new();
+            for descriptor in attribute_descriptors {
+                if let Some(index) = binding
+                    .attribute_ids
+                    .iter()
+                    .position(|id| *id == descriptor.id)
+                {
+                    let layout_attribute = &binding.layout.attributes[index];
+                    attributes.push(VertexAttribute {
+                        format: layout_attribute.format,
+                        offset: layout_attribute.offset,
+                        shader_location: descriptor.shader_location,
+                    });
+                }
+            }
+            result.push(VertexBufferLayout {
+                array_stride: binding.layout.array_stride,
+                step_mode: binding.layout.step_mode,
+                attributes,
+            });
+        }
+
+        Ok(result)
     }
 }
 

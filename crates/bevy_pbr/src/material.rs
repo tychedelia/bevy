@@ -1109,6 +1109,7 @@ pub(crate) fn specialize_material_meshes(
 pub fn queue_material_meshes(
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_meshes: Res<RenderAssets<RenderMesh>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
@@ -1209,7 +1210,11 @@ pub fn queue_material_meshes(
             };
 
             // Fetch the slabs that this mesh resides in.
-            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id()) else {
+            let mesh_asset_id = mesh_instance.mesh_asset_id();
+            let binding_count = render_meshes
+                .get(mesh_asset_id)
+                .map_or(1, |m| m.binding_count);
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count) else {
                 continue;
             };
 

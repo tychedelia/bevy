@@ -2253,6 +2253,7 @@ pub(crate) fn specialize_shadows(
 /// appropriate.
 pub fn queue_shadows(
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mut shadow_render_phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
@@ -2367,7 +2368,11 @@ pub fn queue_shadows(
                     Some(material.binding.group.0)
                 };
 
-                let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id())
+                let mesh_asset_id = mesh_instance.mesh_asset_id();
+                let binding_count = render_meshes
+                    .get(mesh_asset_id)
+                    .map_or(1, |m| m.binding_count);
+                let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count)
                 else {
                     continue;
                 };
@@ -2430,7 +2435,7 @@ pub struct ShadowBatchSetKey {
     /// The IDs of the slabs of GPU memory in the mesh allocator that contain
     /// the mesh data.
     ///
-    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_id`] with
+    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_ids`] with
     /// 0 if your items can be multi-drawn, or with a unique value if they
     /// can't.
     pub slabs: MeshSlabs,

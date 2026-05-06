@@ -269,7 +269,7 @@ fn compute_mesh(
         // can contain more data than just the mesh we're asking for.
         // That's why there is a range field.
         // You should *not* touch data in these buffers that is outside of the range.
-        let vertex_buffer_slice = mesh_allocator.mesh_vertex_slice(mesh_id).unwrap();
+        let vertex_buffer_slice = mesh_allocator.mesh_vertex_slice(mesh_id, 0).unwrap();
         let index_buffer_slice = mesh_allocator.mesh_index_slice(mesh_id).unwrap();
 
         let first = DataRanges {
