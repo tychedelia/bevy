@@ -1509,7 +1509,7 @@ impl RenderMeshInstanceGpuBuilder {
         self.shared.material_bindings_index = mesh_material_binding_id;
 
         let (first_vertex_index, vertex_count) =
-            match mesh_allocator.mesh_vertex_slice(&self.shared.asset_id.into()) {
+            match mesh_allocator.mesh_vertex_slice(&self.shared.asset_id.into(), 0) {
                 Some(mesh_vertex_slice) => (
                     mesh_vertex_slice.range.start,
                     mesh_vertex_slice.range.end - mesh_vertex_slice.range.start,
@@ -2880,7 +2880,7 @@ pub fn get_image_texture<'a>(
 }
 
 /// Data that must be identical for meshes to be multi-drawn together.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct MeshBatchSetCompareData {
     /// The bind group for the material.
     material_bind_group_index: MaterialBindGroupIndex,
@@ -2894,6 +2894,7 @@ impl GetBatchData for MeshPipeline {
     type Param = (
         SRes<RenderMeshInstances>,
         SRes<RenderLightmaps>,
+        SRes<RenderAssets<RenderMesh>>,
         SRes<MeshAllocator>,
         SRes<SkinUniforms>,
         SRes<MorphIndices>,
@@ -2904,7 +2905,7 @@ impl GetBatchData for MeshPipeline {
     type BufferData = MeshUniform;
 
     fn get_batch_data(
-        (mesh_instances, lightmaps, mesh_allocator, skin_uniforms, morph_indices): &SystemParamItem<
+        (mesh_instances, lightmaps, meshes, mesh_allocator, skin_uniforms, morph_indices): &SystemParamItem<
             Self::Param,
         >,
         (_entity, main_entity): (Entity, MainEntity),
@@ -2921,11 +2922,9 @@ impl GetBatchData for MeshPipeline {
         };
         let mesh_instance = mesh_instances.get(&main_entity)?;
         let mesh_asset_id = mesh_instance.mesh_asset_id();
-        let first_vertex_index = match mesh_allocator.mesh_vertex_slice(&mesh_asset_id) {
-            Some(mesh_vertex_slice) => mesh_vertex_slice.range.start,
-            None => 0,
-        };
-        let mesh_slabs = mesh_allocator.mesh_slabs(&mesh_asset_id)?;
+        let first_vertex_index = mesh_allocator.mesh_base_vertex(&mesh_asset_id).unwrap_or(0);
+        let gpu_mesh = meshes.get(mesh_asset_id)?;
+        let mesh_slabs = mesh_allocator.mesh_slabs(&mesh_asset_id, gpu_mesh.binding_count)?;
         let maybe_lightmap = lightmaps.render_lightmaps.get(&main_entity);
 
         let current_skin_index = skin_uniforms.skin_index(main_entity);
@@ -2963,7 +2962,7 @@ impl GetFullBatchData for MeshPipeline {
     type BufferInputData = MeshInputUniform;
 
     fn get_index_and_compare_data(
-        (mesh_instances, lightmaps, mesh_allocator, _, _): &SystemParamItem<Self::Param>,
+        (mesh_instances, lightmaps, meshes, mesh_allocator, _, _): &SystemParamItem<Self::Param>,
         main_entity: MainEntity,
     ) -> Option<(
         NonMaxU32,
@@ -2979,7 +2978,9 @@ impl GetFullBatchData for MeshPipeline {
         };
 
         let mesh_instance = mesh_instances.get(&main_entity)?;
-        let mesh_slabs = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id())?;
+        let gpu_mesh = meshes.get(mesh_instance.mesh_asset_id())?;
+        let mesh_slabs =
+            mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id(), gpu_mesh.binding_count)?;
         let maybe_lightmap = lightmaps.render_lightmaps.get(&main_entity);
         let material_bind_group_index = mesh_instance.material_bindings_index();
 
@@ -2997,7 +2998,7 @@ impl GetFullBatchData for MeshPipeline {
     }
 
     fn get_binned_batch_data(
-        (mesh_instances, lightmaps, mesh_allocator, skin_uniforms, morph_indices): &SystemParamItem<
+        (mesh_instances, lightmaps, _, mesh_allocator, skin_uniforms, morph_indices): &SystemParamItem<
             Self::Param,
         >,
         main_entity: MainEntity,
@@ -3010,10 +3011,7 @@ impl GetFullBatchData for MeshPipeline {
         };
         let mesh_instance = mesh_instances.get(&main_entity)?;
         let mesh_asset_id = mesh_instance.mesh_asset_id();
-        let first_vertex_index = match mesh_allocator.mesh_vertex_slice(&mesh_asset_id) {
-            Some(mesh_vertex_slice) => mesh_vertex_slice.range.start,
-            None => 0,
-        };
+        let first_vertex_index = mesh_allocator.mesh_base_vertex(&mesh_asset_id).unwrap_or(0);
         let maybe_lightmap = lightmaps.render_lightmaps.get(&main_entity);
 
         let current_skin_index = skin_uniforms.skin_index(main_entity);
@@ -3036,7 +3034,7 @@ impl GetFullBatchData for MeshPipeline {
     }
 
     fn get_binned_index(
-        (mesh_instances, _, _, _, _): &SystemParamItem<Self::Param>,
+        (mesh_instances, _, _, _, _, _): &SystemParamItem<Self::Param>,
         main_entity: MainEntity,
     ) -> Option<NonMaxU32> {
         // This should only be called during GPU building.
@@ -4716,11 +4714,23 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {
             return RenderCommandResult::Skip;
         };
-        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(&mesh_asset_id) else {
+        // Bind all vertex buffer bindings.
+        let binding_count = gpu_mesh.layout.0.binding_count();
+        let Some(base_vertex) = mesh_allocator.mesh_base_vertex(&mesh_asset_id) else {
             return RenderCommandResult::Skip;
         };
-
-        pass.set_vertex_buffer(0, vertex_buffer_slice.buffer.slice(..));
+        let mut vertex_range = 0..0u32;
+        for binding_index in 0..binding_count {
+            let Some(vertex_buffer_slice) =
+                mesh_allocator.mesh_vertex_slice(&mesh_asset_id, binding_index as u8)
+            else {
+                return RenderCommandResult::Skip;
+            };
+            if binding_index == 0 {
+                vertex_range = vertex_buffer_slice.range.clone();
+            }
+            pass.set_vertex_buffer(binding_index, vertex_buffer_slice.buffer.slice(..));
+        }
 
         let batch_range = item.batch_range();
 
@@ -4744,7 +4754,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
                         pass.draw_indexed(
                             index_buffer_slice.range.start
                                 ..(index_buffer_slice.range.start + *count),
-                            vertex_buffer_slice.range.start as i32,
+                            base_vertex as i32,
                             batch_range.clone(),
                         );
                     }
@@ -4814,7 +4824,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
             RenderMeshBufferInfo::NonIndexed => match item.extra_index() {
                 PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {
-                    pass.draw(vertex_buffer_slice.range, batch_range.clone());
+                    pass.draw(vertex_range.clone(), batch_range.clone());
                 }
                 PhaseItemExtraIndex::IndirectParametersIndex {
                     range: indirect_parameters_range,

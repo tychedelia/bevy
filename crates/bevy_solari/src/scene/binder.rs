@@ -156,7 +156,7 @@ pub fn prepare_raytracing_scene_bindings(
         let Some(blas) = blas_manager.get(&mesh.id()) else {
             continue;
         };
-        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&mesh.id()) else {
+        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&mesh.id(), 0) else {
             continue;
         };
         let Some(index_slice) = mesh_allocator.mesh_index_slice(&mesh.id()) else {

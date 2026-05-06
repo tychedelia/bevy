@@ -341,8 +341,10 @@ pub fn volumetric_fog(
             fog_assets.plane_mesh.clone()
         };
 
-        let Some(vertex_buffer_slice) = mesh_allocator.mesh_vertex_slice(&mesh_handle.id()) else {
-            continue;
+        // This should always succeed, but if the asset was unloaded don't
+        // panic.
+        let Some(render_mesh) = render_meshes.get(&mesh_handle) else {
+            return;
         };
 
         let density_image = view_fog_volume
@@ -355,12 +357,6 @@ pub fn volumetric_fog(
             textured_pipeline
         } else {
             textureless_pipeline
-        };
-
-        // This should always succeed, but if the asset was unloaded don't
-        // panic.
-        let Some(render_mesh) = render_meshes.get(&mesh_handle) else {
-            return;
         };
 
         // Create the bind group for the view.
@@ -416,7 +412,25 @@ pub fn volumetric_fog(
         let command_encoder = ctx.command_encoder();
         let mut render_pass = command_encoder.begin_render_pass(&render_pass_descriptor);
 
-        render_pass.set_vertex_buffer(0, *vertex_buffer_slice.buffer.slice(..));
+        // Bind all vertex buffers for this mesh.
+        let binding_count = render_mesh.layout.0.binding_count();
+        let Some(base_vertex) = mesh_allocator.mesh_base_vertex(&mesh_handle.id()) else {
+            continue;
+        };
+        let mut all_bindings_ok = true;
+        for binding_index in 0..binding_count {
+            let Some(slice) =
+                mesh_allocator.mesh_vertex_slice(&mesh_handle.id(), binding_index as u8)
+            else {
+                all_bindings_ok = false;
+                break;
+            };
+            render_pass.set_vertex_buffer(binding_index as u32, *slice.buffer.slice(..));
+        }
+        if !all_bindings_ok {
+            continue;
+        }
+
         render_pass.set_pipeline(pipeline);
 
         render_pass.set_bind_group(0, &view_bind_group.main, &view_bind_group.main_offsets);
@@ -440,12 +454,13 @@ pub fn volumetric_fog(
                 render_pass.set_index_buffer(*index_buffer_slice.buffer.slice(..), *index_format);
                 render_pass.draw_indexed(
                     index_buffer_slice.range.start..(index_buffer_slice.range.start + count),
-                    vertex_buffer_slice.range.start as i32,
+                    base_vertex as i32,
                     0..1,
                 );
             }
             RenderMeshBufferInfo::NonIndexed => {
-                render_pass.draw(vertex_buffer_slice.range, 0..1);
+                let vertex_count = render_mesh.vertex_count;
+                render_pass.draw(base_vertex..(base_vertex + vertex_count), 0..1);
             }
         }
     }
@@ -480,7 +495,7 @@ impl SpecializedRenderPipeline for VolumetricFogPipeline {
 
         // Both the cube and plane have the same vertex layout, so we don't need
         // to distinguish between the two.
-        let vertex_format = key
+        let vertex_buffer_layouts = key
             .vertex_buffer_layout
             .0
             .get_layout(&[Mesh::ATTRIBUTE_POSITION.at_shader_location(0)])
@@ -518,7 +533,7 @@ impl SpecializedRenderPipeline for VolumetricFogPipeline {
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
-                buffers: vec![vertex_format],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             primitive: PrimitiveState {

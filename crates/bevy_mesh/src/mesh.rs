@@ -3,17 +3,17 @@ pub use wgpu_types::PrimitiveTopology;
 
 use super::{
     skinning::{SkinnedMeshBounds, SkinnedMeshBoundsError},
-    triangle_area_normal, triangle_normal, FourIterators, Indices, MeshAttributeData,
-    MeshTrianglesError, MeshVertexAttribute, MeshVertexAttributeId, MeshVertexBufferLayout,
-    MeshVertexBufferLayoutRef, MeshVertexBufferLayouts, MeshWindingInvertError,
-    VertexAttributeValues, VertexBufferLayout,
+    triangle_area_normal, triangle_normal, FourIterators, Indices, IntoVertexAttributeBuffer,
+    MeshAttributeData, MeshTrianglesError, MeshVertexAttribute, MeshVertexAttributeId,
+    MeshVertexBufferLayout, MeshVertexBufferLayoutRef, MeshVertexBufferLayouts,
+    MeshWindingInvertError, VertexAttributeValues, VertexBinding, VertexBufferLayout,
 };
 use crate::arr_f32_to_unorm8;
 #[cfg(feature = "morph")]
 use crate::morph::MorphAttributes;
 #[cfg(feature = "serialize")]
 use crate::SerializedMeshAttributeData;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use bevy_asset::{Asset, RenderAssetUsages};
 use bevy_math::{
     bounding::{Aabb2d, Aabb3d},
@@ -268,6 +268,12 @@ pub struct Mesh {
     /// This will be set when calling [`Mesh::compressed_mesh`].
     pub final_uv_ranges: [Option<Aabb2d>; 2],
     skinned_mesh_bounds: Option<SkinnedMeshBounds>,
+    /// Per-attribute buffer group overrides. Attributes not in this map
+    /// default to buffer 0 (all interleaved together). Use
+    /// [`MeshVertexAttribute::in_buffer`] with [`Mesh::insert_attribute`] to
+    /// assign attributes to separate vertex buffers.
+    #[reflect(ignore, clone)]
+    attribute_buffers: BTreeMap<MeshVertexAttributeId, u8>,
 }
 
 bitflags::bitflags! {
@@ -408,6 +414,7 @@ impl Mesh {
             final_aabb: None,
             skinned_mesh_bounds: None,
             final_uv_ranges: [None; 2],
+            attribute_buffers: BTreeMap::new(),
         }
     }
 
@@ -419,6 +426,14 @@ impl Mesh {
     /// Sets the data for a vertex attribute (position, normal, etc.). The name will
     /// often be one of the associated constants such as [`Mesh::ATTRIBUTE_POSITION`].
     ///
+    /// By default, attributes are placed in vertex buffer 0 (interleaved).
+    /// Use [`MeshVertexAttribute::in_buffer`] to assign an attribute to a
+    /// different binding slot:
+    ///
+    /// ```ignore
+    /// mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0.in_buffer(1), uvs);
+    /// ```
+    ///
     /// `Aabb` of entities with modified mesh are not updated automatically.
     ///
     /// # Panics
@@ -428,7 +443,7 @@ impl Mesh {
     #[inline]
     pub fn insert_attribute(
         &mut self,
-        attribute: MeshVertexAttribute,
+        attribute: impl IntoVertexAttributeBuffer,
         values: impl Into<VertexAttributeValues>,
     ) {
         self.try_insert_attribute(attribute, values)
@@ -447,9 +462,11 @@ impl Mesh {
     #[inline]
     pub fn try_insert_attribute(
         &mut self,
-        attribute: MeshVertexAttribute,
+        attribute: impl IntoVertexAttributeBuffer,
         values: impl Into<VertexAttributeValues>,
     ) -> Result<(), MeshAccessError> {
+        let buffer = attribute.buffer_group();
+        let attribute = attribute.attribute();
         let values = values.into();
         let values_format = VertexFormat::from(&values);
         if values_format != attribute.format {
@@ -462,6 +479,13 @@ impl Mesh {
         self.attributes
             .as_mut()?
             .insert(attribute.id, MeshAttributeData { attribute, values });
+
+        if buffer != 0 {
+            self.attribute_buffers.insert(attribute.id, buffer);
+        } else {
+            self.attribute_buffers.remove(&attribute.id);
+        }
+
         Ok(())
     }
 
@@ -480,7 +504,7 @@ impl Mesh {
     #[inline]
     pub fn with_inserted_attribute(
         mut self,
-        attribute: MeshVertexAttribute,
+        attribute: impl IntoVertexAttributeBuffer,
         values: impl Into<VertexAttributeValues>,
     ) -> Self {
         self.insert_attribute(attribute, values);
@@ -498,7 +522,7 @@ impl Mesh {
     #[inline]
     pub fn try_with_inserted_attribute(
         mut self,
-        attribute: MeshVertexAttribute,
+        attribute: impl IntoVertexAttributeBuffer,
         values: impl Into<VertexAttributeValues>,
     ) -> Result<Self, MeshAccessError> {
         self.try_insert_attribute(attribute, values)?;
@@ -514,10 +538,12 @@ impl Mesh {
         &mut self,
         attribute: impl Into<MeshVertexAttributeId>,
     ) -> Option<VertexAttributeValues> {
+        let id = attribute.into();
+        self.attribute_buffers.remove(&id);
         self.attributes
             .as_mut()
             .expect(MESH_EXTRACTED_ERROR)
-            .remove(&attribute.into())
+            .remove(&id)
             .map(|data| data.values)
     }
 
@@ -528,10 +554,12 @@ impl Mesh {
         &mut self,
         attribute: impl Into<MeshVertexAttributeId>,
     ) -> Result<VertexAttributeValues, MeshAccessError> {
+        let id = attribute.into();
+        self.attribute_buffers.remove(&id);
         Ok(self
             .attributes
             .as_mut()?
-            .remove(&attribute.into())
+            .remove(&id)
             .ok_or(MeshAccessError::NotFound)?
             .values)
     }
@@ -927,6 +955,10 @@ impl Mesh {
 
     /// Get this `Mesh`'s [`MeshVertexBufferLayout`], used in `SpecializedMeshPipeline`.
     ///
+    /// Attributes are grouped into bindings according to the binding indices set
+    /// via [`MeshVertexAttribute::in_buffer`]. Attributes without an explicit
+    /// binding default to binding 0.
+    ///
     /// # Panics
     /// Panics when the mesh data has already been extracted to `RenderWorld`.
     pub fn get_mesh_vertex_buffer_layout(
@@ -935,29 +967,84 @@ impl Mesh {
     ) -> MeshVertexBufferLayoutRef {
         let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
 
-        let mut attributes = Vec::with_capacity(mesh_attributes.len());
-        let mut attribute_ids = Vec::with_capacity(mesh_attributes.len());
-        let mut accumulated_offset = 0;
-        for (index, data) in mesh_attributes.values().enumerate() {
-            attribute_ids.push(data.attribute.id);
-            attributes.push(VertexAttribute {
-                offset: accumulated_offset,
-                format: data.attribute.format,
-                shader_location: index as u32,
-            });
-            accumulated_offset += data.attribute.format.size();
+        let mut buffer_groups: BTreeMap<u8, Vec<(u32, &MeshAttributeData)>> = BTreeMap::new();
+
+        // shader_location is a global index across all buffers, assigned in
+        // attribute ID sort order.
+        for (global_index, data) in mesh_attributes.values().enumerate() {
+            let buffer = self
+                .attribute_buffers
+                .get(&data.attribute.id)
+                .copied()
+                .unwrap_or(0);
+            buffer_groups
+                .entry(buffer)
+                .or_default()
+                .push((global_index as u32, data));
         }
 
-        let layout = MeshVertexBufferLayout {
-            layout: VertexBufferLayout {
-                array_stride: accumulated_offset,
-                step_mode: VertexStepMode::Vertex,
-                attributes,
-            },
-            attribute_ids,
-            attribute_compression: self.attribute_compression,
-        };
+        // Build a VertexBinding for each group.
+        let mut bindings = Vec::with_capacity(buffer_groups.len());
+        for (_buffer, group) in &buffer_groups {
+            let mut attribute_ids = Vec::with_capacity(group.len());
+            let mut vertex_attributes = Vec::with_capacity(group.len());
+            let mut accumulated_offset = 0u64;
+
+            for &(shader_location, data) in group {
+                attribute_ids.push(data.attribute.id);
+                vertex_attributes.push(VertexAttribute {
+                    offset: accumulated_offset,
+                    format: data.attribute.format,
+                    shader_location,
+                });
+                accumulated_offset += data.attribute.format.size();
+            }
+
+            bindings.push(VertexBinding {
+                attribute_ids,
+                layout: VertexBufferLayout {
+                    array_stride: accumulated_offset,
+                    step_mode: VertexStepMode::Vertex,
+                    attributes: vertex_attributes,
+                },
+            });
+        }
+
+        let layout = MeshVertexBufferLayout::with_bindings(bindings, self.attribute_compression);
         mesh_vertex_buffer_layouts.insert(layout)
+    }
+
+    /// Assigns each attribute to its own vertex buffer binding (0, 1, 2, ...),
+    /// resulting in fully deinterleaved vertex data.
+    ///
+    /// # Panics
+    /// Panics when the mesh data has already been extracted to `RenderWorld`.
+    pub fn deinterleave(&mut self) {
+        let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
+        self.attribute_buffers.clear();
+        for (index, id) in mesh_attributes.keys().enumerate() {
+            self.attribute_buffers.insert(*id, index as u8);
+        }
+    }
+
+    /// Returns the number of vertex buffer bindings this mesh will use.
+    ///
+    /// # Panics
+    /// Panics when the mesh data has already been extracted to `RenderWorld`.
+    pub fn binding_count(&self) -> usize {
+        let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
+        if mesh_attributes.is_empty() {
+            return 0;
+        }
+        if self.attribute_buffers.is_empty() {
+            return 1;
+        }
+        let mut bindings: BTreeSet<u8> = self.attribute_buffers.values().copied().collect();
+        // If any attribute lacks an explicit binding, it defaults to binding 0.
+        if self.attribute_buffers.len() < mesh_attributes.len() {
+            bindings.insert(0);
+        }
+        bindings.len()
     }
 
     /// Counts all vertices of the mesh.
@@ -1316,6 +1403,82 @@ impl Mesh {
                     .copy_from_slice(attribute_bytes);
             }
 
+            attribute_offset += attribute_size;
+        }
+    }
+
+    /// Groups attributes by their buffer group, sorted by group key.
+    fn attributes_by_buffer(&self) -> BTreeMap<u8, Vec<&MeshAttributeData>> {
+        let mesh_attributes = self.attributes.as_ref().expect(MESH_EXTRACTED_ERROR);
+        let mut groups: BTreeMap<u8, Vec<&MeshAttributeData>> = BTreeMap::new();
+        for data in mesh_attributes.values() {
+            let buffer = self
+                .attribute_buffers
+                .get(&data.attribute.id)
+                .copied()
+                .unwrap_or(0);
+            groups.entry(buffer).or_default().push(data);
+        }
+        groups
+    }
+
+    /// Returns the byte size of each vertex buffer binding's data.
+    ///
+    /// The returned `Vec` has one entry per binding, ordered by binding index.
+    ///
+    /// # Panics
+    /// Panics when the mesh data has already been extracted to `RenderWorld`.
+    pub fn get_vertex_buffer_sizes(&self) -> Vec<usize> {
+        let vertex_count = self.count_vertices();
+        self.attributes_by_buffer()
+            .values()
+            .map(|group| {
+                let stride: usize = group
+                    .iter()
+                    .map(|d| d.attribute.format.size() as usize)
+                    .sum();
+                stride * vertex_count
+            })
+            .collect()
+    }
+
+    /// Writes the interleaved vertex data for a single binding into `slice`.
+    ///
+    /// The `binding_index` is the position in the sorted binding order (0 for
+    /// the first binding, 1 for the second, etc.), matching the order returned
+    /// by [`Mesh::get_vertex_buffer_sizes`].
+    ///
+    /// # Panics
+    /// Panics when the mesh data has already been extracted to `RenderWorld`.
+    /// Panics if `binding_index` is out of range.
+    pub fn write_vertex_buffer_data(&self, binding_index: usize, mut slice: WriteOnly<[u8]>) {
+        let vertex_count = self.count_vertices();
+        let groups = self.attributes_by_buffer();
+
+        let group = groups
+            .values()
+            .nth(binding_index)
+            .expect("binding_index out of range");
+
+        let vertex_size: usize = group
+            .iter()
+            .map(|d| d.attribute.format.size() as usize)
+            .sum();
+
+        let mut attribute_offset = 0;
+        for attribute_data in group {
+            let attribute_size = attribute_data.attribute.format.size() as usize;
+            let attributes_bytes = attribute_data.values.get_bytes();
+            for (vertex_index, attribute_bytes) in attributes_bytes
+                .chunks_exact(attribute_size)
+                .take(vertex_count)
+                .enumerate()
+            {
+                let offset = vertex_index * vertex_size + attribute_offset;
+                slice
+                    .slice(offset..offset + attribute_size)
+                    .copy_from_slice(attribute_bytes);
+            }
             attribute_offset += attribute_size;
         }
     }

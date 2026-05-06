@@ -605,7 +605,7 @@ impl PrepassPipeline {
             self.skins_use_uniform_buffers,
         );
         bind_group_layouts.insert(2, bind_group);
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layout(&vertex_attributes)?;
         // Setup prepass fragment targets - normals in slot 0 (or None if not needed), motion vectors in slot 1
         let mut targets = prepass_target_descriptors(
             mesh_key.contains(MeshPipelineKey::NORMAL_PREPASS),
@@ -667,7 +667,7 @@ impl PrepassPipeline {
             vertex: VertexState {
                 shader: vert_shader_handle,
                 shader_defs,
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment,
@@ -1312,6 +1312,7 @@ pub(crate) fn specialize_prepass_material_meshes(
 pub fn queue_prepass_material_meshes(
     render_mesh_instances: Res<RenderMeshInstances>,
     render_mesh_instance_batches: Res<RenderMeshInstanceBatches>,
+    render_meshes: Res<RenderAssets<RenderMesh>>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
@@ -1447,7 +1448,8 @@ pub fn queue_prepass_material_meshes(
                     continue;
                 };
 
-            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id) else {
+            let binding_count = render_meshes.get(mesh_asset_id).map_or(1, |m| m.binding_count);
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count) else {
                 continue;
             };
 

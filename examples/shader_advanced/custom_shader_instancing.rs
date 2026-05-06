@@ -319,7 +319,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMeshInstanced {
             return RenderCommandResult::Skip;
         };
         let Some(vertex_buffer_slice) =
-            mesh_allocator.mesh_vertex_slice(&mesh_instance.mesh_asset_id())
+            mesh_allocator.mesh_vertex_slice(&mesh_instance.mesh_asset_id(), 0)
         else {
             return RenderCommandResult::Skip;
         };

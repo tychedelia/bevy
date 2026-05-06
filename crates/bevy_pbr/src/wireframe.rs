@@ -289,7 +289,7 @@ pub struct Wireframe3dBatchSetKey {
     /// The IDs of the slabs of GPU memory in the mesh allocator that contain
     /// the mesh data.
     ///
-    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_id`] with
+    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_ids`] with
     /// 0 if your items can be multi-drawn, or with a unique value if they
     /// can't.
     pub slabs: MeshSlabs,
@@ -452,22 +452,25 @@ pub fn prepare_wireframe_wide_bind_groups(
         let Some(mesh) = render_meshes.get(mesh_id) else {
             continue;
         };
-        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&mesh_id) else {
+        let position_binding_index = mesh
+            .layout
+            .0
+            .binding_index_for_attribute(Mesh::ATTRIBUTE_POSITION)
+            .unwrap_or(0);
+        let Some(vertex_slice) =
+            mesh_allocator.mesh_vertex_slice(&mesh_id, position_binding_index as u8)
+        else {
             continue;
         };
         let Some(index_slice) = mesh_allocator.mesh_index_slice(&mesh_id) else {
             continue;
         };
 
-        let vertex_stride_bytes = mesh.layout.0.layout().array_stride as u32;
-        let position_offset_bytes = mesh
-            .layout
-            .0
-            .layout()
-            .attributes
-            .first()
-            .map(|a| a.offset as u32)
-            .unwrap_or(0);
+        let position_binding = &mesh.layout.0.bindings()[position_binding_index];
+        let vertex_stride_bytes = position_binding.layout.array_stride as u32;
+        let position_offset_bytes = position_binding
+            .attribute_offset(Mesh::ATTRIBUTE_POSITION)
+            .unwrap_or(0) as u32;
 
         infos.push(MeshInfo {
             mesh_id,
@@ -613,10 +616,9 @@ impl<P: PhaseItem> RenderCommand<P> for DrawWireframeMeshPulled {
             PhaseItemExtraIndex::None | PhaseItemExtraIndex::DynamicOffset(_) => {
                 // direct draw: use vertex range starting at first_vertex_index so
                 // the shader can recover draw_id via mesh[instance_index].first_vertex_index.
-                let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&mesh_asset_id) else {
+                let Some(first_vertex) = mesh_allocator.mesh_base_vertex(&mesh_asset_id) else {
                     return RenderCommandResult::Skip;
                 };
-                let first_vertex = vertex_slice.range.start;
                 pass.draw(
                     first_vertex..(first_vertex + index_count),
                     item.batch_range().clone(),
@@ -1532,6 +1534,7 @@ pub fn specialize_wireframes(
 fn queue_wireframes(
     custom_draw_functions: Res<DrawFunctions<Wireframe3d>>,
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_meshes: Res<RenderAssets<RenderMesh>>,
     gpu_preprocessing_support: Res<GpuPreprocessingSupport>,
     mesh_allocator: Res<MeshAllocator>,
     specialized_wireframe_pipeline_cache: Res<SpecializedWireframePipelineCache>,
@@ -1609,34 +1612,34 @@ fn queue_wireframes(
                 .unwrap_or(false);
             let draw_function = if is_wide { draw_wide } else { draw_thin };
 
-            let Some(MeshSlabs {
-                vertex_slab_id: vertex_slab,
-                index_slab_id: index_slab,
-                metadata_slab_id: metadata_slab,
-                morph_target_slab_id: morph_target_slab,
-            }) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id())
+            let mesh_asset_id = mesh_instance.mesh_asset_id();
+            let binding_count = render_meshes
+                .get(mesh_asset_id)
+                .map_or(1, |m| m.binding_count);
+            let Some(mesh_slabs) =
+                mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count)
             else {
                 continue;
             };
             let bin_key = Wireframe3dBinKey {
-                asset_id: mesh_instance.mesh_asset_id().untyped(),
+                asset_id: mesh_asset_id.untyped(),
             };
             let batch_set_key = Wireframe3dBatchSetKey {
                 pipeline: pipeline_id,
                 asset_id: wireframe_instance.untyped(),
                 draw_function,
                 slabs: MeshSlabs {
-                    vertex_slab_id: vertex_slab,
-                    morph_target_slab_id: morph_target_slab,
-                    metadata_slab_id: metadata_slab,
+                    vertex_slab_ids: mesh_slabs.vertex_slab_ids.clone(),
+                    morph_target_slab_id: mesh_slabs.morph_target_slab_id,
+                    metadata_slab_id: mesh_slabs.metadata_slab_id,
                     // wide wireframes use non-indexed draws (vertex pulling
                     // from storage), so set index_slab to None to make the
                     // preprocessor emit IndirectParametersNonIndexed instead of
                     // IndirectParametersIndexed.
-                    index_slab_id: if is_wide { None } else { index_slab },
+                    index_slab_id: if is_wide { None } else { mesh_slabs.index_slab_id },
                 },
                 mesh_asset_id: if is_wide {
-                    Some(mesh_instance.mesh_asset_id().untyped())
+                    Some(mesh_asset_id.untyped())
                 } else {
                     None
                 },

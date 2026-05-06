@@ -1346,7 +1346,8 @@ pub fn queue_material_meshes(
                     continue;
                 };
 
-            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id) else {
+            let binding_count = mesh_assets.get(mesh_asset_id).map_or(1, |m| m.binding_count);
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count) else {
                 continue;
             };
 

@@ -30,7 +30,7 @@ use bevy_render::{
     },
     extract_resource::ExtractResource,
     mesh::{
-        allocator::{MeshAllocator, MeshSlabId, MeshSlabs},
+        allocator::{MeshAllocator, MeshSlabs},
         RenderMesh,
     },
     prelude::*,
@@ -251,21 +251,18 @@ pub struct Wireframe2dBatchSetKey {
     /// The function used to draw.
     pub draw_function: DrawFunctionId,
 
-    /// The ID of the slab of GPU memory that contains vertex data.
+    /// The IDs of the slabs of GPU memory in the mesh allocator that contain
+    /// the mesh data.
     ///
-    /// For non-mesh items, you can fill this with 0 if your items can be
-    /// multi-drawn, or with a unique value if they can't.
-    pub vertex_slab: MeshSlabId,
-
-    /// The ID of the slab of GPU memory that contains index data, if present.
-    ///
-    /// For non-mesh items, you can safely fill this with `None`.
-    pub index_slab: Option<MeshSlabId>,
+    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_ids`] with
+    /// 0 if your items can be multi-drawn, or with a unique value if they
+    /// can't.
+    pub slabs: MeshSlabs,
 }
 
 impl PhaseItemBatchSetKey for Wireframe2dBatchSetKey {
     fn indexed(&self) -> bool {
-        self.index_slab.is_some()
+        self.slabs.index_slab_id.is_some()
     }
 }
 
@@ -840,6 +837,7 @@ pub fn specialize_wireframes(
 fn queue_wireframes(
     custom_draw_functions: Res<DrawFunctions<Wireframe2dPhaseItem>>,
     render_mesh_instances: Res<RenderMesh2dInstances>,
+    render_meshes: Res<RenderAssets<RenderMesh>>,
     mesh_allocator: Res<MeshAllocator>,
     specialized_wireframe_pipeline_cache: Res<SpecializedWireframePipelineCache>,
     render_wireframe_instances: Res<RenderWireframeInstances>,
@@ -906,11 +904,11 @@ fn queue_wireframes(
             let Some(mesh_instance) = render_mesh_instances.get(visible_entity) else {
                 continue;
             };
-            let Some(MeshSlabs {
-                vertex_slab_id: vertex_slab,
-                index_slab_id: index_slab,
-                ..
-            }) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id)
+            let binding_count = render_meshes
+                .get(mesh_instance.mesh_asset_id)
+                .map_or(1, |m| m.binding_count);
+            let Some(mesh_slabs) =
+                mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id, binding_count)
             else {
                 continue;
             };
@@ -921,8 +919,7 @@ fn queue_wireframes(
                 pipeline: pipeline_id,
                 asset_id: wireframe_instance.untyped(),
                 draw_function: draw_wireframe,
-                vertex_slab,
-                index_slab,
+                slabs: mesh_slabs,
             };
             wireframe_phase.add(
                 batch_set_key,

@@ -204,7 +204,7 @@ pub struct Opaque3dBatchSetKey {
     /// The IDs of the slabs of GPU memory in the mesh allocator that contain
     /// the mesh data.
     ///
-    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_id`] with
+    /// For non-mesh items, you can fill the [`MeshSlabs::vertex_slab_ids`] with
     /// 0 if your items can be multi-drawn, or with a unique value if they
     /// can't.
     pub slabs: MeshSlabs,

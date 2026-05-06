@@ -245,7 +245,7 @@ pub fn prepare_gpu_batched_mesh_reservations(
         else {
             return true;
         };
-        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&batch.mesh_asset_id) else {
+        let Some(vertex_slice) = mesh_allocator.mesh_vertex_slice(&batch.mesh_asset_id, 0) else {
             return true;
         };
         let first_vertex_index = vertex_slice.range.start;
