@@ -650,18 +650,36 @@ impl_atomic_pod!(MeshInputUniform, MeshInputUniformBlob);
 
 impl_atomic_pod!(PreviousMeshInputUniform, PreviousMeshInputUniformBlob);
 
-/// AABB plus a dead-slot flag used by GPU-authored instance batches.
-#[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
+/// AABB plus a per-slot life value used by GPU-authored instance batches.
+#[derive(ShaderType, Pod, Zeroable, Clone, Copy)]
 #[repr(C)]
 pub struct MeshCullingData {
     pub aabb_center: Vec3,
     _pad: f32,
     pub aabb_half_extents: Vec3,
-    /// `0.0` = alive, nonzero = skip in preprocessing. Used by GPU
-    /// simulations to retire slots in a [`GpuBatchedMesh3d`] reservation.
+    /// `> 0.0` = render, `<= 0.0` = skip in preprocessing. Used by GPU
+    /// simulations to retire (or smoothly fade) slots in a
+    /// [`GpuBatchedMesh3d`] reservation. Zero-init buffers thus default to
+    /// "culled" — perfect for ring-buffer slots that haven't been emitted
+    /// into yet.
     ///
     /// [`GpuBatchedMesh3d`]: crate::gpu_instance_batch::GpuBatchedMesh3d
-    pub dead: f32,
+    pub life: f32,
+}
+
+impl Default for MeshCullingData {
+    /// Non-particle meshes use the default `Default` and expect to render
+    /// unconditionally. The bytemuck `Zeroable` derive can't express this —
+    /// zero-init means "culled" — so we keep the manual impl that flips
+    /// `life` to its rendering value.
+    fn default() -> Self {
+        Self {
+            aabb_center: Vec3::ZERO,
+            _pad: 0.0,
+            aabb_half_extents: Vec3::ZERO,
+            life: 1.0,
+        }
+    }
 }
 
 /// A GPU buffer that holds the information needed to cull meshes on GPU.
@@ -1690,13 +1708,13 @@ impl MeshCullingData {
                 aabb_center: aabb.center.into(),
                 _pad: 0.0,
                 aabb_half_extents: aabb.half_extents.into(),
-                dead: 0.0,
+                life: 1.0,
             },
             None => MeshCullingData {
                 aabb_center: Vec3::ZERO,
                 _pad: 0.0,
                 aabb_half_extents: Vec3::INFINITY,
-                dead: 0.0,
+                life: 1.0,
             },
         }
     }

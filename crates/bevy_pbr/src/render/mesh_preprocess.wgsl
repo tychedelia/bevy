@@ -31,13 +31,13 @@
 #import bevy_render::maths
 #import bevy_render::view::View
 
-// AABB plus a dead-slot flag used by GPU-authored instance batches.
+// AABB plus a per-slot life value used by GPU-authored instance batches.
 struct MeshCullingData {
     aabb_center: vec3<f32>,
     _pad: f32,
     aabb_half_extents: vec3<f32>,
-    // 0.0 = alive, nonzero = skip in preprocessing.
-    dead: f32,
+    // > 0.0 = render, <= 0.0 = skip in preprocessing.
+    life: f32,
 }
 
 // The parameters for the indirect compute dispatch for the late mesh
@@ -202,7 +202,7 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     let world_from_local = maths::affine3_to_square(world_from_local_affine_transpose);
 
 #ifdef FRUSTUM_CULLING
-    if (mesh_culling_data[input_index].dead != 0.0) {
+    if (mesh_culling_data[input_index].life <= 0.0) {
         return;
     }
 
