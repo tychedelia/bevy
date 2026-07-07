@@ -3538,7 +3538,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
             shader_defs.push("OIT_ENABLED".into());
         }
 
-        let vertex_buffer_layout = layout.0.get_layout(&vertex_attributes)?;
+        let vertex_buffer_layouts = layout.0.get_layout(&vertex_attributes)?;
 
         let (label, blend, depth_write_enabled);
         let pass = key.intersection(MeshPipelineKey::BLEND_RESERVED_BITS);
@@ -3767,7 +3767,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
             vertex: VertexState {
                 shader: self.shader.clone(),
                 shader_defs: shader_defs.clone(),
-                buffers: vec![vertex_buffer_layout],
+                buffers: vertex_buffer_layouts,
                 ..default()
             },
             fragment: Some(FragmentState {
