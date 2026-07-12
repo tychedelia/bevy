@@ -30,9 +30,13 @@ pub mod _macro {
 #[macro_export]
 macro_rules! load_shader_library {
     ($asset_server_provider: expr, $path: literal, import_path = $import_path: literal) => {
-        $crate::load_shader_library!($asset_server_provider, $path, |settings| {
-            settings.import_path = ::core::option::Option::Some($import_path.into());
-        });
+        $crate::load_shader_library!(
+            $asset_server_provider,
+            $path,
+            |settings: &mut $crate::ShaderSettings| {
+                settings.import_path = ::core::option::Option::Some($import_path.into());
+            }
+        );
     };
     ($asset_server_provider: expr, $path: literal $(, $settings: expr)?) => {
         $crate::_macro::bevy_asset::embedded_asset!($asset_server_provider, $path);

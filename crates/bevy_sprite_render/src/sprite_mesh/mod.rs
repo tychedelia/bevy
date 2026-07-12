@@ -27,7 +27,11 @@ impl Plugin for SpriteMeshPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         load_shader_library!(app, "sprite_bindings.wgsl");
         load_shader_library!(app, "sprite_functions.wgsl");
-        load_shader_library!(app, "sprite_types.wesl");
+        load_shader_library!(
+            app,
+            "sprite_types.wesl",
+            import_path = "bevy_sprite::sprite_types"
+        );
 
         app.add_plugins(SpriteMaterialPlugin);
 

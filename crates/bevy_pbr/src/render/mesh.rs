@@ -169,7 +169,11 @@ impl Plugin for MeshRenderPlugin {
         load_shader_library!(app, "mesh_functions.wgsl");
         load_shader_library!(app, "skinning.wgsl");
         load_shader_library!(app, "morph.wgsl");
-        load_shader_library!(app, "occlusion_culling.wesl");
+        load_shader_library!(
+            app,
+            "occlusion_culling.wesl",
+            import_path = "bevy_pbr::occlusion_culling"
+        );
 
         embedded_asset!(app, "mesh.wgsl");
 

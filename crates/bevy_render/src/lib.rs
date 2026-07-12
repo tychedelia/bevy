@@ -352,8 +352,8 @@ impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<Shader>()
             .init_asset_loader::<ShaderLoader>();
-        load_shader_library!(app, "utils.wesl");
-        load_shader_library!(app, "maths.wesl");
+        load_shader_library!(app, "utils.wesl", import_path = "bevy_render::utils");
+        load_shader_library!(app, "maths.wesl", import_path = "bevy_render::maths");
         load_shader_library!(app, "color_operations.wgsl");
         load_shader_library!(app, "bindless.wgsl");
 

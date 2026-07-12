@@ -75,9 +75,21 @@ impl Plugin for Mesh2dRenderPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         load_shader_library!(app, "mesh2d_vertex_output.wgsl");
         load_shader_library!(app, "mesh2d_vertex_input.wgsl");
-        load_shader_library!(app, "mesh2d_view_types.wesl");
-        load_shader_library!(app, "mesh2d_view_bindings.wesl");
-        load_shader_library!(app, "mesh2d_types.wesl");
+        load_shader_library!(
+            app,
+            "mesh2d_view_types.wesl",
+            import_path = "bevy_sprite::mesh2d_view_types"
+        );
+        load_shader_library!(
+            app,
+            "mesh2d_view_bindings.wesl",
+            import_path = "bevy_sprite::mesh2d_view_bindings"
+        );
+        load_shader_library!(
+            app,
+            "mesh2d_types.wesl",
+            import_path = "bevy_sprite::mesh2d_types"
+        );
         load_shader_library!(app, "mesh2d_functions.wgsl");
 
         embedded_asset!(app, "mesh2d.wgsl");

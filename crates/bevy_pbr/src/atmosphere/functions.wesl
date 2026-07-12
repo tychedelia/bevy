@@ -1,8 +1,6 @@
-#define_import_path bevy_pbr::atmosphere::functions
+import bevy_render::maths::{PI, HALF_PI, PI_2, fast_acos, fast_acos_4, fast_atan2, ray_sphere_intersect};
 
-#import bevy_render::maths::{PI, HALF_PI, PI_2, fast_acos, fast_acos_4, fast_atan2, ray_sphere_intersect}
-
-#import bevy_pbr::atmosphere::{
+import bevy_pbr::atmosphere::{
     types::Atmosphere,
     bindings::{
         atmosphere, settings, view, lights, transmittance_lut, atmosphere_lut_sampler,
@@ -13,7 +11,7 @@
         transmittance_lut_r_mu_to_uv, ray_intersects_ground,
         distance_to_top_atmosphere_boundary, distance_to_bottom_atmosphere_boundary
     },
-}
+};
 
 // NOTE FOR CONVENTIONS: 
 // r:

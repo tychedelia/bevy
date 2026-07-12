@@ -124,9 +124,21 @@ pub struct PostProcessingUniformBufferOffsets {
 
 impl Plugin for EffectStackPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "chromatic_aberration.wesl");
-        load_shader_library!(app, "lens_distortion.wesl");
-        load_shader_library!(app, "vignette.wesl");
+        load_shader_library!(
+            app,
+            "chromatic_aberration.wesl",
+            import_path = "bevy_post_process::effect_stack::chromatic_aberration"
+        );
+        load_shader_library!(
+            app,
+            "lens_distortion.wesl",
+            import_path = "bevy_post_process::effect_stack::lens_distortion"
+        );
+        load_shader_library!(
+            app,
+            "vignette.wesl",
+            import_path = "bevy_post_process::effect_stack::vignette"
+        );
 
         embedded_asset!(app, "post_process.wesl");
 

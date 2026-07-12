@@ -186,18 +186,30 @@ pub struct DfgLut {
 
 impl Plugin for PbrPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "render/pbr_types.wesl");
+        load_shader_library!(
+            app,
+            "render/pbr_types.wesl",
+            import_path = "bevy_pbr::pbr_types"
+        );
         load_shader_library!(app, "render/pbr_bindings.wgsl");
-        load_shader_library!(app, "render/utils.wesl");
+        load_shader_library!(app, "render/utils.wesl", import_path = "bevy_pbr::utils");
         load_shader_library!(app, "render/clustered_forward.wgsl");
         load_shader_library!(app, "render/pbr_lighting.wgsl");
         load_shader_library!(app, "render/shadows.wgsl");
-        load_shader_library!(app, "deferred/pbr_deferred_types.wesl");
+        load_shader_library!(
+            app,
+            "deferred/pbr_deferred_types.wesl",
+            import_path = "bevy_pbr::pbr_deferred_types"
+        );
         load_shader_library!(app, "deferred/pbr_deferred_functions.wgsl");
         load_shader_library!(app, "render/shadow_sampling.wgsl");
         load_shader_library!(app, "render/pbr_functions.wgsl");
-        load_shader_library!(app, "render/rgb9e5.wesl");
-        load_shader_library!(app, "render/pbr_ambient.wesl");
+        load_shader_library!(app, "render/rgb9e5.wesl", import_path = "bevy_pbr::rgb9e5");
+        load_shader_library!(
+            app,
+            "render/pbr_ambient.wesl",
+            import_path = "bevy_pbr::ambient"
+        );
         load_shader_library!(app, "render/pbr_fragment.wgsl");
         load_shader_library!(app, "render/pbr.wgsl");
         load_shader_library!(app, "render/pbr_prepass_functions.wgsl");

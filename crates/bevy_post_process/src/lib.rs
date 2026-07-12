@@ -26,7 +26,11 @@ pub struct PostProcessPlugin;
 
 impl Plugin for PostProcessPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "gaussian_blur.wesl");
+        load_shader_library!(
+            app,
+            "gaussian_blur.wesl",
+            import_path = "bevy_post_process::gaussian_blur"
+        );
 
         app.add_plugins((
             MsaaWritebackPlugin,

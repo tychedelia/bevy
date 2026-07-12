@@ -1,5 +1,3 @@
-#define_import_path bevy_sprite::sprite_types
-
 struct SpriteMaterial {
     color: vec4<f32>,
     flags: u32,

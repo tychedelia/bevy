@@ -1,9 +1,7 @@
+import bevy_pbr::lighting::perceptualRoughnessToRoughness;
+import bevy_pbr::pbr_functions::calculate_tbn_mikktspace;
+
 enable wgpu_ray_query;
-
-#define_import_path bevy_solari::scene_bindings
-
-#import bevy_pbr::lighting::perceptualRoughnessToRoughness
-#import bevy_pbr::pbr_functions::calculate_tbn_mikktspace
 
 struct InstanceGeometryIds {
     vertex_buffer_id: u32,

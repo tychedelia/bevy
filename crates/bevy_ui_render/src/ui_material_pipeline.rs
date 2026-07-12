@@ -44,7 +44,11 @@ where
     M::Data: PartialEq + Eq + Hash + Clone,
 {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "ui_vertex_output.wesl");
+        load_shader_library!(
+            app,
+            "ui_vertex_output.wesl",
+            import_path = "bevy_ui::ui_vertex_output"
+        );
 
         embedded_asset!(app, "ui_material.wesl");
 

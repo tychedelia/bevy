@@ -34,9 +34,17 @@ pub struct SolariLightingPlugin;
 
 impl Plugin for SolariLightingPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "gbuffer_utils.wesl");
+        load_shader_library!(
+            app,
+            "gbuffer_utils.wesl",
+            import_path = "bevy_solari::gbuffer_utils"
+        );
         load_shader_library!(app, "realtime_bindings.wgsl");
-        load_shader_library!(app, "presample_light_tiles.wesl");
+        load_shader_library!(
+            app,
+            "presample_light_tiles.wesl",
+            import_path = "bevy_solari::presample_light_tiles"
+        );
         embedded_asset!(app, "restir_di.wgsl");
         embedded_asset!(app, "restir_gi.wgsl");
         load_shader_library!(app, "specular_gi.wgsl");
@@ -44,7 +52,11 @@ impl Plugin for SolariLightingPlugin {
         embedded_asset!(app, "world_cache_compact.wesl");
         embedded_asset!(app, "world_cache_update.wesl");
 
-        load_shader_library!(app, "resolve_dlss_rr_textures.wesl");
+        load_shader_library!(
+            app,
+            "resolve_dlss_rr_textures.wesl",
+            import_path = "bevy_solari::resolve_dlss_rr_textures"
+        );
 
         app.insert_resource(DefaultOpaqueRendererMethod::deferred());
     }

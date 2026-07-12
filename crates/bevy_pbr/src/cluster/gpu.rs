@@ -123,7 +123,7 @@ pub struct GpuClusteringPlugin;
 
 impl Plugin for GpuClusteringPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "cluster.wesl");
+        load_shader_library!(app, "cluster.wesl", import_path = "bevy_pbr::cluster");
         embedded_asset!(app, "cluster_z_slice.wesl");
         embedded_asset!(app, "cluster_raster.wgsl");
         embedded_asset!(app, "cluster_allocate.wesl");

@@ -39,7 +39,11 @@ pub struct MeshRenderAssetPlugin;
 
 impl Plugin for MeshRenderAssetPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "mesh_metadata_types.wesl");
+        load_shader_library!(
+            app,
+            "mesh_metadata_types.wesl",
+            import_path = "bevy_render::mesh_metadata_types"
+        );
 
         app
             // 'Mesh' must be prepared after 'Image' as meshes rely on the morph target image being ready
