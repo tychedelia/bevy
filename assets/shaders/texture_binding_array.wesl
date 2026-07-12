@@ -1,7 +1,7 @@
-#import bevy_pbr::forward_io::VertexOutput
+import bevy_pbr::forward_io::VertexOutput;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var textures: binding_array<texture_2d<f32>>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var nearest_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var textures: binding_array<texture_2d<f32>>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var nearest_sampler: sampler;
 // We can also have array of samplers
 // var samplers: binding_array<sampler>;
 

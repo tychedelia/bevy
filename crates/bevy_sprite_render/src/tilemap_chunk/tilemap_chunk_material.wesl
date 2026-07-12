@@ -1,12 +1,12 @@
-#import bevy_sprite::{
+import bevy_sprite::{
     mesh2d_functions as mesh_functions,
     mesh2d_view_bindings::view,
     mesh2d_vertex_output::VertexOutput,
-}
+};
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var tileset: texture_2d_array<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(1) var tileset_sampler: sampler;
-@group(#{MATERIAL_BIND_GROUP}) @binding(2) var tile_data: texture_2d<u32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var tileset: texture_2d_array<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var tileset_sampler: sampler;
+@group(constants::MATERIAL_BIND_GROUP) @binding(2) var tile_data: texture_2d<u32>;
 
 struct TileData {
     tileset_index: u32,
