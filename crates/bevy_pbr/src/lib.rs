@@ -195,7 +195,7 @@ impl Plugin for PbrPlugin {
         load_shader_library!(app, "render/utils.wesl", import_path = "bevy_pbr::utils");
         load_shader_library!(app, "render/clustered_forward.wgsl");
         load_shader_library!(app, "render/pbr_lighting.wgsl");
-        load_shader_library!(app, "render/shadows.wgsl");
+        load_shader_library!(app, "render/shadows.wesl");
         load_shader_library!(
             app,
             "deferred/pbr_deferred_types.wesl",

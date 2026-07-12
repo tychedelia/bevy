@@ -45,7 +45,7 @@ pub struct TonemappingPlugin;
 impl Plugin for TonemappingPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(app, "tonemapping_shared.wgsl");
-        load_shader_library!(app, "lut_bindings.wgsl");
+        load_shader_library!(app, "lut_bindings.wesl");
 
         embedded_asset!(app, "tonemapping.wgsl");
 
