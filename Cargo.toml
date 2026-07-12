@@ -3204,16 +3204,6 @@ category = "Shaders"
 wasm = true
 
 
-[[example]]
-name = "shader_material_wesl"
-path = "examples/shader/shader_material_wesl.rs"
-doc-scrape-examples = true
-
-[package.metadata.example.shader_material_wesl]
-name = "Material - WESL"
-description = "A shader that uses WESL"
-category = "Shaders"
-wasm = true
 
 [[example]]
 name = "automatic_instancing"
