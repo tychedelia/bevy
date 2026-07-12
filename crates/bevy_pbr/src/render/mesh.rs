@@ -163,7 +163,6 @@ impl Plugin for MeshRenderPlugin {
                     ShaderDefVal::UInt("MAX_RECT_LIGHTS".into(), MAX_RECT_LIGHTS as u32,),
                 ],
                 import_path: Some("bevy_pbr::mesh_view_types".into()),
-                ..Default::default()
             });
         load_shader_library!(
             app,
@@ -346,7 +345,6 @@ impl Plugin for MeshRenderPlugin {
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
                 import_path: Some("bevy_pbr::mesh_bindings".into()),
-                ..Default::default()
             });
     }
 }

@@ -21,7 +21,18 @@ pub(crate) fn wesl_module_path(import_path: &ShaderImport) -> Option<wesl::synta
                 components,
             })
         }
-        ShaderImport::AssetPath(path) => Some(wesl::syntax::ModulePath::from_path(path)),
+        // `ModulePath::from_path` would strip anything after a `.` as an extension.
+        ShaderImport::AssetPath(path) => {
+            let components: Vec<String> = path
+                .split('/')
+                .filter(|component| !component.is_empty())
+                .map(str::to_string)
+                .collect();
+            (!components.is_empty()).then_some(wesl::syntax::ModulePath {
+                origin: wesl::syntax::PathOrigin::Absolute,
+                components,
+            })
+        }
     }
 }
 
@@ -112,6 +123,7 @@ pub struct ShaderCache<ShaderModule, RenderDevice> {
     shaders: HashMap<AssetId<Shader>, Shader>,
     import_path_shaders: HashMap<ShaderImport, AssetId<Shader>>,
     waiting_on_import: HashMap<ShaderImport, Vec<AssetId<Shader>>>,
+    missing_import_logged: HashSet<AssetId<Shader>>,
 }
 
 /// A compile time shader value definition to be inlined into the shader source.
@@ -167,6 +179,7 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
             shaders: Default::default(),
             import_path_shaders: Default::default(),
             waiting_on_import: Default::default(),
+            missing_import_logged: Default::default(),
         }
     }
 
@@ -234,21 +247,28 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                                 ..Default::default()
                             };
 
-                            // Bool defs become condcomp feature flags; valued
-                            // defs become the virtual `constants` module,
-                            // importable as `constants::NAME`, and also enable
-                            // the flag of the same name, since naga_oil's
-                            // `#ifdef` tested presence regardless of value.
-                            let library_defs = self
-                                .shaders
-                                .values()
-                                .filter(|s| {
-                                    !core::ptr::eq(*s, shader)
-                                        && matches!(s.source, Source::Wesl(_))
-                                })
-                                .flat_map(|s| s.shader_defs.iter());
+                            let mut closure_defs = Vec::new();
+                            let mut visited = HashSet::new();
+                            let mut to_visit = vec![id];
+                            while let Some(dep_id) = to_visit.pop() {
+                                if !visited.insert(dep_id) {
+                                    continue;
+                                }
+                                let Some(dep) = self.shaders.get(&dep_id) else {
+                                    continue;
+                                };
+                                if dep_id != id {
+                                    closure_defs.extend(dep.shader_defs.iter());
+                                }
+                                for import in &dep.imports {
+                                    if let Some(import_id) = self.import_path_shaders.get(import) {
+                                        to_visit.push(*import_id);
+                                    }
+                                }
+                            }
                             let mut constants = alloc::collections::BTreeMap::new();
-                            for shader_def in library_defs
+                            for shader_def in closure_defs
+                                .into_iter()
                                 .chain(shader_defs.iter())
                                 .chain(shader.shader_defs.iter())
                             {
@@ -294,6 +314,13 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                             )
                             .map_err(|error| {
                                 if is_module_not_found(&error) {
+                                    if self.missing_import_logged.insert(id) {
+                                        warn!(
+                                            "Shader `{}` has an unresolved import; its \
+                                            pipelines will retry as more shaders load:\n{error}",
+                                            shader.path
+                                        );
+                                    }
                                     ShaderCacheError::ShaderImportNotYetAvailable
                                 } else {
                                     ShaderCacheError::ProcessShaderError(error.to_string())
@@ -338,8 +365,12 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
 
     fn clear(&mut self, id: AssetId<Shader>) -> Vec<CachedPipelineId> {
         let mut shaders_to_clear = vec![id];
+        let mut visited = HashSet::new();
         let mut pipelines_to_queue = Vec::new();
         while let Some(handle) = shaders_to_clear.pop() {
+            if !visited.insert(handle) {
+                continue;
+            }
             if let Some(data) = self.data.get_mut(&handle) {
                 data.processed_shaders.clear();
                 pipelines_to_queue.extend(data.pipelines.iter().copied());
@@ -355,7 +386,8 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
     /// Returns a vec of which cached pipelines depended on it
     /// (directly or indirectly via a shader import) and thus must be recompiled.
     pub fn set_shader(&mut self, id: AssetId<Shader>, shader: Shader) -> Vec<CachedPipelineId> {
-        let pipelines_to_queue = self.clear(id);
+        self.missing_import_logged.clear();
+        let mut pipelines_to_queue = self.clear(id);
         let path = &shader.import_path;
         self.import_path_shaders.insert(path.clone(), id);
         if let Some(waiting_shaders) = self.waiting_on_import.get_mut(path) {
@@ -386,14 +418,15 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
         if let Source::Wesl(_) = shader.source {
             match wesl_module_path(&shader.import_path) {
                 Some(module_path) => {
-                    if let Some(existing) = self.module_path_to_asset_id.get(&module_path)
-                        && *existing != id
+                    if let Some(existing) = self.module_path_to_asset_id.get(&module_path).copied()
+                        && existing != id
                     {
                         warn!(
                             "Shader module path `{module_path}` is already registered to a \
                             different shader; replacing it with `{}`.",
                             shader.path
                         );
+                        pipelines_to_queue.extend(self.clear(existing));
                     }
                     self.module_path_to_asset_id.insert(module_path, id);
                 }
@@ -415,7 +448,9 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
     pub fn remove(&mut self, id: AssetId<Shader>) -> Vec<CachedPipelineId> {
         let pipelines_to_queue = self.clear(id);
         if let Some(shader) = self.shaders.remove(&id) {
-            self.import_path_shaders.remove(&shader.import_path);
+            if self.import_path_shaders.get(&shader.import_path) == Some(&id) {
+                self.import_path_shaders.remove(&shader.import_path);
+            }
             if let Source::Wesl(_) = shader.source
                 && let Some(module_path) = wesl_module_path(&shader.import_path)
                 && self.module_path_to_asset_id.get(&module_path) == Some(&id)
@@ -662,6 +697,86 @@ fn fragment() -> @location(0) vec4<f32> {
             uuid: bevy_asset::uuid::Uuid::from_u128(n),
         };
         (id(1), id(2), id(3))
+    }
+
+    #[test]
+    fn library_defs_are_scoped_to_the_import_closure() {
+        let mut cache = test_cache();
+        let id = |n| AssetId::Uuid {
+            uuid: bevy_asset::uuid::Uuid::from_u128(n),
+        };
+
+        let mut lib_a = Shader::from_wesl_with_import_path(
+            "var<uniform> batch_a: array<vec4<f32>, constants::BATCH_SIZE>;",
+            "embedded://bevy_a/bindings.wesl",
+            Some("bevy_a::bindings"),
+        );
+        lib_a.shader_defs = vec![ShaderDefVal::UInt("BATCH_SIZE".into(), 3)];
+        let mut lib_b = Shader::from_wesl_with_import_path(
+            "var<uniform> batch_b: array<vec4<f32>, constants::BATCH_SIZE>;",
+            "embedded://bevy_b/bindings.wesl",
+            Some("bevy_b::bindings"),
+        );
+        lib_b.shader_defs = vec![ShaderDefVal::UInt("BATCH_SIZE".into(), 7)];
+
+        let root_a = Shader::from_wesl(
+            r#"
+import bevy_a::bindings::batch_a;
+@fragment
+fn fragment() -> @location(0) vec4<f32> { return batch_a[0]; }
+"#,
+            "shaders/root_a.wesl",
+        );
+        let root_b = Shader::from_wesl(
+            r#"
+import bevy_b::bindings::batch_b;
+@fragment
+fn fragment() -> @location(0) vec4<f32> { return batch_b[0]; }
+"#,
+            "shaders/root_b.wesl",
+        );
+
+        cache.set_shader(id(1), lib_a);
+        cache.set_shader(id(2), lib_b);
+        cache.set_shader(id(3), root_a);
+        cache.set_shader(id(4), root_b);
+
+        let compiled_a = cache.get(0, id(3), &[]).expect("root_a should compile");
+        let compiled_b = cache.get(1, id(4), &[]).expect("root_b should compile");
+        assert!(
+            compiled_a.contains("(3)") && !compiled_a.contains("(7)"),
+            "root_a must only see bevy_a's BATCH_SIZE: {compiled_a}"
+        );
+        assert!(
+            compiled_b.contains("(7)") && !compiled_b.contains("(3)"),
+            "root_b must only see bevy_b's BATCH_SIZE: {compiled_b}"
+        );
+    }
+
+    #[test]
+    fn cyclic_imports_do_not_hang_invalidation() {
+        let mut cache = test_cache();
+        let id = |n| AssetId::Uuid {
+            uuid: bevy_asset::uuid::Uuid::from_u128(n),
+        };
+        let module_a = Shader::from_wesl_with_import_path(
+            "import bevy_cycle::b::from_b;\nfn from_a() -> f32 { return 1.0; }",
+            "embedded://bevy_cycle/a.wesl",
+            Some("bevy_cycle::a"),
+        );
+        let module_b = Shader::from_wesl_with_import_path(
+            "import bevy_cycle::a::from_a;\nfn from_b() -> f32 { return 2.0; }",
+            "embedded://bevy_cycle/b.wesl",
+            Some("bevy_cycle::b"),
+        );
+        cache.set_shader(id(1), module_a);
+        cache.set_shader(id(2), module_b);
+        let module_a = Shader::from_wesl_with_import_path(
+            "import bevy_cycle::b::from_b;\nfn from_a() -> f32 { return 3.0; }",
+            "embedded://bevy_cycle/a.wesl",
+            Some("bevy_cycle::a"),
+        );
+        cache.set_shader(id(1), module_a);
     }
 
     fn set_test_shaders(

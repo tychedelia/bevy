@@ -257,7 +257,7 @@ pub enum ShaderLoaderError {
 /// Settings for loading shaders.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 pub struct ShaderSettings {
-    /// The `#define`s specified for this shader.
+    /// The shader defs to apply when this shader is loaded.
     pub shader_defs: Vec<ShaderDefVal>,
     /// The logical import path to register this WESL shader under.
     #[serde(default)]
@@ -297,11 +297,7 @@ impl AssetLoader for ShaderLoader {
         }
         let mut shader = match ext {
             "spv" => Shader::from_spirv(bytes, load_context.path().path().to_string_lossy()),
-            "wgsl" => Shader::from_wgsl_with_defs(
-                String::from_utf8(bytes)?,
-                path,
-                settings.shader_defs.clone(),
-            ),
+            "wgsl" => Shader::from_wgsl(String::from_utf8(bytes)?, path),
             "wesl" => {
                 let mut shader = Shader::from_wesl_with_import_path(
                     String::from_utf8(bytes)?,

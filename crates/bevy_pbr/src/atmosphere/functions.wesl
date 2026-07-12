@@ -117,9 +117,9 @@ fn sample_transmittance_lut(r: f32, mu: f32) -> vec3<f32> {
 }
 
 // NOTICE: This function is copyrighted by Eric Bruneton and INRIA, and falls
-// under the license reproduced in bruneton_functions.wgsl (variant of MIT license)
+// under the license reproduced in bruneton_functions.wesl (variant of MIT license)
 //
-// FIXME: this function should be in bruneton_functions.wgsl, but because naga_oil doesn't 
+// FIXME: this function should be in bruneton_functions.wesl, but because naga_oil doesn't 
 // support cyclic imports it's stuck here
 fn sample_transmittance_lut_segment(r: f32, mu: f32, t: f32) -> vec3<f32> {
     let r_t = get_local_r(r, mu, t);

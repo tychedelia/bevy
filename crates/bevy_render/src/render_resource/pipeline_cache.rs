@@ -752,7 +752,9 @@ impl PipelineCache {
             cache.needs_shader_reload = false;
             for (id, shader) in shaders.iter() {
                 let mut shader = shader.clone();
-                shader.shader_defs.extend(cache.global_shader_defs.clone());
+                shader
+                    .shader_defs
+                    .splice(0..0, cache.global_shader_defs.iter().cloned());
                 cache.set_shader(id, shader);
             }
             // Drain events so we don't double-process shaders we just loaded.
@@ -770,7 +772,9 @@ impl PipelineCache {
                 AssetEvent::Added { id } | AssetEvent::Modified { id } => {
                     if let Some(shader) = shaders.get(*id) {
                         let mut shader = shader.clone();
-                        shader.shader_defs.extend(cache.global_shader_defs.clone());
+                        shader
+                            .shader_defs
+                            .splice(0..0, cache.global_shader_defs.iter().cloned());
 
                         cache.set_shader(*id, shader);
                     }
