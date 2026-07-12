@@ -7,7 +7,6 @@ use thiserror::Error;
 
 /// The last import segment may name a module or an item, so each import is
 /// emitted in both forms.
-#[cfg(feature = "shader_format_wesl")]
 fn scan_wesl_imports(
     source: &str,
     self_module_path: &wesl::syntax::ModulePath,
@@ -222,14 +221,12 @@ impl Shader {
     }
 
     /// Creates a new Wesl shader.
-    #[cfg(feature = "shader_format_wesl")]
     pub fn from_wesl(source: impl Into<Cow<'static, str>>, path: impl Into<String>) -> Shader {
         Self::from_wesl_with_import_path(source, path, None::<String>)
     }
 
     /// Creates a new Wesl shader, registered under the logical `import_path` if
     /// provided, otherwise under its asset path.
-    #[cfg(feature = "shader_format_wesl")]
     pub fn from_wesl_with_import_path(
         source: impl Into<Cow<'static, str>>,
         path: impl Into<String>,
@@ -456,7 +453,6 @@ impl AssetLoader for ShaderLoader {
             "comp" => {
                 Shader::from_glsl(String::from_utf8(bytes)?, naga::ShaderStage::Compute, path)
             }
-            #[cfg(feature = "shader_format_wesl")]
             "wesl" => {
                 let mut shader = Shader::from_wesl_with_import_path(
                     String::from_utf8(bytes)?,
@@ -471,7 +467,6 @@ impl AssetLoader for ShaderLoader {
 
         // collect and store file dependencies
         match ext {
-            #[cfg(feature = "shader_format_wesl")]
             "wesl" => {
                 let candidates: Vec<String> = shader
                     .imports

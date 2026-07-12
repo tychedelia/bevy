@@ -21,7 +21,7 @@ naga = { version = "29.0.3", features = ["wgsl-in"] }
 wgpu-naga-bridge = { version = "29.0.3", default-features = false }
 serde = { version = "1", features = ["derive"] }
 thiserror = { version = "2", default-features = false }
-wesl = { version = "0.4.0", features = ["naga-ext"], optional = true }
+wesl = { version = "0.4.0", features = ["naga-ext"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 
@@ -37,7 +37,6 @@ naga_oil = { version = "0.22" }
 [features]
 shader_format_glsl = ["naga/glsl-in", "naga/wgsl-out", "naga_oil/glsl"]
 shader_format_spirv = ["naga/spv-in", "naga/spv-out"]
-shader_format_wesl = ["wesl"]
 
 # Bevy users should _never_ turn this feature on.
 #

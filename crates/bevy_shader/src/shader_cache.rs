@@ -6,11 +6,9 @@ use bevy_platform::collections::{hash_map::EntryRef, HashMap, HashSet};
 use core::hash::Hash;
 use thiserror::Error;
 use tracing::debug;
-#[cfg(feature = "shader_format_wesl")]
 use tracing::warn;
 use wgpu_types::{DownlevelFlags, Features};
 
-#[cfg(feature = "shader_format_wesl")]
 pub(crate) fn wesl_module_path(import_path: &ShaderImport) -> Option<wesl::syntax::ModulePath> {
     match import_path {
         ShaderImport::Custom(name) => {
@@ -30,7 +28,6 @@ pub(crate) fn wesl_module_path(import_path: &ShaderImport) -> Option<wesl::synta
 
 /// wesl gives package-to-package imports a slash-joined "sub-package" origin
 /// (e.g. `bevy_pbr/bevy_render`); the real package is the last segment.
-#[cfg(feature = "shader_format_wesl")]
 pub(crate) fn canonicalize_module_path(
     path: &wesl::syntax::ModulePath,
 ) -> Cow<'_, wesl::syntax::ModulePath> {
@@ -47,7 +44,6 @@ pub(crate) fn canonicalize_module_path(
     }
 }
 
-#[cfg(feature = "shader_format_wesl")]
 fn is_module_not_found(error: &wesl::Error) -> bool {
     match error {
         wesl::Error::ResolveError(wesl::ResolveError::ModuleNotFound(..))
@@ -123,7 +119,6 @@ pub struct ShaderCache<ShaderModule, RenderDevice> {
         ShaderCacheSource,
         &ValidateShader,
     ) -> Result<ShaderModule, ShaderCacheError>,
-    #[cfg(feature = "shader_format_wesl")]
     module_path_to_asset_id: HashMap<wesl::syntax::ModulePath, AssetId<Shader>>,
     shaders: HashMap<AssetId<Shader>, Shader>,
     import_path_shaders: HashMap<ShaderImport, AssetId<Shader>>,
@@ -193,7 +188,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
             composer,
             load_module,
             data: Default::default(),
-            #[cfg(feature = "shader_format_wesl")]
             module_path_to_asset_id: Default::default(),
             shaders: Default::default(),
             import_path_shaders: Default::default(),
@@ -256,10 +250,7 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
 
         // Wesl imports are scanned as both module and item candidates, so the
         // counts would never match.
-        #[cfg(feature = "shader_format_wesl")]
         let needs_import_gate = !matches!(shader.source, Source::Wesl(_));
-        #[cfg(not(feature = "shader_format_wesl"))]
-        let needs_import_gate = true;
         if needs_import_gate {
             let n_asset_imports = shader
                 .imports
@@ -278,7 +269,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
 
         data.pipelines.insert(pipeline);
 
-        #[cfg(feature = "shader_format_wesl")]
         let mut wesl_dependencies: Vec<AssetId<Shader>> = Vec::new();
 
         let module = match data.processed_shaders.entry_ref(shader_defs) {
@@ -290,7 +280,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                 );
                 let shader_source = match &shader.source {
                     Source::SpirV(data) => ShaderCacheSource::SpirV(data.as_ref()),
-                    #[cfg(feature = "shader_format_wesl")]
                     Source::Wesl(_) => {
                         if let Some(module_path) = wesl_module_path(&shader.import_path) {
                             let mut compiler_options = wesl::CompileOptions {
@@ -425,7 +414,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
         };
         let module = module.clone();
 
-        #[cfg(feature = "shader_format_wesl")]
         for dep_id in wesl_dependencies {
             self.data.entry(dep_id).or_default().dependents.insert(id);
         }
@@ -485,7 +473,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
             }
         }
 
-        #[cfg(feature = "shader_format_wesl")]
         if let Source::Wesl(_) = shader.source {
             match wesl_module_path(&shader.import_path) {
                 Some(module_path) => {
@@ -519,7 +506,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
         let pipelines_to_queue = self.clear(id);
         if let Some(shader) = self.shaders.remove(&id) {
             self.import_path_shaders.remove(&shader.import_path);
-            #[cfg(feature = "shader_format_wesl")]
             if let Source::Wesl(_) = shader.source
                 && let Some(module_path) = wesl_module_path(&shader.import_path)
                 && self.module_path_to_asset_id.get(&module_path) == Some(&id)
@@ -534,14 +520,12 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
 
 /// A Wesl import resolver. Maps module paths to actual Wesl shader source,
 /// and serves the virtual `constants` module built from valued shader defs.
-#[cfg(feature = "shader_format_wesl")]
 pub struct ShaderResolver<'a> {
     module_path_to_asset_id: &'a HashMap<wesl::syntax::ModulePath, AssetId<Shader>>,
     shaders: &'a HashMap<AssetId<Shader>, Shader>,
     constants_source: &'a str,
 }
 
-#[cfg(feature = "shader_format_wesl")]
 impl<'a> ShaderResolver<'a> {
     /// Creates a shader resolver with the given map of module paths to shader asset ids,
     /// map of shader asset ids to shader source, and the source of the virtual
@@ -559,7 +543,6 @@ impl<'a> ShaderResolver<'a> {
     }
 }
 
-#[cfg(feature = "shader_format_wesl")]
 impl<'a> wesl::Resolver for ShaderResolver<'a> {
     fn resolve_source(
         &self,
@@ -616,7 +599,7 @@ pub enum ShaderCacheError {
     CreateShaderModule(String),
 }
 
-#[cfg(all(test, feature = "shader_format_wesl"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

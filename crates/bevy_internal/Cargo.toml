@@ -122,7 +122,6 @@ shader_format_spirv = [
   "bevy_shader/shader_format_spirv",
   "bevy_render?/shader_format_spirv",
 ]
-shader_format_wesl = ["bevy_shader/shader_format_wesl"]
 
 serialize = [
   "bevy_a11y?/serialize",
