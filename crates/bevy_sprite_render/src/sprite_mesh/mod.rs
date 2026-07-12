@@ -30,7 +30,7 @@ impl Plugin for SpriteMeshPlugin {
             "sprite_bindings.wesl",
             import_path = "bevy_sprite::sprite_bindings"
         );
-        load_shader_library!(app, "sprite_functions.wgsl");
+        load_shader_library!(app, "sprite_functions.wesl");
         load_shader_library!(
             app,
             "sprite_types.wesl",

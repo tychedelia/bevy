@@ -289,7 +289,7 @@ pub struct SmaaSpecializedRenderPipelines {
 impl Plugin for SmaaPlugin {
     fn build(&self, app: &mut App) {
         // Load the shader.
-        embedded_asset!(app, "smaa.wgsl");
+        embedded_asset!(app, "smaa.wesl");
 
         #[cfg(feature = "smaa_luts")]
         let smaa_luts = {
@@ -433,7 +433,7 @@ pub fn init_smaa_pipelines(mut commands: Commands, asset_server: Res<AssetServer
         ),
     );
 
-    let shader = load_embedded_asset!(asset_server.as_ref(), "smaa.wgsl");
+    let shader = load_embedded_asset!(asset_server.as_ref(), "smaa.wesl");
 
     commands.insert_resource(SmaaPipelines {
         edge_detection: SmaaEdgeDetectionPipeline {

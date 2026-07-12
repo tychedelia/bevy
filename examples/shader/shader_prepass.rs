@@ -13,7 +13,7 @@ use bevy::{
 };
 
 /// This example uses a shader source file from the assets subdirectory
-const PREPASS_SHADER_ASSET_PATH: &str = "shaders/show_prepass.wgsl";
+const PREPASS_SHADER_ASSET_PATH: &str = "shaders/show_prepass.wesl";
 const MATERIAL_SHADER_ASSET_PATH: &str = "shaders/custom_material.wesl";
 
 fn main() {

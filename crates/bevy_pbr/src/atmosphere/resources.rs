@@ -223,7 +223,7 @@ impl FromWorld for RenderSkyBindGroupLayouts {
             render_sky,
             render_sky_msaa,
             fullscreen_shader: world.resource::<FullscreenShader>().clone(),
-            fragment_shader: load_embedded_asset!(world, "render_sky.wgsl"),
+            fragment_shader: load_embedded_asset!(world, "render_sky.wesl"),
         }
     }
 }

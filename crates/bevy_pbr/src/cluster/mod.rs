@@ -38,7 +38,7 @@ const _: () =
 // at least that many are supported using this constant and SupportedBindingType::from_device()
 pub const CLUSTERED_FORWARD_STORAGE_BUFFER_COUNT: u32 = 3;
 
-// this must match CLUSTER_COUNT_SIZE in pbr.wgsl
+// this must match CLUSTER_COUNT_SIZE in pbr.wesl
 // and must be large enough to contain MAX_UNIFORM_BUFFER_CLUSTERABLE_OBJECTS
 const CLUSTER_COUNT_SIZE: u32 = 9;
 

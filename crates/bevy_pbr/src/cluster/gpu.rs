@@ -125,7 +125,7 @@ impl Plugin for GpuClusteringPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(app, "cluster.wesl", import_path = "bevy_pbr::cluster");
         embedded_asset!(app, "cluster_z_slice.wesl");
-        embedded_asset!(app, "cluster_raster.wgsl");
+        embedded_asset!(app, "cluster_raster.wesl");
         embedded_asset!(app, "cluster_allocate.wesl");
 
         app.add_plugins(ExtractResourcePlugin::<
@@ -452,7 +452,7 @@ fn sortable_u32_to_f32_bits(bits: u32) -> u32 {
     bits ^ mask
 }
 
-/// Global data relating to the `cluster_raster.wgsl` shader.
+/// Global data relating to the `cluster_raster.wesl` shader.
 #[derive(Resource)]
 pub struct ClusteringRasterPipeline {
     /// The bind group layout for group 0 for the count (first) pass.
@@ -482,7 +482,7 @@ pub struct ClusteringAllocationPipeline {
 }
 
 /// The pipeline key that identifies specializations of the
-/// `cluster_raster.wgsl` shader.
+/// `cluster_raster.wesl` shader.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClusteringRasterPipelineKey {
     /// True if this is the populate (second) pass; false if it's the count
@@ -563,7 +563,7 @@ impl FromWorld for ClusteringRasterPipeline {
             &bind_group_layout_entries_populate_pass,
         );
 
-        let shader = load_embedded_asset!(asset_server, "cluster_raster.wgsl");
+        let shader = load_embedded_asset!(asset_server, "cluster_raster.wesl");
 
         ClusteringRasterPipeline {
             bind_group_layout_count_pass,

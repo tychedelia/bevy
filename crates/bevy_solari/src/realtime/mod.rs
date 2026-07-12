@@ -39,16 +39,16 @@ impl Plugin for SolariLightingPlugin {
             "gbuffer_utils.wesl",
             import_path = "bevy_solari::gbuffer_utils"
         );
-        load_shader_library!(app, "realtime_bindings.wgsl");
+        load_shader_library!(app, "realtime_bindings.wesl");
         load_shader_library!(
             app,
             "presample_light_tiles.wesl",
             import_path = "bevy_solari::presample_light_tiles"
         );
-        embedded_asset!(app, "restir_di.wgsl");
-        embedded_asset!(app, "restir_gi.wgsl");
-        load_shader_library!(app, "specular_gi.wgsl");
-        load_shader_library!(app, "world_cache_query.wgsl");
+        embedded_asset!(app, "restir_di.wesl");
+        embedded_asset!(app, "restir_gi.wesl");
+        load_shader_library!(app, "specular_gi.wesl");
+        load_shader_library!(app, "world_cache_query.wesl");
         embedded_asset!(app, "world_cache_compact.wesl");
         embedded_asset!(app, "world_cache_update.wesl");
 

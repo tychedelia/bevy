@@ -56,7 +56,7 @@ use derive_more::derive::From;
 /// // functions that are relevant for your material.
 /// impl UiMaterial for CustomMaterial {
 ///     fn fragment_shader() -> ShaderRef {
-///         "shaders/custom_material.wgsl".into()
+///         "shaders/custom_material.wesl".into()
 ///     }
 /// }
 ///

@@ -68,7 +68,7 @@ impl Plugin for SpriteRenderPlugin {
             import_path = "bevy_sprite::sprite_view_bindings"
         );
 
-        embedded_asset!(app, "render/sprite.wgsl");
+        embedded_asset!(app, "render/sprite.wesl");
 
         if !app.is_plugin_added::<TextureAtlasPlugin>() {
             app.add_plugins(TextureAtlasPlugin);

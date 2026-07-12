@@ -192,8 +192,8 @@ pub struct ScreenSpaceReflectionsPipelineKey {
 
 impl Plugin for ScreenSpaceReflectionsPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "ssr.wgsl");
-        load_shader_library!(app, "raymarch.wgsl");
+        load_shader_library!(app, "ssr.wesl");
+        load_shader_library!(app, "raymarch.wesl");
 
         app.add_plugins(ExtractComponentPlugin::<ScreenSpaceReflections>::default());
 
@@ -381,7 +381,7 @@ pub fn init_screen_space_reflections_pipeline(
         fullscreen_shader: fullscreen_shader.clone(),
         // Even though ssr was loaded using load_shader_library, we can still access it like a
         // normal embedded asset (so we can use it as both a library or a kernel).
-        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "ssr.wgsl"),
+        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "ssr.wesl"),
     });
 }
 

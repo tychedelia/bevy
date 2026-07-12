@@ -148,8 +148,8 @@ pub struct MeshPipelineSystems;
 
 impl Plugin for MeshRenderPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "forward_io.wgsl");
-        load_shader_library!(app, "mesh_view_types.wgsl", |settings| *settings =
+        load_shader_library!(app, "forward_io.wesl");
+        load_shader_library!(app, "mesh_view_types.wesl", |settings| *settings =
             ShaderSettings {
                 shader_defs: vec![
                     ShaderDefVal::UInt(
@@ -164,18 +164,18 @@ impl Plugin for MeshRenderPlugin {
                 ],
                 ..Default::default()
             });
-        load_shader_library!(app, "mesh_view_bindings.wgsl");
-        load_shader_library!(app, "mesh_types.wgsl");
-        load_shader_library!(app, "mesh_functions.wgsl");
-        load_shader_library!(app, "skinning.wgsl");
-        load_shader_library!(app, "morph.wgsl");
+        load_shader_library!(app, "mesh_view_bindings.wesl");
+        load_shader_library!(app, "mesh_types.wesl");
+        load_shader_library!(app, "mesh_functions.wesl");
+        load_shader_library!(app, "skinning.wesl");
+        load_shader_library!(app, "morph.wesl");
         load_shader_library!(
             app,
             "occlusion_culling.wesl",
             import_path = "bevy_pbr::occlusion_culling"
         );
 
-        embedded_asset!(app, "mesh.wgsl");
+        embedded_asset!(app, "mesh.wesl");
 
         if app.get_sub_app(RenderApp).is_none() {
             return;
@@ -333,7 +333,7 @@ impl Plugin for MeshRenderPlugin {
 
         // Load the mesh_bindings shader module here as it depends on runtime information about
         // whether storage buffers are supported, or the maximum uniform buffer binding size.
-        load_shader_library!(app, "mesh_bindings.wgsl", move |settings| *settings =
+        load_shader_library!(app, "mesh_bindings.wesl", move |settings| *settings =
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
                 ..Default::default()
@@ -2749,7 +2749,7 @@ fn init_mesh_pipeline(
     view_layouts: Res<MeshPipelineViewLayouts>,
     asset_server: Res<AssetServer>,
 ) {
-    let shader = load_embedded_asset!(asset_server.as_ref(), "mesh.wgsl");
+    let shader = load_embedded_asset!(asset_server.as_ref(), "mesh.wesl");
 
     let clustered_forward_buffer_binding_type =
         render_device.get_supported_read_only_binding_type(CLUSTERED_FORWARD_STORAGE_BUFFER_COUNT);

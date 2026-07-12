@@ -125,7 +125,7 @@ impl Plugin for EnvironmentMapGenerationPlugin {
             return;
         }
 
-        embedded_asset!(app, "environment_filter.wgsl");
+        embedded_asset!(app, "environment_filter.wesl");
         embedded_asset!(app, "copy.wesl");
 
         app.add_plugins(SyncComponentPlugin::<GeneratedEnvironmentMapLight, Self>::default())
@@ -343,7 +343,7 @@ pub fn initialize_generated_environment_map_resources(
         shader_defs.push(ShaderDefVal::Int("HAS_BLUE_NOISE".into(), 1));
     }
 
-    let env_filter_shader = load_embedded_asset!(asset_server.as_ref(), "environment_filter.wgsl");
+    let env_filter_shader = load_embedded_asset!(asset_server.as_ref(), "environment_filter.wesl");
     let copy_shader = load_embedded_asset!(asset_server.as_ref(), "copy.wesl");
 
     let downsampling_shader = downsample_shaders

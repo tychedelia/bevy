@@ -44,14 +44,14 @@ pub struct TonemappingPlugin;
 
 impl Plugin for TonemappingPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "tonemapping_shared.wgsl");
+        load_shader_library!(app, "tonemapping_shared.wesl");
         load_shader_library!(
             app,
             "lut_bindings.wesl",
             import_path = "bevy_core_pipeline::tonemapping_lut_bindings"
         );
 
-        embedded_asset!(app, "tonemapping.wgsl");
+        embedded_asset!(app, "tonemapping.wesl");
 
         if !app.world().is_resource_added::<TonemappingLuts>() {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -327,7 +327,7 @@ pub fn init_tonemapping_pipeline(
         texture_bind_group: tonemap_texture_bind_group,
         sampler,
         fullscreen_shader: fullscreen_shader.clone(),
-        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "tonemapping.wgsl"),
+        fragment_shader: load_embedded_asset!(asset_server.as_ref(), "tonemapping.wesl"),
     });
 }
 

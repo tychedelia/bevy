@@ -1382,7 +1382,7 @@ impl From<&StandardMaterial> for StandardMaterialKey {
 
 impl Material for StandardMaterial {
     fn fragment_shader() -> ShaderRef {
-        shader_ref(bevy_asset::embedded_path!("render/pbr.wgsl"))
+        shader_ref(bevy_asset::embedded_path!("render/pbr.wesl"))
     }
 
     #[inline]
@@ -1418,11 +1418,11 @@ impl Material for StandardMaterial {
     }
 
     fn prepass_fragment_shader() -> ShaderRef {
-        shader_ref(bevy_asset::embedded_path!("render/pbr_prepass.wgsl"))
+        shader_ref(bevy_asset::embedded_path!("render/pbr_prepass.wesl"))
     }
 
     fn deferred_fragment_shader() -> ShaderRef {
-        shader_ref(bevy_asset::embedded_path!("render/pbr.wgsl"))
+        shader_ref(bevy_asset::embedded_path!("render/pbr.wesl"))
     }
 
     #[cfg(feature = "meshlet")]

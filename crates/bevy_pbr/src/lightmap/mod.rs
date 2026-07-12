@@ -185,7 +185,7 @@ pub struct LightmapSlotIndex(pub(crate) NonMaxU16);
 
 impl Plugin for LightmapPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "lightmap.wgsl");
+        load_shader_library!(app, "lightmap.wesl");
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;

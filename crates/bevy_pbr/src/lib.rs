@@ -191,10 +191,10 @@ impl Plugin for PbrPlugin {
             "render/pbr_types.wesl",
             import_path = "bevy_pbr::pbr_types"
         );
-        load_shader_library!(app, "render/pbr_bindings.wgsl");
+        load_shader_library!(app, "render/pbr_bindings.wesl");
         load_shader_library!(app, "render/utils.wesl", import_path = "bevy_pbr::utils");
-        load_shader_library!(app, "render/clustered_forward.wgsl");
-        load_shader_library!(app, "render/pbr_lighting.wgsl");
+        load_shader_library!(app, "render/clustered_forward.wesl");
+        load_shader_library!(app, "render/pbr_lighting.wesl");
         load_shader_library!(
             app,
             "render/shadows.wesl",
@@ -205,24 +205,24 @@ impl Plugin for PbrPlugin {
             "deferred/pbr_deferred_types.wesl",
             import_path = "bevy_pbr::pbr_deferred_types"
         );
-        load_shader_library!(app, "deferred/pbr_deferred_functions.wgsl");
-        load_shader_library!(app, "render/shadow_sampling.wgsl");
-        load_shader_library!(app, "render/pbr_functions.wgsl");
+        load_shader_library!(app, "deferred/pbr_deferred_functions.wesl");
+        load_shader_library!(app, "render/shadow_sampling.wesl");
+        load_shader_library!(app, "render/pbr_functions.wesl");
         load_shader_library!(app, "render/rgb9e5.wesl", import_path = "bevy_pbr::rgb9e5");
         load_shader_library!(
             app,
             "render/pbr_ambient.wesl",
             import_path = "bevy_pbr::ambient"
         );
-        load_shader_library!(app, "render/pbr_fragment.wgsl");
-        load_shader_library!(app, "render/pbr.wgsl");
-        load_shader_library!(app, "render/pbr_prepass_functions.wgsl");
-        load_shader_library!(app, "render/pbr_prepass.wgsl");
-        load_shader_library!(app, "render/parallax_mapping.wgsl");
-        load_shader_library!(app, "render/view_transformations.wgsl");
+        load_shader_library!(app, "render/pbr_fragment.wesl");
+        load_shader_library!(app, "render/pbr.wesl");
+        load_shader_library!(app, "render/pbr_prepass_functions.wesl");
+        load_shader_library!(app, "render/pbr_prepass.wesl");
+        load_shader_library!(app, "render/parallax_mapping.wesl");
+        load_shader_library!(app, "render/view_transformations.wesl");
 
         // Setup dummy shaders for when MeshletPlugin is not used to prevent shader import errors.
-        load_shader_library!(app, "meshlet/dummy_visibility_buffer_resolve.wgsl");
+        load_shader_library!(app, "meshlet/dummy_visibility_buffer_resolve.wesl");
 
         app.register_asset_reflect::<StandardMaterial>()
             .init_resource::<DefaultOpaqueRendererMethod>()
