@@ -46,7 +46,7 @@ pub struct CorePipelinePlugin;
 
 impl Plugin for CorePipelinePlugin {
     fn build(&self, app: &mut App) {
-        embedded_asset!(app, "fullscreen_vertex_shader/fullscreen.wgsl");
+        embedded_asset!(app, "fullscreen_vertex_shader/fullscreen.wesl");
 
         app.add_plugins((Core2dPlugin, Core3dPlugin, CopyDeferredLightingIdPlugin))
             .add_plugins((

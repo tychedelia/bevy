@@ -169,7 +169,7 @@ impl Plugin for MeshRenderPlugin {
         load_shader_library!(app, "mesh_functions.wgsl");
         load_shader_library!(app, "skinning.wgsl");
         load_shader_library!(app, "morph.wgsl");
-        load_shader_library!(app, "occlusion_culling.wgsl");
+        load_shader_library!(app, "occlusion_culling.wesl");
 
         embedded_asset!(app, "mesh.wgsl");
 
@@ -721,7 +721,7 @@ impl MeshUniform {
     }
 }
 
-// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_types.wgsl!
+// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_types.wesl!
 bitflags::bitflags! {
     /// Various flags and tightly-packed values on a mesh.
     ///

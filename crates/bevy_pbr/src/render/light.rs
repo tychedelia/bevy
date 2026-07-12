@@ -129,7 +129,7 @@ pub struct ExtractedDirectionalLight {
     pub sun_disk_intensity: f32,
 }
 
-// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wgsl!
+// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wesl!
 bitflags::bitflags! {
     #[repr(transparent)]
     struct PointLightFlags: u32 {
@@ -168,7 +168,7 @@ pub struct GpuDirectionalLight {
     sun_disk_intensity: f32,
 }
 
-// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wgsl!
+// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wesl!
 bitflags::bitflags! {
     #[repr(transparent)]
     struct DirectionalLightFlags: u32 {
@@ -192,7 +192,7 @@ pub struct GpuRectLight {
     range: f32,
 }
 
-// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wgsl!
+// NOTE: These must match the bit flags in bevy_pbr/src/render/mesh_view_types.wesl!
 bitflags::bitflags! {
     #[repr(transparent)]
     struct AmbientLightFlags: u32 {

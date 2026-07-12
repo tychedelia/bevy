@@ -963,7 +963,7 @@ impl From<Handle<Image>> for StandardMaterial {
     }
 }
 
-// NOTE: These must match the bit flags in bevy_pbr/src/render/pbr_types.wgsl!
+// NOTE: These must match the bit flags in bevy_pbr/src/render/pbr_types.wesl!
 bitflags::bitflags! {
     /// Bitflags info about the material a shader is currently rendering.
     /// This is accessible in the shader in the [`StandardMaterialUniform`]

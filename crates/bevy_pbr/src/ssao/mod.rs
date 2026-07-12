@@ -44,7 +44,7 @@ pub struct ScreenSpaceAmbientOcclusionPlugin;
 
 impl Plugin for ScreenSpaceAmbientOcclusionPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "ssao_utils.wgsl");
+        load_shader_library!(app, "ssao_utils.wesl");
 
         embedded_asset!(app, "preprocess_depth.wgsl");
         embedded_asset!(app, "ssao.wgsl");

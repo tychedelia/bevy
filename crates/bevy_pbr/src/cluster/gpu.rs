@@ -113,9 +113,9 @@ use crate::{
     ViewLightsUniformOffset,
 };
 
-/// The workgroup size of the `cluster_allocate.wgsl` shader.
+/// The workgroup size of the `cluster_allocate.wesl` shader.
 const ALLOCATION_WORKGROUP_SIZE: u32 = 256;
-/// The workgroup size of the `cluster_z_slice.wgsl` shader.
+/// The workgroup size of the `cluster_z_slice.wesl` shader.
 const Z_SLICING_WORKGROUP_SIZE: u32 = 64;
 
 /// A plugin that enables GPU clustering of lights and other objects.
@@ -123,10 +123,10 @@ pub struct GpuClusteringPlugin;
 
 impl Plugin for GpuClusteringPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "cluster.wgsl");
-        embedded_asset!(app, "cluster_z_slice.wgsl");
+        load_shader_library!(app, "cluster.wesl");
+        embedded_asset!(app, "cluster_z_slice.wesl");
         embedded_asset!(app, "cluster_raster.wgsl");
-        embedded_asset!(app, "cluster_allocate.wgsl");
+        embedded_asset!(app, "cluster_allocate.wesl");
 
         app.add_plugins(ExtractResourcePlugin::<
             GlobalClusterSettings,
@@ -219,7 +219,7 @@ pub struct ClusterableObjectZSlice {
     /// The type of the object to be clustered.
     ///
     /// This is one of the `CLUSTERABLE_OBJECT_TYPE_` constants in
-    /// `cluster.wgsl`.
+    /// `cluster.wesl`.
     pub object_type: u32,
     /// The Z coordinate of the froxels that this slice covers.
     pub z_slice: u32,
@@ -286,7 +286,7 @@ pub struct ClusterRasterIndirectDrawParams {
 pub struct ViewGpuClusteringBuffers {
     /// The buffer that holds the Z slices for each clusterable object.
     ///
-    /// The `cluster_z_slice.wgsl` shader fills this buffer out, and the raster
+    /// The `cluster_z_slice.wesl` shader fills this buffer out, and the raster
     /// passes read it.
     pub z_slices_buffer: UninitBufferVec<ClusterableObjectZSlice>,
     /// The buffer that holds the scratchpad offsets and counts for each
@@ -441,7 +441,7 @@ impl ViewClusteringReadbackData {
 }
 
 /// Decodes a `u32` produced by `f32_bits_to_sortable_u32` (in
-/// `cluster_z_slice.wgsl`) back into `f32` bits.
+/// `cluster_z_slice.wesl`) back into `f32` bits.
 ///
 /// The encode flips the sign bit for positive floats and all bits for
 /// negative floats, so the decode must inspect the *encoded* sign bit
@@ -463,7 +463,7 @@ pub struct ClusteringRasterPipeline {
     pub shader: Handle<Shader>,
 }
 
-/// Global data relating to the `cluster_z_slice.wgsl` shader.
+/// Global data relating to the `cluster_z_slice.wesl` shader.
 #[derive(Resource)]
 pub struct ClusteringZSlicingPipeline {
     /// The bind group layout for group 0.
@@ -472,12 +472,12 @@ pub struct ClusteringZSlicingPipeline {
     pub shader: Handle<Shader>,
 }
 
-/// Global data relating to the `cluster_allocate.wgsl` shader.
+/// Global data relating to the `cluster_allocate.wesl` shader.
 #[derive(Resource)]
 pub struct ClusteringAllocationPipeline {
     /// The bind group layout of group 0 for both shader invocations.
     pub bind_group_layout: BindGroupLayoutDescriptor,
-    /// A handle to the `cluster_allocate.wgsl` shader itself.
+    /// A handle to the `cluster_allocate.wesl` shader itself.
     pub shader: Handle<Shader>,
 }
 
@@ -491,7 +491,7 @@ pub struct ClusteringRasterPipelineKey {
 }
 
 /// The pipeline key that identifies specializations of the
-/// `cluster_allocate.wgsl` shader.
+/// `cluster_allocate.wesl` shader.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClusteringAllocationPipelineKey {
     /// True if this is the global (second) pass; false if it's the local
@@ -663,7 +663,7 @@ impl FromWorld for ClusteringZSlicingPipeline {
             ),
         );
 
-        let shader = load_embedded_asset!(asset_server, "cluster_z_slice.wgsl");
+        let shader = load_embedded_asset!(asset_server, "cluster_z_slice.wesl");
 
         ClusteringZSlicingPipeline {
             bind_group_layout,
@@ -712,7 +712,7 @@ impl FromWorld for ClusteringAllocationPipeline {
             ),
         );
 
-        let shader = load_embedded_asset!(asset_server, "cluster_allocate.wgsl");
+        let shader = load_embedded_asset!(asset_server, "cluster_allocate.wesl");
 
         ClusteringAllocationPipeline {
             bind_group_layout,

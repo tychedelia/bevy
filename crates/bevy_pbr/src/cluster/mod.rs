@@ -27,7 +27,7 @@ use crate::{MeshPipeline, RenderViewLightProbes};
 pub(crate) mod gpu;
 
 // NOTE: this must be kept in sync with the same constants in
-// `mesh_view_types.wgsl`.
+// `mesh_view_types.wesl`.
 pub const MAX_UNIFORM_BUFFER_CLUSTERABLE_OBJECTS: usize = 204;
 // Make sure that the clusterable object buffer doesn't overflow the maximum
 // size of a UBO on WebGL 2.

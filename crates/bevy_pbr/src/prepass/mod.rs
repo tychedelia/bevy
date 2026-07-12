@@ -77,7 +77,7 @@ impl Plugin for PrepassPipelinePlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "prepass.wgsl");
 
-        load_shader_library!(app, "prepass_bindings.wgsl");
+        load_shader_library!(app, "prepass_bindings.wesl");
         load_shader_library!(app, "prepass_utils.wgsl");
         load_shader_library!(app, "prepass_io.wgsl");
 

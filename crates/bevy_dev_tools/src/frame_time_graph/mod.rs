@@ -29,7 +29,7 @@ impl Plugin for FrameTimeGraphPlugin {
         load_internal_asset!(
             app,
             FRAME_TIME_GRAPH_SHADER_HANDLE,
-            "frame_time_graph.wgsl",
+            "frame_time_graph.wesl",
             Shader::from_wgsl
         );
 

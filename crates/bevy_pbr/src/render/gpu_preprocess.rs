@@ -394,10 +394,10 @@ impl BuildIndirectParametersBindGroups {
 /// The per-phase set of bind groups for the compute shaders that reset indirect
 /// draw counts and build indirect parameters.
 pub struct PhaseBuildIndirectParametersBindGroups {
-    /// The bind group for the `reset_indirect_batch_sets.wgsl` shader, for
+    /// The bind group for the `reset_indirect_batch_sets.wesl` shader, for
     /// indexed meshes.
     reset_indexed_indirect_batch_sets: Option<BindGroup>,
-    /// The bind group for the `reset_indirect_batch_sets.wgsl` shader, for
+    /// The bind group for the `reset_indirect_batch_sets.wesl` shader, for
     /// non-indexed meshes.
     reset_non_indexed_indirect_batch_sets: Option<BindGroup>,
     /// The bind group for the `build_indirect_params.wgsl` shader, for indexed
@@ -490,10 +490,10 @@ type WithAnyPrepass = Or<(
 impl Plugin for GpuMeshPreprocessPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "mesh_preprocess.wgsl");
-        embedded_asset!(app, "reset_indirect_batch_sets.wgsl");
+        embedded_asset!(app, "reset_indirect_batch_sets.wesl");
         embedded_asset!(app, "build_indirect_params.wgsl");
-        embedded_asset!(app, "unpack_bins.wgsl");
-        embedded_asset!(app, "allocate_uniforms.wgsl");
+        embedded_asset!(app, "unpack_bins.wesl");
+        embedded_asset!(app, "allocate_uniforms.wesl");
     }
 
     fn finish(&self, app: &mut App) {
@@ -1529,11 +1529,11 @@ impl FromWorld for PreprocessPipelines {
 
         let preprocess_shader = load_embedded_asset!(world, "mesh_preprocess.wgsl");
         let reset_indirect_batch_sets_shader =
-            load_embedded_asset!(world, "reset_indirect_batch_sets.wgsl");
+            load_embedded_asset!(world, "reset_indirect_batch_sets.wesl");
         let build_indirect_params_shader =
             load_embedded_asset!(world, "build_indirect_params.wgsl");
-        let bin_unpacking_shader = load_embedded_asset!(world, "unpack_bins.wgsl");
-        let uniform_allocation_shader = load_embedded_asset!(world, "allocate_uniforms.wgsl");
+        let bin_unpacking_shader = load_embedded_asset!(world, "unpack_bins.wesl");
+        let uniform_allocation_shader = load_embedded_asset!(world, "allocate_uniforms.wesl");
 
         let preprocess_phase_pipelines = PreprocessPhasePipelines {
             reset_indirect_batch_sets: ResetIndirectBatchSetsPipeline {
