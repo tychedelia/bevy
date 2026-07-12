@@ -14,7 +14,7 @@ import bevy_solari::world_cache::{
 import bevy_solari::realtime_bindings::{
     light_tile_resolved_samples,
     view,
-    constants,
+    push_constants,
     world_cache_active_cells_count,
     world_cache_active_cell_indices,
     world_cache_life,
@@ -32,7 +32,7 @@ fn sample_di(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_inv
 
     let cell_index = world_cache_active_cell_indices[active_cell_id.x];
     let geometry_data = world_cache_geometry_data[cell_index];
-    var rng = cell_index + constants.frame_index;
+    var rng = cell_index + push_constants.frame_index;
 
     if rand_f(&rng) >= f32(WORLD_CACHE_CELL_UPDATES_SOFT_CAP) / f32(world_cache_active_cells_count) { return; }
 
@@ -47,7 +47,7 @@ fn sample_gi(@builtin(workgroup_id) workgroup_id: vec3<u32>, @builtin(global_inv
 
     let cell_index = world_cache_active_cell_indices[active_cell_id.x];
     let geometry_data = world_cache_geometry_data[cell_index];
-    var rng = cell_index + constants.frame_index;
+    var rng = cell_index + push_constants.frame_index;
 
     if rand_f(&rng) >= f32(WORLD_CACHE_CELL_UPDATES_SOFT_CAP) / f32(world_cache_active_cells_count) { return; }
 
@@ -66,7 +66,7 @@ fn blend_new_samples(@builtin(global_invocation_id) active_cell_id: vec3<u32>) {
     if active_cell_id.x >= world_cache_active_cells_count { return; }
 
     let cell_index = world_cache_active_cell_indices[active_cell_id.x];
-    var rng = cell_index + constants.frame_index;
+    var rng = cell_index + push_constants.frame_index;
 
     if rand_f(&rng) >= f32(WORLD_CACHE_CELL_UPDATES_SOFT_CAP) / f32(world_cache_active_cells_count) { return; }
 
@@ -79,12 +79,12 @@ fn blend_new_samples(@builtin(global_invocation_id) active_cell_id: vec3<u32>) {
     let alpha = abs(luminance_delta) / max(luminance(old_radiance.rgb), 0.001);
     let max_sample_count = mix(WORLD_CACHE_MAX_TEMPORAL_SAMPLES, 1.0, pow(saturate(alpha), 1.0 / 8.0));
     var blend_amount = 1.0 / min(sample_count, max_sample_count);
-    if bool(constants.reset) {
+    if bool(push_constants.reset) {
         blend_amount = 1.0;
     }
 
     let blended_radiance = mix(old_radiance.rgb, new_radiance, blend_amount);
-    let blended_luminance_delta = select(mix(luminance_delta, luminance(blended_radiance) - luminance(old_radiance.rgb), 1.0 / 8.0), 0.0, bool(constants.reset));
+    let blended_luminance_delta = select(mix(luminance_delta, luminance(blended_radiance) - luminance(old_radiance.rgb), 1.0 / 8.0), 0.0, bool(push_constants.reset));
 
     world_cache_radiance[cell_index] = vec4(blended_radiance, sample_count);
     world_cache_luminance_deltas[cell_index] = blended_luminance_delta;

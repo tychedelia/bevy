@@ -1,22 +1,20 @@
+import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
+import bevy_pbr::pbr_functions::{calculate_diffuse_color, calculate_F0};
+import bevy_pbr::utils::rand_f;
+import bevy_render::maths::{orthonormalize, PI};
+import bevy_render::view::View;
+import bevy_solari::brdf::{evaluate_brdf, evaluate_specular_brdf, F_AB};
+import bevy_solari::gbuffer_utils::{gpixel_resolve, ResolvedGPixel};
+import bevy_solari::sampling::{sample_random_light, random_emissive_light_pdf, sample_ggx_vndf, ggx_vndf_pdf, ggx_vndf_sample_invalid, power_heuristic};
+import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, ResolvedRayHitFull, RAY_T_MIN, RAY_T_MAX, MIRROR_ROUGHNESS_THRESHOLD};
+import bevy_solari::world_cache::{query_world_cache, get_cell_size, WORLD_CACHE_CELL_LIFETIME};
+import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gbuffer, depth_buffer, view, push_constants};
+@if(DLSS_RR_GUIDE_BUFFERS)
+import bevy_solari::realtime_bindings::{diffuse_albedo, specular_albedo, normal_roughness, specular_motion_vectors, previous_view};
+@if(DLSS_RR_GUIDE_BUFFERS)
+import bevy_solari::resolve_dlss_rr_textures::env_brdf_approx2;
+
 enable wgpu_ray_query;
-
-#define_import_path bevy_solari::specular_gi
-
-#import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance
-#import bevy_pbr::pbr_functions::{calculate_diffuse_color, calculate_F0}
-#import bevy_pbr::utils::rand_f
-#import bevy_render::maths::{orthonormalize, PI}
-#import bevy_render::view::View
-#import bevy_solari::brdf::{evaluate_brdf, evaluate_specular_brdf, F_AB}
-#import bevy_solari::gbuffer_utils::{gpixel_resolve, ResolvedGPixel}
-#import bevy_solari::sampling::{sample_random_light, random_emissive_light_pdf, sample_ggx_vndf, ggx_vndf_pdf, ggx_vndf_sample_invalid, power_heuristic}
-#import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, ResolvedRayHitFull, RAY_T_MIN, RAY_T_MAX, MIRROR_ROUGHNESS_THRESHOLD}
-#import bevy_solari::world_cache::{query_world_cache, get_cell_size, WORLD_CACHE_CELL_LIFETIME}
-#import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gbuffer, depth_buffer, view, constants}
-#ifdef DLSS_RR_GUIDE_BUFFERS
-#import bevy_solari::realtime_bindings::{diffuse_albedo, specular_albedo, normal_roughness, specular_motion_vectors, previous_view}
-#import bevy_solari::resolve_dlss_rr_textures::env_brdf_approx2
-#endif
 
 const DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD: f32 = 0.4;
 const SPECULAR_GI_FOR_DI_ROUGHNESS_THRESHOLD: f32 = 0.0225;
@@ -26,7 +24,7 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if any(global_id.xy >= vec2u(view.main_pass_viewport.zw)) { return; }
 
     let pixel_index = global_id.x + global_id.y * u32(view.main_pass_viewport.z);
-    var rng = pixel_index + constants.frame_index;
+    var rng = pixel_index + push_constants.frame_index;
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
     if depth == 0.0 {
@@ -76,9 +74,8 @@ fn specular_gi(@builtin(global_invocation_id) global_id: vec3<u32>) {
     pixel_color += vec4(radiance, 0.0);
     textureStore(view_output, global_id.xy, pixel_color);
 
-#ifdef VISUALIZE_WORLD_CACHE
+    @if(VISUALIZE_WORLD_CACHE)
     textureStore(view_output, global_id.xy, vec4(query_world_cache(surface.world_position, surface.world_normal, view.world_position, RAY_T_MAX, WORLD_CACHE_CELL_LIFETIME, &rng) * view.exposure, 1.0));
-#endif
 }
 
 fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initial_ray_t: f32, initial_wi: vec3<f32>, initial_p_bounce: f32, rng: ptr<function, u32>) -> vec3<f32> {
@@ -90,10 +87,10 @@ fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initi
     var p_bounce = initial_p_bounce;
     var path_roughness = primary_surface.material.roughness;
 
-#ifdef DLSS_RR_GUIDE_BUFFERS
+    @if(DLSS_RR_GUIDE_BUFFERS)
     var mirror_rotations = reflection_matrix(primary_surface.world_normal);
+    @if(DLSS_RR_GUIDE_BUFFERS)
     var psr_finished = false;
-#endif
 
     // Trace up to three bounces
     for (var i = 0u; i < 3u; i += 1u) {
@@ -121,7 +118,7 @@ fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initi
 
         // Primary surface replacement for perfect mirrors
         // https://developer.nvidia.com/blog/rendering-perfect-reflections-and-refractions-in-path-traced-games/#primary_surface_replacement
-#ifdef DLSS_RR_GUIDE_BUFFERS
+        @if(DLSS_RR_GUIDE_BUFFERS)
         if !psr_finished && primary_surface.material.roughness <= MIRROR_ROUGHNESS_THRESHOLD && primary_surface.material.metallic > 0.9999 {
             if surface_perfect_mirror {
                 mirror_rotations = mirror_rotations * reflection_matrix(ray_hit.world_normal);
@@ -130,7 +127,6 @@ fn trace_glossy_path(pixel_id: vec2<u32>, primary_surface: ResolvedGPixel, initi
                 replace_primary_surface(pixel_id, ray_hit, mirror_rotations, primary_surface.world_position);
             }
         }
-#endif
 
         // Terminate path in the world cache if the ray is long enough and the path spread is large enough
         var rng_copy = *rng;
@@ -201,7 +197,7 @@ fn nee_mis_weight(inverse_p_light: f32, brdf_rays_can_hit: bool, wo_tangent: vec
     return power_heuristic(p_light, p_bounce);
 }
 
-#ifdef DLSS_RR_GUIDE_BUFFERS
+@if(DLSS_RR_GUIDE_BUFFERS)
 // https://en.wikipedia.org/wiki/Householder_transformation
 fn reflection_matrix(plane_normal: vec3f) -> mat3x3<f32> {
     // N times Nᵀ.
@@ -214,6 +210,7 @@ fn reflection_matrix(plane_normal: vec3f) -> mat3x3<f32> {
     return identity_matrix - n_nt * 2.0;
 }
 
+@if(DLSS_RR_GUIDE_BUFFERS)
 fn replace_primary_surface(pixel_id: vec2<u32>, ray_hit: ResolvedRayHitFull, mirror_rotations: mat3x3<f32>, primary_surface_world_position: vec3<f32>) {
     // Simplification: Apply all rotations in the chain around the first mirror, rather than applying each rotation around its respective mirror
     let virtual_position = (mirror_rotations * (ray_hit.world_position - primary_surface_world_position)) + primary_surface_world_position;
@@ -230,6 +227,7 @@ fn replace_primary_surface(pixel_id: vec2<u32>, ray_hit: ResolvedRayHitFull, mir
     textureStore(normal_roughness, pixel_id, vec4(virtual_normal, ray_hit.material.perceptual_roughness));
 }
 
+@if(DLSS_RR_GUIDE_BUFFERS)
 fn calculate_motion_vector(world_position: vec3<f32>, previous_world_position: vec3<f32>) -> vec2<f32> {
     let clip_position_t = view.unjittered_clip_from_world * vec4(world_position, 1.0);
     let clip_position = clip_position_t.xy / clip_position_t.w;
@@ -243,4 +241,3 @@ fn calculate_motion_vector(world_position: vec3<f32>, previous_world_position: v
     // down where clip space y goes up, so y needs to be flipped.
     return (clip_position - previous_clip_position) * vec2(0.5, -0.5);
 }
-#endif

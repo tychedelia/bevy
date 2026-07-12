@@ -1,10 +1,6 @@
-enable wgpu_ray_query;
-
-#define_import_path bevy_solari::world_cache
-
-#import bevy_pbr::utils::{rand_f, rand_vec2f}
-#import bevy_render::maths::orthonormalize
-#import bevy_solari::realtime_bindings::{
+import bevy_pbr::utils::{rand_f, rand_vec2f};
+import bevy_render::maths::orthonormalize;
+import bevy_solari::realtime_bindings::{
     world_cache_life,
     world_cache_checksums,
     world_cache_radiance,
@@ -15,7 +11,9 @@ enable wgpu_ray_query;
     world_cache_active_cell_indices,
     world_cache_active_cells_count,
     WorldCacheGeometryData,
-}
+};
+
+enable wgpu_ray_query;
 
 /// How responsive the world cache is to changes in lighting (higher is less responsive but more stable, lower is more responsive but less stable)
 const WORLD_CACHE_MAX_TEMPORAL_SAMPLES: f32 = 32.0;
@@ -39,25 +37,25 @@ const WORLD_CACHE_POSITION_LOD_SCALE: f32 = 15.0;
 /// Marker value for an empty cell
 const WORLD_CACHE_EMPTY_CELL: u32 = 0u;
 
-#ifndef WORLD_CACHE_NON_ATOMIC_LIFE_BUFFER
+@if(!WORLD_CACHE_NON_ATOMIC_LIFE_BUFFER)
 fn query_world_cache(world_position_in: vec3<f32>, world_normal: vec3<f32>, view_position: vec3<f32>, ray_t: f32, cell_lifetime: u32, rng: ptr<function, u32>) -> vec3<f32> {
     var world_position = world_position_in;
     var cell_size = get_cell_size(world_position, view_position, rng);
 
-#ifdef JITTER_WORLD_CACHE
+@if(JITTER_WORLD_CACHE) {
     // Jitter query point, which essentially blurs the cache a bit so it's not so grid-like
     // https://tomclabault.github.io/blog/2025/regir, jitter_world_position_tangent_plane
     let TBN = orthonormalize(world_normal);
     let offset = (rand_vec2f(rng) * 2.0 - 1.0) * cell_size * 0.5;
     world_position += offset.x * TBN[0] + offset.y * TBN[1];
     cell_size = get_cell_size(world_position, view_position, rng);
-#else
+} @else {
     // Reduce light leaks
     if ray_t < cell_size {
         let lod = max(floor(log2(ray_t / WORLD_CACHE_POSITION_BASE_CELL_SIZE)), 0.0);
         cell_size = WORLD_CACHE_POSITION_BASE_CELL_SIZE * exp2(lod);
     }
-#endif
+}
 
     let world_position_quantized = bitcast<vec3<u32>>(quantize_position(world_position, cell_size));
     let world_normal_quantized = bitcast<vec3<u32>>(quantize_normal(world_normal));
@@ -69,11 +67,10 @@ fn query_world_cache(world_position_in: vec3<f32>, world_normal: vec3<f32>, view
 
         // Cell already exists or is empty - reset lifetime
         if existing_checksum == checksum || existing_checksum == WORLD_CACHE_EMPTY_CELL {
-#ifndef WORLD_CACHE_QUERY_ATOMIC_MAX_LIFETIME
+            @if(!WORLD_CACHE_QUERY_ATOMIC_MAX_LIFETIME)
             atomicStore(&world_cache_life[key], cell_lifetime);
-#else
+            @else
             atomicMax(&world_cache_life[key], cell_lifetime);
-#endif
         }
 
         if existing_checksum == checksum {
@@ -92,7 +89,6 @@ fn query_world_cache(world_position_in: vec3<f32>, world_normal: vec3<f32>, view
 
     return vec3(0.0);
 }
-#endif
 
 fn get_cell_size(world_position: vec3<f32>, view_position: vec3<f32>, rng: ptr<function, u32>) -> f32 {
     let camera_distance = distance(view_position, world_position) / WORLD_CACHE_POSITION_LOD_SCALE;
@@ -142,5 +138,5 @@ fn iqint_hash(input: u32) -> u32 {
 }
 
 fn wrap_key(key: u32) -> u32 {
-    return key & (#{WORLD_CACHE_SIZE} - 1u);
+    return key & (u32(constants::WORLD_CACHE_SIZE) - 1u);
 }

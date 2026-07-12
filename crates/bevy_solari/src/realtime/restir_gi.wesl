@@ -1,18 +1,18 @@
 // https://intro-to-restir.cwyman.org/presentations/2023ReSTIR_Course_Notes.pdf
-enable wgpu_ray_query;
+import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
+import bevy_pbr::prepass_bindings::PreviousViewUniforms;
+import bevy_pbr::utils::{rand_f, sample_uniform_hemisphere, uniform_hemisphere_inverse_pdf, sample_disk};
+import bevy_render::maths::PI;
+import bevy_render::view::View;
+import bevy_solari::brdf::{evaluate_diffuse_brdf, F_AB};
+import bevy_solari::gbuffer_utils::{gpixel_resolve, pixel_dissimilar, permute_pixel};
+import bevy_solari::sampling::{sample_random_light, trace_point_visibility, balance_heuristic, isinf, isnan};
+import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN, RAY_T_MAX};
+import bevy_solari::world_cache::{query_world_cache, WORLD_CACHE_CELL_LIFETIME};
+import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gi_reservoirs_b, gbuffer, depth_buffer, motion_vectors, previous_gbuffer, previous_depth_buffer, view, previous_view, push_constants, Reservoir};
+import bevy_solari::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD;
 
-#import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance
-#import bevy_pbr::prepass_bindings::PreviousViewUniforms
-#import bevy_pbr::utils::{rand_f, sample_uniform_hemisphere, uniform_hemisphere_inverse_pdf, sample_disk}
-#import bevy_render::maths::PI
-#import bevy_render::view::View
-#import bevy_solari::brdf::{evaluate_diffuse_brdf, F_AB}
-#import bevy_solari::gbuffer_utils::{gpixel_resolve, pixel_dissimilar, permute_pixel}
-#import bevy_solari::sampling::{sample_random_light, trace_point_visibility, balance_heuristic, isinf, isnan}
-#import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN, RAY_T_MAX}
-#import bevy_solari::world_cache::{query_world_cache, WORLD_CACHE_CELL_LIFETIME}
-#import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gi_reservoirs_b, gbuffer, depth_buffer, motion_vectors, previous_gbuffer, previous_depth_buffer, view, previous_view, constants, Reservoir}
-#import bevy_solari::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD
+enable wgpu_ray_query;
 
 const SPATIAL_REUSE_RADIUS_PIXELS = 30.0;
 const CONFIDENCE_WEIGHT_CAP = 8.0;
@@ -22,7 +22,7 @@ fn initial_and_temporal(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if any(global_id.xy >= vec2u(view.main_pass_viewport.zw)) { return; }
 
     let pixel_index = global_id.x + global_id.y * u32(view.main_pass_viewport.z);
-    var rng = pixel_index + constants.frame_index;
+    var rng = pixel_index + push_constants.frame_index;
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
     if depth == 0.0 {
@@ -48,7 +48,7 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     if any(global_id.xy >= vec2u(view.main_pass_viewport.zw)) { return; }
 
     let pixel_index = global_id.x + global_id.y * u32(view.main_pass_viewport.z);
-    var rng = pixel_index + constants.frame_index;
+    var rng = pixel_index + push_constants.frame_index;
 
     let depth = textureLoad(depth_buffer, global_id.xy, 0);
     if depth == 0.0 {
@@ -68,16 +68,14 @@ fn spatial_and_shade(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var combined_reservoir = merge_result.merged_reservoir;
 
     // More accuracy, less stability
-#ifndef BIASED_RESAMPLING
+    @if(!BIASED_RESAMPLING)
     gi_reservoirs_a[pixel_index] = combined_reservoir;
-#endif
 
     combined_reservoir.unbiased_contribution_weight *= trace_point_visibility(surface.world_position + (surface.world_normal * RAY_T_MIN), combined_reservoir.sample_point_world_position);
 
     // More stability, less accuracy (shadows extend further out than they should)
-#ifdef BIASED_RESAMPLING
+    @if(BIASED_RESAMPLING)
     gi_reservoirs_a[pixel_index] = combined_reservoir;
-#endif
 
     let wo = normalize(view.world_position - surface.world_position);
     let NdotV = max(dot(surface.world_normal, wo), 0.0001);
@@ -109,14 +107,14 @@ fn generate_initial_reservoir(world_position: vec3<f32>, world_normal: vec3<f32>
     reservoir.sample_point_world_normal = sample_point.world_normal;
     reservoir.confidence_weight = 1.0;
 
-#ifdef NO_WORLD_CACHE
+@if(NO_WORLD_CACHE) {
     let direct_lighting = sample_random_light(sample_point.world_position, sample_point.world_normal, rng);
     reservoir.radiance = direct_lighting.radiance * saturate(dot(direct_lighting.wi, sample_point.world_normal));
     reservoir.unbiased_contribution_weight = direct_lighting.inverse_pdf * uniform_hemisphere_inverse_pdf();
-#else
+} @else {
     reservoir.radiance = query_world_cache(sample_point.world_position, sample_point.geometric_world_normal, view.world_position, ray.t, WORLD_CACHE_CELL_LIFETIME, rng);
     reservoir.unbiased_contribution_weight = uniform_hemisphere_inverse_pdf();
-#endif
+}
 
     let sample_point_diffuse_brdf = sample_point.material.base_color / PI;
     reservoir.radiance *= sample_point_diffuse_brdf;
@@ -129,7 +127,7 @@ fn load_temporal_reservoir(pixel_id: vec2<u32>, depth: f32, world_position: vec3
     let temporal_pixel_id_float = round(vec2<f32>(pixel_id) - (motion_vector * view.main_pass_viewport.zw));
     var point_temporal_pixel_id = vec2<u32>(temporal_pixel_id_float);
 
-    if bool(constants.reset) {
+    if bool(push_constants.reset) {
         return NeighborInfo(empty_reservoir(), vec3(0.0), vec3(0.0), vec3(0.0));
     }
 
@@ -137,7 +135,7 @@ fn load_temporal_reservoir(pixel_id: vec2<u32>, depth: f32, world_position: vec3
         point_temporal_pixel_id = pixel_id;
     }
 
-    let permuted_temporal_pixel_id = permute_pixel(point_temporal_pixel_id, constants.frame_index, view.main_pass_viewport.zw);
+    let permuted_temporal_pixel_id = permute_pixel(point_temporal_pixel_id, push_constants.frame_index, view.main_pass_viewport.zw);
     var temporal = load_temporal_reservoir_inner(permuted_temporal_pixel_id, depth, world_position, world_normal);
 
     temporal.reservoir.confidence_weight = min(temporal.reservoir.confidence_weight, CONFIDENCE_WEIGHT_CAP);

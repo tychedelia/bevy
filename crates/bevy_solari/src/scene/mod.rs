@@ -37,7 +37,7 @@ impl Plugin for RaytracingScenePlugin {
             "raytracing_scene_bindings.wesl",
             import_path = "bevy_solari::scene_bindings"
         );
-        load_shader_library!(app, "sampling.wesl");
+        load_shader_library!(app, "sampling.wesl", import_path = "bevy_solari::sampling");
     }
 
     fn finish(&self, app: &mut App) {
