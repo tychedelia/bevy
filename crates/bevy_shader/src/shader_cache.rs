@@ -212,6 +212,11 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
             .and_then(|handle| shaders.get(handle))
             .ok_or(ShaderCacheError::ShaderImportNotYetAvailable)?;
 
+        // A wesl module can't satisfy a naga_oil import.
+        if matches!(shader.source, Source::Wesl(_)) {
+            return Err(ShaderCacheError::ShaderImportNotYetAvailable);
+        }
+
         // Recurse down to ensure all import dependencies are met
         for import in &shader.imports {
             Self::add_import_to_composer(composer, import_path_shaders, shaders, import)?;
