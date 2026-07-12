@@ -12,7 +12,7 @@ use bevy::{
 };
 
 /// This example uses shader source files from the assets subdirectory
-const FRAGMENT_SHADER_ASSET_PATH: &str = "shaders/custom_material.wesl";
+const FRAGMENT_SHADER_ASSET_PATH: &str = "shaders/polka_dots.wesl";
 
 fn main() {
     App::new()
