@@ -294,8 +294,24 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                                 ..Default::default()
                             };
 
+                            // Bool defs become condcomp feature flags; valued
+                            // defs become the virtual `constants` module,
+                            // importable as `constants::NAME`, and also enable
+                            // the flag of the same name, since naga_oil's
+                            // `#ifdef` tested presence regardless of value.
+                            let library_defs = self
+                                .shaders
+                                .values()
+                                .filter(|s| {
+                                    !core::ptr::eq(*s, shader)
+                                        && matches!(s.source, Source::Wesl(_))
+                                })
+                                .flat_map(|s| s.shader_defs.iter());
                             let mut constants = alloc::collections::BTreeMap::new();
-                            for shader_def in shader_defs.iter().chain(shader.shader_defs.iter()) {
+                            for shader_def in library_defs
+                                .chain(shader_defs.iter())
+                                .chain(shader.shader_defs.iter())
+                            {
                                 match shader_def {
                                     ShaderDefVal::Bool(key, value) => {
                                         compiler_options
