@@ -222,23 +222,44 @@ impl Plugin for PbrPlugin {
             "deferred/pbr_deferred_functions.wesl",
             import_path = "bevy_pbr::pbr_deferred_functions"
         );
-        load_shader_library!(app, "render/shadow_sampling.wesl");
-        load_shader_library!(app, "render/pbr_functions.wesl");
+        load_shader_library!(
+            app,
+            "render/shadow_sampling.wesl",
+            import_path = "bevy_pbr::shadow_sampling"
+        );
+        load_shader_library!(
+            app,
+            "render/pbr_functions.wesl",
+            import_path = "bevy_pbr::pbr_functions"
+        );
         load_shader_library!(app, "render/rgb9e5.wesl", import_path = "bevy_pbr::rgb9e5");
         load_shader_library!(
             app,
             "render/pbr_ambient.wesl",
             import_path = "bevy_pbr::ambient"
         );
-        load_shader_library!(app, "render/pbr_fragment.wesl");
+        load_shader_library!(
+            app,
+            "render/pbr_fragment.wesl",
+            import_path = "bevy_pbr::pbr_fragment"
+        );
         load_shader_library!(app, "render/pbr.wesl");
-        load_shader_library!(app, "render/pbr_prepass_functions.wesl");
+        load_shader_library!(
+            app,
+            "render/pbr_prepass_functions.wesl",
+            import_path = "bevy_pbr::pbr_prepass_functions"
+        );
         load_shader_library!(app, "render/pbr_prepass.wesl");
-        load_shader_library!(app, "render/parallax_mapping.wesl");
-        load_shader_library!(app, "render/view_transformations.wesl");
-
-        // Setup dummy shaders for when MeshletPlugin is not used to prevent shader import errors.
-        load_shader_library!(app, "meshlet/dummy_visibility_buffer_resolve.wesl");
+        load_shader_library!(
+            app,
+            "render/parallax_mapping.wesl",
+            import_path = "bevy_pbr::parallax_mapping"
+        );
+        load_shader_library!(
+            app,
+            "render/view_transformations.wesl",
+            import_path = "bevy_pbr::view_transformations"
+        );
 
         app.register_asset_reflect::<StandardMaterial>()
             .init_resource::<DefaultOpaqueRendererMethod>()

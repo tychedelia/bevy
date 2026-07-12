@@ -142,7 +142,11 @@ impl Plugin for MeshletPlugin {
             "meshlet_bindings.wesl",
             import_path = "bevy_pbr::meshlet_bindings"
         );
-        load_shader_library!(app, "visibility_buffer_resolve.wesl");
+        load_shader_library!(
+            app,
+            "visibility_buffer_resolve.wesl",
+            import_path = "bevy_pbr::meshlet_visibility_buffer_resolve"
+        );
         load_shader_library!(
             app,
             "meshlet_cull_shared.wesl",

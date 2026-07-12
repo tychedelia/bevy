@@ -148,7 +148,7 @@ pub struct MeshPipelineSystems;
 
 impl Plugin for MeshRenderPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "forward_io.wesl");
+        load_shader_library!(app, "forward_io.wesl", import_path = "bevy_pbr::forward_io");
         load_shader_library!(app, "mesh_view_types.wesl", |settings| *settings =
             ShaderSettings {
                 shader_defs: vec![
@@ -165,9 +165,17 @@ impl Plugin for MeshRenderPlugin {
                 import_path: Some("bevy_pbr::mesh_view_types".into()),
                 ..Default::default()
             });
-        load_shader_library!(app, "mesh_view_bindings.wesl");
+        load_shader_library!(
+            app,
+            "mesh_view_bindings.wesl",
+            import_path = "bevy_pbr::mesh_view_bindings"
+        );
         load_shader_library!(app, "mesh_types.wesl", import_path = "bevy_pbr::mesh_types");
-        load_shader_library!(app, "mesh_functions.wesl");
+        load_shader_library!(
+            app,
+            "mesh_functions.wesl",
+            import_path = "bevy_pbr::mesh_functions"
+        );
         load_shader_library!(app, "skinning.wesl", import_path = "bevy_pbr::skinning");
         load_shader_library!(app, "morph.wesl", import_path = "bevy_pbr::morph");
         load_shader_library!(

@@ -170,7 +170,7 @@ pub struct ViewPlugin;
 
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "view.wesl");
+        load_shader_library!(app, "view.wesl", import_path = "bevy_render::view");
 
         app
             // NOTE: windows.is_changed() handles cases where a window was resized

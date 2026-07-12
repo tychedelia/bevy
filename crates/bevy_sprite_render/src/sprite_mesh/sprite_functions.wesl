@@ -1,6 +1,4 @@
-#define_import_path bevy_sprite::sprite_functions
-
-#import bevy_sprite::{
+import bevy_sprite::{
     sprite_types::{
         SPRITE_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS,
         SPRITE_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE,
@@ -11,7 +9,7 @@
         SPRITE_MATERIAL_FLAGS_TILE_Y,
     },
     sprite_bindings::{material, texture, texture_sampler},
-}
+};
 
 // Applies all the transformations to the UV and samples the sprite's final color.
 fn sample_final_color(uv: vec2<f32>) -> vec4<f32> {
@@ -170,17 +168,18 @@ fn alpha_discard(output_color: vec4<f32>) -> vec4<f32> {
         color.a = 1.0;
     }
 
-#ifdef MAY_DISCARD
-    else if alpha_mode == SPRITE_MATERIAL_FLAGS_ALPHA_MODE_MASK {
-        if color.a >= material.alpha_cutoff {
-            // NOTE: If rendering as masked alpha and >= the cutoff, render as fully opaque
-            color.a = 1.0;
-        } else {
-            // NOTE: output_color.a < in.material.alpha_cutoff should not be rendered
-            discard;
+    else {
+        @if(MAY_DISCARD)
+        if alpha_mode == SPRITE_MATERIAL_FLAGS_ALPHA_MODE_MASK {
+            if color.a >= material.alpha_cutoff {
+                // NOTE: If rendering as masked alpha and >= the cutoff, render as fully opaque
+                color.a = 1.0;
+            } else {
+                // NOTE: output_color.a < in.material.alpha_cutoff should not be rendered
+                discard;
+            }
         }
     }
-#endif // MAY_DISCARD
 
     return color;
 }

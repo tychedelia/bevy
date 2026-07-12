@@ -272,7 +272,10 @@ impl Plugin for MipGenerationPlugin {
                     shader_template_source.replace("##TEXTURE_FORMAT##", identifier);
                 (
                     *target_format,
-                    shader_assets.add(Shader::from_wgsl(shader_source, "downsample.wesl")),
+                    shader_assets.add(Shader::from_wesl(
+                        shader_source,
+                        format!("downsample_{identifier}.wesl"),
+                    )),
                 )
             })
             .collect();
