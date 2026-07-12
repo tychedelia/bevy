@@ -6,7 +6,7 @@ use smallvec::SmallVec;
 
 use crate::{
     render_resource::*,
-    renderer::{RenderAdapter, RenderDevice, WgpuWrapper},
+    renderer::{RenderDevice, WgpuWrapper},
     Extract,
 };
 use alloc::{borrow::Cow, sync::Arc};
@@ -135,8 +135,6 @@ fn load_module(
             unimplemented!("Enable feature \"shader_format_spirv\" to use SPIR-V shaders")
         }
         ShaderCacheSource::Wgsl(src) => ShaderSource::Wgsl(Cow::Owned(src)),
-        #[cfg(not(feature = "decoupled_naga"))]
-        ShaderCacheSource::Naga(src) => ShaderSource::Naga(Cow::Owned(src)),
     };
     let module_descriptor = ShaderModuleDescriptor {
         label: None,
@@ -238,11 +236,7 @@ impl PipelineCache {
     }
 
     /// Create a new pipeline cache associated with the given render device.
-    pub fn new(
-        device: RenderDevice,
-        render_adapter: RenderAdapter,
-        synchronous_pipeline_compilation: bool,
-    ) -> Self {
+    pub fn new(device: RenderDevice, synchronous_pipeline_compilation: bool) -> Self {
         let mut global_shader_defs = Vec::new();
         #[cfg(all(feature = "webgl", target_arch = "wasm32", not(feature = "webgpu")))]
         {
@@ -272,12 +266,7 @@ impl PipelineCache {
         ));
 
         Self {
-            shader_cache: Arc::new(Mutex::new(ShaderCache::new(
-                device.clone(),
-                device.features(),
-                render_adapter.get_downlevel_capabilities().flags,
-                load_module,
-            ))),
+            shader_cache: Arc::new(Mutex::new(ShaderCache::new(device.clone(), load_module))),
             device,
             layout_cache: default(),
             bindgroup_layout_cache: default(),
@@ -727,18 +716,7 @@ impl PipelineCache {
                 }
 
                 // Shader could not be processed ... retrying won't help
-                ShaderCacheError::ProcessShaderError(err) => {
-                    let error_detail =
-                        err.emit_to_string(&self.shader_cache.lock().unwrap().composer);
-                    if std::env::var("VERBOSE_SHADER_ERROR")
-                        .is_ok_and(|v| !(v.is_empty() || v == "0" || v == "false"))
-                    {
-                        error!("{}", pipeline_error_context(cached_pipeline));
-                    }
-                    error!("failed to process shader error:\n{}", error_detail);
-                    return;
-                }
-                ShaderCacheError::ProcessWeslShaderError(error_detail) => {
+                ShaderCacheError::ProcessShaderError(error_detail) => {
                     let error_detail = error_detail.clone();
                     if std::env::var("VERBOSE_SHADER_ERROR")
                         .is_ok_and(|v| !(v.is_empty() || v == "0" || v == "false"))

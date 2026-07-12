@@ -103,7 +103,8 @@ pub enum ValidateShader {
     Enabled,
 }
 
-/// An "unprocessed" shader. It can contain preprocessor directives and imports.
+/// An "unprocessed" shader. It can contain imports and translate-time
+/// conditional compilation attributes.
 #[derive(Asset, TypePath, Debug, Clone)]
 pub struct Shader {
     /// The asset path of the shader.
@@ -114,8 +115,6 @@ pub struct Shader {
     pub import_path: ShaderImport,
     /// The import paths this shader depends on.
     pub imports: Vec<ShaderImport>,
-    /// Extra imports not specified in the source string.
-    pub additional_imports: Vec<naga_oil::compose::ImportDefinition>,
     /// Any shader defs that should be included when this module is used.
     pub shader_defs: Vec<ShaderDefVal>,
     /// Strong handles to this shader's dependencies, to prevent them
@@ -128,44 +127,15 @@ pub struct Shader {
 }
 
 impl Shader {
-    fn preprocess(source: &str, path: &str) -> (ShaderImport, Vec<ShaderImport>) {
-        let (import_path, imports, _) = naga_oil::compose::get_preprocessor_data(source);
-
-        let import_path = import_path
-            .map(ShaderImport::Custom)
-            .unwrap_or_else(|| ShaderImport::AssetPath(path.to_owned()));
-
-        let imports = imports
-            .into_iter()
-            .map(|import| {
-                if import.import.starts_with('\"') {
-                    let import = import
-                        .import
-                        .chars()
-                        .skip(1)
-                        .take_while(|c| *c != '\"')
-                        .collect();
-                    ShaderImport::AssetPath(import)
-                } else {
-                    ShaderImport::Custom(import.import)
-                }
-            })
-            .collect();
-
-        (import_path, imports)
-    }
-
     /// Creates a new WGSL shader.
     pub fn from_wgsl(source: impl Into<Cow<'static, str>>, path: impl Into<String>) -> Shader {
         let source = source.into();
         let path = path.into();
-        let (import_path, imports) = Shader::preprocess(&source, &path);
         Shader {
+            import_path: ShaderImport::AssetPath(path.clone()),
             path,
-            imports,
-            import_path,
+            imports: Vec::new(),
             source: Source::Wgsl(source),
-            additional_imports: Default::default(),
             shader_defs: Default::default(),
             file_dependencies: Default::default(),
             validate_shader: ValidateShader::Disabled,
@@ -173,6 +143,8 @@ impl Shader {
     }
 
     /// Creates a new WGSL shader with some given shader defs.
+    ///
+    /// Plain WGSL is not preprocessed, so the defs have no effect on the shader itself.
     pub fn from_wgsl_with_defs(
         source: impl Into<Cow<'static, str>>,
         path: impl Into<String>,
@@ -184,27 +156,6 @@ impl Shader {
         }
     }
 
-    /// Creates a new GLSL shader.
-    pub fn from_glsl(
-        source: impl Into<Cow<'static, str>>,
-        stage: naga::ShaderStage,
-        path: impl Into<String>,
-    ) -> Shader {
-        let source = source.into();
-        let path = path.into();
-        let (import_path, imports) = Shader::preprocess(&source, &path);
-        Shader {
-            path,
-            imports,
-            import_path,
-            source: Source::Glsl(source, stage),
-            additional_imports: Default::default(),
-            shader_defs: Default::default(),
-            file_dependencies: Default::default(),
-            validate_shader: ValidateShader::Disabled,
-        }
-    }
-
     /// Creates a new SPIR-V shader.
     pub fn from_spirv(source: impl Into<Cow<'static, [u8]>>, path: impl Into<String>) -> Shader {
         let path = path.into();
@@ -213,7 +164,6 @@ impl Shader {
             imports: Vec::new(),
             import_path: ShaderImport::AssetPath(path),
             source: Source::SpirV(source.into()),
-            additional_imports: Default::default(),
             shader_defs: Default::default(),
             file_dependencies: Default::default(),
             validate_shader: ValidateShader::Disabled,
@@ -260,58 +210,9 @@ impl Shader {
             imports,
             import_path,
             source: Source::Wesl(source),
-            additional_imports: Default::default(),
             shader_defs: Default::default(),
             file_dependencies: Default::default(),
             validate_shader: ValidateShader::Disabled,
-        }
-    }
-}
-
-impl<'a> From<&'a Shader> for naga_oil::compose::ComposableModuleDescriptor<'a> {
-    fn from(shader: &'a Shader) -> Self {
-        let shader_defs = shader
-            .shader_defs
-            .iter()
-            .map(|def| match def {
-                ShaderDefVal::Bool(name, b) => (
-                    name.to_string(),
-                    naga_oil::compose::ShaderDefValue::Bool(*b),
-                ),
-                ShaderDefVal::Int(name, i) => {
-                    (name.to_string(), naga_oil::compose::ShaderDefValue::Int(*i))
-                }
-                ShaderDefVal::UInt(name, i) => (
-                    name.to_string(),
-                    naga_oil::compose::ShaderDefValue::UInt(*i),
-                ),
-            })
-            .collect();
-
-        // It is beyond me why this doesn't just use `shader.import_path.module_name()`.
-        let as_name = match &shader.import_path {
-            ShaderImport::AssetPath(asset_path) => Some(format!("\"{asset_path}\"")),
-            ShaderImport::Custom(_) => None,
-        };
-
-        naga_oil::compose::ComposableModuleDescriptor {
-            source: shader.source.as_str(),
-            file_path: &shader.path,
-            language: (&shader.source).into(),
-            additional_imports: &shader.additional_imports,
-            shader_defs,
-            as_name,
-        }
-    }
-}
-
-impl<'a> From<&'a Shader> for naga_oil::compose::NagaModuleDescriptor<'a> {
-    fn from(shader: &'a Shader) -> Self {
-        naga_oil::compose::NagaModuleDescriptor {
-            source: shader.source.as_str(),
-            file_path: &shader.path,
-            shader_type: (&shader.source).into(),
-            ..Default::default()
         }
     }
 }
@@ -322,7 +223,6 @@ impl<'a> From<&'a Shader> for naga_oil::compose::NagaModuleDescriptor<'a> {
 pub enum Source {
     Wgsl(Cow<'static, str>),
     Wesl(Cow<'static, str>),
-    Glsl(Cow<'static, str>, naga::ShaderStage),
     SpirV(Cow<'static, [u8]>),
     // TODO: consider the following
     // PrecompiledSpirVMacros(HashMap<HashSet<String>, Vec<u32>>)
@@ -333,52 +233,8 @@ impl Source {
     /// The underlying source code string, unless it is SPIR-V.
     pub fn as_str(&self) -> &str {
         match self {
-            Source::Wgsl(s) | Source::Wesl(s) | Source::Glsl(s, _) => s,
+            Source::Wgsl(s) | Source::Wesl(s) => s,
             Source::SpirV(_) => panic!("spirv not yet implemented"),
-        }
-    }
-}
-
-impl From<&Source> for naga_oil::compose::ShaderLanguage {
-    fn from(value: &Source) -> Self {
-        match value {
-            Source::Wgsl(_) => naga_oil::compose::ShaderLanguage::Wgsl,
-            #[cfg(any(feature = "shader_format_glsl", target_arch = "wasm32"))]
-            Source::Glsl(_, _) => naga_oil::compose::ShaderLanguage::Glsl,
-            #[cfg(all(not(feature = "shader_format_glsl"), not(target_arch = "wasm32")))]
-            Source::Glsl(_, _) => panic!(
-                "GLSL is not supported in this configuration; use the feature `shader_format_glsl`"
-            ),
-            Source::SpirV(_) => panic!("spirv not yet implemented"),
-            Source::Wesl(_) => panic!("wesl not yet implemented"),
-        }
-    }
-}
-
-impl From<&Source> for naga_oil::compose::ShaderType {
-    fn from(value: &Source) -> Self {
-        match value {
-            Source::Wgsl(_) => naga_oil::compose::ShaderType::Wgsl,
-            #[cfg(any(feature = "shader_format_glsl", target_arch = "wasm32"))]
-            Source::Glsl(_, shader_stage) => match shader_stage {
-                naga::ShaderStage::Vertex => naga_oil::compose::ShaderType::GlslVertex,
-                naga::ShaderStage::Fragment => naga_oil::compose::ShaderType::GlslFragment,
-                naga::ShaderStage::Compute => panic!("glsl compute not yet implemented"),
-                naga::ShaderStage::Task => panic!("task shaders not yet implemented"),
-                naga::ShaderStage::Mesh => panic!("mesh shaders not yet implemented"),
-                naga::ShaderStage::RayGeneration => {
-                    panic!("ray generation shader not yet implemented")
-                }
-                naga::ShaderStage::Miss => panic!("miss shader not yet implemented"),
-                naga::ShaderStage::AnyHit => panic!("any hit shader not yet implemented"),
-                naga::ShaderStage::ClosestHit => panic!("closest hit shader not yet implemented"),
-            },
-            #[cfg(all(not(feature = "shader_format_glsl"), not(target_arch = "wasm32")))]
-            Source::Glsl(_, _) => panic!(
-                "GLSL is not supported in this configuration; use the feature `shader_format_glsl`"
-            ),
-            Source::SpirV(_) => panic!("spirv not yet implemented"),
-            Source::Wesl(_) => panic!("wesl not yet implemented"),
         }
     }
 }
@@ -433,9 +289,9 @@ impl AssetLoader for ShaderLoader {
         let path = path.replace(std::path::MAIN_SEPARATOR, "/");
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        if ext != "wgsl" && ext != "wesl" && !settings.shader_defs.is_empty() {
+        if ext != "wesl" && !settings.shader_defs.is_empty() {
             tracing::warn!(
-                "Tried to load a non-wgsl shader with shader defs, this isn't supported: \
+                "Tried to load a non-wesl shader with shader defs, this isn't supported: \
                     The shader defs will be ignored."
             );
         }
@@ -446,13 +302,6 @@ impl AssetLoader for ShaderLoader {
                 path,
                 settings.shader_defs.clone(),
             ),
-            "vert" => Shader::from_glsl(String::from_utf8(bytes)?, naga::ShaderStage::Vertex, path),
-            "frag" => {
-                Shader::from_glsl(String::from_utf8(bytes)?, naga::ShaderStage::Fragment, path)
-            }
-            "comp" => {
-                Shader::from_glsl(String::from_utf8(bytes)?, naga::ShaderStage::Compute, path)
-            }
             "wesl" => {
                 let mut shader = Shader::from_wesl_with_import_path(
                     String::from_utf8(bytes)?,
@@ -502,7 +351,7 @@ impl AssetLoader for ShaderLoader {
     }
 
     fn extensions(&self) -> &[&str] {
-        &["spv", "wgsl", "vert", "frag", "comp", "wesl"]
+        &["spv", "wgsl", "wesl"]
     }
 }
 
@@ -513,16 +362,6 @@ pub enum ShaderImport {
     AssetPath(String),
     /// An import path from which a shader may be imported.
     Custom(String),
-}
-
-impl ShaderImport {
-    /// A name for a shader import.
-    pub fn module_name(&self) -> Cow<'_, String> {
-        match self {
-            ShaderImport::AssetPath(s) => Cow::Owned(format!("\"{s}\"")),
-            ShaderImport::Custom(s) => Cow::Borrowed(s),
-        }
-    }
 }
 
 /// A reference to a shader asset.

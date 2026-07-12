@@ -258,11 +258,10 @@ impl Plugin for MipGenerationPlugin {
 
         let depth_shader = load_embedded_asset!(app, "experimental/downsample_depth.wesl");
 
-        // We don't have string-valued shader definitions in `naga_oil`, so we
-        // use a text-pasting hack. The `downsample.wesl` shader is eagerly
+        // We don't have string-valued shader definitions, so we use a
+        // text-pasting hack. The `downsample.wesl` shader is eagerly
         // specialized for each texture format by replacing `##TEXTURE_FORMAT##`
         // with each possible format.
-        // When we have WESL, we should probably revisit this.
         let mut shader_assets = app.world_mut().resource_mut::<Assets<Shader>>();
         let shader_template_source = include_str!("downsample.wesl");
         let general_shaders: HashMap<_, _> = TEXTURE_FORMATS

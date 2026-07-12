@@ -7,7 +7,6 @@ use core::hash::Hash;
 use thiserror::Error;
 use tracing::debug;
 use tracing::warn;
-use wgpu_types::{DownlevelFlags, Features};
 
 pub(crate) fn wesl_module_path(import_path: &ShaderImport) -> Option<wesl::syntax::ModulePath> {
     match import_path {
@@ -64,22 +63,12 @@ fn is_module_not_found(error: &wesl::Error) -> bool {
 ///
 /// Any necessary shader translation (e.g. from WGSL to SPIR-V or vice versa)
 /// must be done internally by the renderer.
-#[cfg_attr(
-    not(feature = "decoupled_naga"),
-    expect(
-        clippy::large_enum_variant,
-        reason = "naga modules are the most common use, and are large"
-    )
-)]
 #[derive(Clone, Debug)]
 pub enum ShaderCacheSource<'a> {
     /// SPIR-V module represented as a slice of words.
     SpirV(&'a [u8]),
     /// WGSL module as a string slice.
     Wgsl(String),
-    /// Naga module.
-    #[cfg(not(feature = "decoupled_naga"))]
-    Naga(naga::Module),
 }
 
 /// An id of a pipeline, typically in the [`PipelineCache`](https://docs.rs/bevy/latest/bevy/render/render_resource/struct.PipelineCache.html)
@@ -123,9 +112,6 @@ pub struct ShaderCache<ShaderModule, RenderDevice> {
     shaders: HashMap<AssetId<Shader>, Shader>,
     import_path_shaders: HashMap<ShaderImport, AssetId<Shader>>,
     waiting_on_import: HashMap<ShaderImport, Vec<AssetId<Shader>>>,
-    // The naga composer is only public for providing error messages and should not be touched.
-    #[doc(hidden)]
-    pub composer: naga_oil::compose::Composer,
 }
 
 /// A compile time shader value definition to be inlined into the shader source.
@@ -167,25 +153,14 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
     /// compiling shader source into a module usable by the render device.
     pub fn new(
         device: RenderDevice,
-        features: Features,
-        downlevel: DownlevelFlags,
         load_module: fn(
             &RenderDevice,
             ShaderCacheSource,
             &ValidateShader,
         ) -> Result<ShaderModule, ShaderCacheError>,
     ) -> Self {
-        let capabilities = wgpu_naga_bridge::features_to_naga_capabilities(features, downlevel);
-        #[cfg(debug_assertions)]
-        let composer = naga_oil::compose::Composer::default();
-        #[cfg(not(debug_assertions))]
-        let composer = naga_oil::compose::Composer::non_validating();
-
-        let composer = composer.with_capabilities(capabilities);
-
         Self {
             device,
-            composer,
             load_module,
             data: Default::default(),
             module_path_to_asset_id: Default::default(),
@@ -193,41 +168,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
             import_path_shaders: Default::default(),
             waiting_on_import: Default::default(),
         }
-    }
-
-    fn add_import_to_composer(
-        composer: &mut naga_oil::compose::Composer,
-        import_path_shaders: &HashMap<ShaderImport, AssetId<Shader>>,
-        shaders: &HashMap<AssetId<Shader>, Shader>,
-        import: &ShaderImport,
-    ) -> Result<(), ShaderCacheError> {
-        // Early out if we've already imported this module
-        if composer.contains_module(&import.module_name()) {
-            return Ok(());
-        }
-
-        // Check if the import is available (this handles the recursive import case)
-        let shader = import_path_shaders
-            .get(import)
-            .and_then(|handle| shaders.get(handle))
-            .ok_or(ShaderCacheError::ShaderImportNotYetAvailable)?;
-
-        // A wesl module can't satisfy a naga_oil import.
-        if matches!(shader.source, Source::Wesl(_)) {
-            return Err(ShaderCacheError::ShaderImportNotYetAvailable);
-        }
-
-        // Recurse down to ensure all import dependencies are met
-        for import in &shader.imports {
-            Self::add_import_to_composer(composer, import_path_shaders, shaders, import)?;
-        }
-
-        composer
-            .add_composable_module(shader.into())
-            .map_err(Box::new)?;
-        // if we fail to add a module the composer will tell us what is missing
-
-        Ok(())
     }
 
     /// Attempts to retrieve or create a compiled shader module for the given
@@ -356,7 +296,7 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                                 if is_module_not_found(&error) {
                                     ShaderCacheError::ShaderImportNotYetAvailable
                                 } else {
-                                    ShaderCacheError::ProcessWeslShaderError(error.to_string())
+                                    ShaderCacheError::ProcessShaderError(error.to_string())
                                 }
                             })?;
 
@@ -372,67 +312,13 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
 
                             ShaderCacheSource::Wgsl(compiled.to_string())
                         } else {
-                            return Err(ShaderCacheError::ProcessWeslShaderError(format!(
+                            return Err(ShaderCacheError::ProcessShaderError(format!(
                                 "Wesl shader `{}` has a malformed import path `{:?}`",
                                 shader.path, shader.import_path
                             )));
                         }
                     }
-                    _ => {
-                        for import in shader.imports.iter() {
-                            Self::add_import_to_composer(
-                                &mut self.composer,
-                                &self.import_path_shaders,
-                                &self.shaders,
-                                import,
-                            )?;
-                        }
-
-                        let shader_defs = shader_defs
-                            .iter()
-                            .chain(shader.shader_defs.iter())
-                            .map(|def| match def.clone() {
-                                ShaderDefVal::Bool(k, v) => {
-                                    (k.to_string(), naga_oil::compose::ShaderDefValue::Bool(v))
-                                }
-                                ShaderDefVal::Int(k, v) => {
-                                    (k.to_string(), naga_oil::compose::ShaderDefValue::Int(v))
-                                }
-                                ShaderDefVal::UInt(k, v) => {
-                                    (k.to_string(), naga_oil::compose::ShaderDefValue::UInt(v))
-                                }
-                            })
-                            .collect::<std::collections::HashMap<_, _>>();
-
-                        let naga = self
-                            .composer
-                            .make_naga_module(naga_oil::compose::NagaModuleDescriptor {
-                                shader_defs,
-                                ..shader.into()
-                            })
-                            .map_err(Box::new)?;
-
-                        #[cfg(not(feature = "decoupled_naga"))]
-                        {
-                            ShaderCacheSource::Naga(naga)
-                        }
-
-                        #[cfg(feature = "decoupled_naga")]
-                        {
-                            let mut validator = naga::valid::Validator::new(
-                                naga::valid::ValidationFlags::all(),
-                                self.composer.capabilities,
-                            );
-                            let module_info = validator.validate(&naga).unwrap();
-                            let wgsl = naga::back::wgsl::write_string(
-                                &naga,
-                                &module_info,
-                                naga::back::wgsl::WriterFlags::empty(),
-                            )
-                            .unwrap();
-                            ShaderCacheSource::Wgsl(wgsl)
-                        }
-                    }
+                    Source::Wgsl(wgsl_source) => ShaderCacheSource::Wgsl(wgsl_source.to_string()),
                 };
 
                 let shader_module =
@@ -458,11 +344,6 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                 data.processed_shaders.clear();
                 pipelines_to_queue.extend(data.pipelines.iter().copied());
                 shaders_to_clear.extend(data.dependents.iter().copied());
-
-                if let Some(Shader { import_path, .. }) = self.shaders.get(&handle) {
-                    self.composer
-                        .remove_composable_module(&import_path.module_name());
-                }
             }
         }
 
@@ -618,10 +499,8 @@ pub enum ShaderCacheError {
         "Pipeline could not be compiled because the following shader could not be loaded: {0:?}"
     )]
     ShaderNotLoaded(AssetId<Shader>),
-    #[error(transparent)]
-    ProcessShaderError(#[from] Box<naga_oil::compose::ComposerError>),
-    #[error("Failed to process wesl shader: {0}")]
-    ProcessWeslShaderError(String),
+    #[error("Failed to process shader:\n{0}")]
+    ProcessShaderError(String),
     #[error("Shader import not yet available.")]
     ShaderImportNotYetAvailable,
     #[error("Could not create shader module: {0}")]
@@ -633,15 +512,10 @@ mod tests {
     use super::*;
 
     fn test_cache() -> ShaderCache<String, ()> {
-        ShaderCache::new(
-            (),
-            Features::empty(),
-            DownlevelFlags::empty(),
-            |_, source, _| match source {
-                ShaderCacheSource::Wgsl(wgsl) => Ok(wgsl),
-                _ => panic!("expected wgsl output"),
-            },
-        )
+        ShaderCache::new((), |_, source, _| match source {
+            ShaderCacheSource::Wgsl(wgsl) => Ok(wgsl),
+            _ => panic!("expected wgsl output"),
+        })
     }
 
     #[test]
@@ -730,8 +604,8 @@ fn fragment() -> @location(0) vec4<f32> {
         let error = cache
             .get(0, root_id, &[ShaderDefVal::Bool("BRIGHT".into(), true)])
             .expect_err("syntax error");
-        let ShaderCacheError::ProcessWeslShaderError(message) = error else {
-            panic!("expected ProcessWeslShaderError, got: {error:?}");
+        let ShaderCacheError::ProcessShaderError(message) = error else {
+            panic!("expected ProcessShaderError, got: {error:?}");
         };
         assert!(
             message.contains("embedded://bevy_pbr/lighting.wesl"),
