@@ -6,7 +6,58 @@ use bevy_platform::collections::{hash_map::EntryRef, HashMap, HashSet};
 use core::hash::Hash;
 use thiserror::Error;
 use tracing::debug;
+#[cfg(feature = "shader_format_wesl")]
+use tracing::warn;
 use wgpu_types::{DownlevelFlags, Features};
+
+#[cfg(feature = "shader_format_wesl")]
+pub(crate) fn wesl_module_path(import_path: &ShaderImport) -> Option<wesl::syntax::ModulePath> {
+    match import_path {
+        ShaderImport::Custom(name) => {
+            let mut segments = name.split("::");
+            let package = segments.next().filter(|s| !s.is_empty())?;
+            let components = segments
+                .map(|s| (!s.is_empty()).then(|| s.to_string()))
+                .collect::<Option<Vec<_>>>()?;
+            Some(wesl::syntax::ModulePath {
+                origin: wesl::syntax::PathOrigin::Package(package.to_string()),
+                components,
+            })
+        }
+        ShaderImport::AssetPath(path) => Some(wesl::syntax::ModulePath::from_path(path)),
+    }
+}
+
+/// wesl gives package-to-package imports a slash-joined "sub-package" origin
+/// (e.g. `bevy_pbr/bevy_render`); the real package is the last segment.
+#[cfg(feature = "shader_format_wesl")]
+pub(crate) fn canonicalize_module_path(
+    path: &wesl::syntax::ModulePath,
+) -> Cow<'_, wesl::syntax::ModulePath> {
+    match &path.origin {
+        wesl::syntax::PathOrigin::Package(pkg) if pkg.contains('/') => {
+            Cow::Owned(wesl::syntax::ModulePath {
+                origin: wesl::syntax::PathOrigin::Package(
+                    pkg.rsplit('/').next().unwrap().to_string(),
+                ),
+                components: path.components.clone(),
+            })
+        }
+        _ => Cow::Borrowed(path),
+    }
+}
+
+#[cfg(feature = "shader_format_wesl")]
+fn is_module_not_found(error: &wesl::Error) -> bool {
+    match error {
+        wesl::Error::ResolveError(wesl::ResolveError::ModuleNotFound(..))
+        | wesl::Error::ImportError(wesl::ImportError::ResolveError(
+            wesl::ResolveError::ModuleNotFound(..),
+        )) => true,
+        wesl::Error::Error(diagnostic) => is_module_not_found(&diagnostic.error),
+        _ => false,
+    }
+}
 
 /// Fully composed source code of a shader module, with all shader defs applied.
 ///
@@ -202,21 +253,33 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
             .ok_or(ShaderCacheError::ShaderNotLoaded(id))?;
 
         let data = self.data.entry(id).or_default();
-        let n_asset_imports = shader
-            .imports
-            .iter()
-            .filter(|import| matches!(import, ShaderImport::AssetPath(_)))
-            .count();
-        let n_resolved_asset_imports = data
-            .resolved_imports
-            .keys()
-            .filter(|import| matches!(import, ShaderImport::AssetPath(_)))
-            .count();
-        if n_asset_imports != n_resolved_asset_imports {
-            return Err(ShaderCacheError::ShaderImportNotYetAvailable);
+
+        // Wesl imports are scanned as both module and item candidates, so the
+        // counts would never match.
+        #[cfg(feature = "shader_format_wesl")]
+        let needs_import_gate = !matches!(shader.source, Source::Wesl(_));
+        #[cfg(not(feature = "shader_format_wesl"))]
+        let needs_import_gate = true;
+        if needs_import_gate {
+            let n_asset_imports = shader
+                .imports
+                .iter()
+                .filter(|import| matches!(import, ShaderImport::AssetPath(_)))
+                .count();
+            let n_resolved_asset_imports = data
+                .resolved_imports
+                .keys()
+                .filter(|import| matches!(import, ShaderImport::AssetPath(_)))
+                .count();
+            if n_asset_imports != n_resolved_asset_imports {
+                return Err(ShaderCacheError::ShaderImportNotYetAvailable);
+            }
         }
 
         data.pipelines.insert(pipeline);
+
+        #[cfg(feature = "shader_format_wesl")]
+        let mut wesl_dependencies: Vec<AssetId<Shader>> = Vec::new();
 
         let module = match data.processed_shaders.entry_ref(shader_defs) {
             EntryRef::Occupied(entry) => entry.into_mut(),
@@ -229,10 +292,7 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                     Source::SpirV(data) => ShaderCacheSource::SpirV(data.as_ref()),
                     #[cfg(feature = "shader_format_wesl")]
                     Source::Wesl(_) => {
-                        if let ShaderImport::AssetPath(path) = &shader.import_path {
-                            let shader_resolver =
-                                ShaderResolver::new(&self.module_path_to_asset_id, &self.shaders);
-                            let module_path = wesl::syntax::ModulePath::from_path(path);
+                        if let Some(module_path) = wesl_module_path(&shader.import_path) {
                             let mut compiler_options = wesl::CompileOptions {
                                 imports: true,
                                 condcomp: true,
@@ -240,28 +300,64 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                                 ..Default::default()
                             };
 
-                            for shader_def in shader_defs {
+                            let mut constants = alloc::collections::BTreeMap::new();
+                            for shader_def in shader_defs.iter().chain(shader.shader_defs.iter()) {
                                 match shader_def {
                                     ShaderDefVal::Bool(key, value) => {
-                                        compiler_options.features.flags.insert(key.to_string(), (*value).into());
+                                        compiler_options
+                                            .features
+                                            .flags
+                                            .insert(key.to_string(), (*value).into());
                                     }
-                                    _ => debug!(
-                                        "ShaderDefVal::Int and ShaderDefVal::UInt are not supported in wesl",
-                                    ),
+                                    ShaderDefVal::Int(key, value) => {
+                                        constants.insert(key.as_ref(), value.to_string());
+                                    }
+                                    ShaderDefVal::UInt(key, value) => {
+                                        constants.insert(key.as_ref(), value.to_string());
+                                    }
                                 }
                             }
+                            let constants_source: String = constants
+                                .iter()
+                                .map(|(name, value)| format!("const {name} = {value};\n"))
+                                .collect();
 
-                            let compiled = wesl::compile(
+                            let shader_resolver = ShaderResolver::new(
+                                &self.module_path_to_asset_id,
+                                &self.shaders,
+                                &constants_source,
+                            );
+
+                            let compiled = wesl::compile_sourcemap(
                                 &module_path,
                                 &shader_resolver,
                                 &wesl::EscapeMangler,
                                 &compiler_options,
                             )
-                            .unwrap();
+                            .map_err(|error| {
+                                if is_module_not_found(&error) {
+                                    ShaderCacheError::ShaderImportNotYetAvailable
+                                } else {
+                                    ShaderCacheError::ProcessWeslShaderError(error.to_string())
+                                }
+                            })?;
+
+                            for used in &compiled.modules {
+                                let used = canonicalize_module_path(used);
+                                if let Some(dep_id) =
+                                    self.module_path_to_asset_id.get(used.as_ref())
+                                    && *dep_id != id
+                                {
+                                    wesl_dependencies.push(*dep_id);
+                                }
+                            }
 
                             ShaderCacheSource::Wgsl(compiled.to_string())
                         } else {
-                            panic!("Wesl shaders must be imported from a file");
+                            return Err(ShaderCacheError::ProcessWeslShaderError(format!(
+                                "Wesl shader `{}` has a malformed import path `{:?}`",
+                                shader.path, shader.import_path
+                            )));
                         }
                     }
                     _ => {
@@ -327,8 +423,14 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                 entry.insert(Arc::new(shader_module))
             }
         };
+        let module = module.clone();
 
-        Ok(module.clone())
+        #[cfg(feature = "shader_format_wesl")]
+        for dep_id in wesl_dependencies {
+            self.data.entry(dep_id).or_default().dependents.insert(id);
+        }
+
+        Ok(module)
     }
 
     fn clear(&mut self, id: AssetId<Shader>) -> Vec<CachedPipelineId> {
@@ -384,11 +486,26 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
         }
 
         #[cfg(feature = "shader_format_wesl")]
-        if let Source::Wesl(_) = shader.source
-            && let ShaderImport::AssetPath(path) = &shader.import_path
-        {
-            self.module_path_to_asset_id
-                .insert(wesl::syntax::ModulePath::from_path(path), id);
+        if let Source::Wesl(_) = shader.source {
+            match wesl_module_path(&shader.import_path) {
+                Some(module_path) => {
+                    if let Some(existing) = self.module_path_to_asset_id.get(&module_path)
+                        && *existing != id
+                    {
+                        warn!(
+                            "Shader module path `{module_path}` is already registered to a \
+                            different shader; replacing it with `{}`.",
+                            shader.path
+                        );
+                    }
+                    self.module_path_to_asset_id.insert(module_path, id);
+                }
+                None => warn!(
+                    "Shader `{}` has a malformed import path `{:?}` and cannot be \
+                    registered as a wesl module.",
+                    shader.path, shader.import_path
+                ),
+            }
         }
         self.shaders.insert(id, shader);
         pipelines_to_queue
@@ -402,31 +519,42 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
         let pipelines_to_queue = self.clear(id);
         if let Some(shader) = self.shaders.remove(&id) {
             self.import_path_shaders.remove(&shader.import_path);
+            #[cfg(feature = "shader_format_wesl")]
+            if let Source::Wesl(_) = shader.source
+                && let Some(module_path) = wesl_module_path(&shader.import_path)
+                && self.module_path_to_asset_id.get(&module_path) == Some(&id)
+            {
+                self.module_path_to_asset_id.remove(&module_path);
+            }
         }
 
         pipelines_to_queue
     }
 }
 
-/// A Wesl import resolver. Maps module paths to actual Wesl shader source.
+/// A Wesl import resolver. Maps module paths to actual Wesl shader source,
+/// and serves the virtual `constants` module built from valued shader defs.
 #[cfg(feature = "shader_format_wesl")]
 pub struct ShaderResolver<'a> {
     module_path_to_asset_id: &'a HashMap<wesl::syntax::ModulePath, AssetId<Shader>>,
     shaders: &'a HashMap<AssetId<Shader>, Shader>,
+    constants_source: &'a str,
 }
 
 #[cfg(feature = "shader_format_wesl")]
 impl<'a> ShaderResolver<'a> {
     /// Creates a shader resolver with the given map of module paths to shader asset ids,
-    /// and map of shader asset ids to shader source. This resolver is not meant to be
-    /// long living.
+    /// map of shader asset ids to shader source, and the source of the virtual
+    /// `constants` module. This resolver is not meant to be long living.
     pub fn new(
         module_path_to_asset_id: &'a HashMap<wesl::syntax::ModulePath, AssetId<Shader>>,
         shaders: &'a HashMap<AssetId<Shader>, Shader>,
+        constants_source: &'a str,
     ) -> Self {
         Self {
             module_path_to_asset_id,
             shaders,
+            constants_source,
         }
     }
 }
@@ -437,18 +565,36 @@ impl<'a> wesl::Resolver for ShaderResolver<'a> {
         &self,
         module_path: &wesl::syntax::ModulePath,
     ) -> Result<Cow<'_, str>, wesl::ResolveError> {
+        let module_path = canonicalize_module_path(module_path);
+        if module_path.origin == wesl::syntax::PathOrigin::Package("constants".to_string())
+            && module_path.components.is_empty()
+        {
+            return Ok(Cow::Borrowed(self.constants_source));
+        }
         let asset_id = self
             .module_path_to_asset_id
-            .get(module_path)
+            .get(module_path.as_ref())
             .ok_or_else(|| {
                 wesl::ResolveError::ModuleNotFound(
-                    module_path.clone(),
-                    "Invalid asset id".to_string(),
+                    module_path.clone().into_owned(),
+                    "no shader is registered under this module path".to_string(),
                 )
             })?;
 
-        let shader = self.shaders.get(asset_id).unwrap();
+        let shader = self.shaders.get(asset_id).ok_or_else(|| {
+            wesl::ResolveError::ModuleNotFound(
+                module_path.clone().into_owned(),
+                "the shader asset for this module path is not loaded".to_string(),
+            )
+        })?;
         Ok(Cow::Borrowed(shader.source.as_str()))
+    }
+
+    fn display_name(&self, module_path: &wesl::syntax::ModulePath) -> Option<String> {
+        let module_path = canonicalize_module_path(module_path);
+        let asset_id = self.module_path_to_asset_id.get(module_path.as_ref())?;
+        let shader = self.shaders.get(asset_id)?;
+        Some(shader.path.clone())
     }
 }
 
@@ -462,8 +608,184 @@ pub enum ShaderCacheError {
     ShaderNotLoaded(AssetId<Shader>),
     #[error(transparent)]
     ProcessShaderError(#[from] Box<naga_oil::compose::ComposerError>),
+    #[error("Failed to process wesl shader: {0}")]
+    ProcessWeslShaderError(String),
     #[error("Shader import not yet available.")]
     ShaderImportNotYetAvailable,
     #[error("Could not create shader module: {0}")]
     CreateShaderModule(String),
+}
+
+#[cfg(all(test, feature = "shader_format_wesl"))]
+mod tests {
+    use super::*;
+
+    fn test_cache() -> ShaderCache<String, ()> {
+        ShaderCache::new(
+            (),
+            Features::empty(),
+            DownlevelFlags::empty(),
+            |_, source, _| match source {
+                ShaderCacheSource::Wgsl(wgsl) => Ok(wgsl),
+                _ => panic!("expected wgsl output"),
+            },
+        )
+    }
+
+    #[test]
+    fn logical_import_paths_resolve() {
+        let mut cache = test_cache();
+
+        let (maths_id, lighting_id, root_id) = set_test_shaders(&mut cache);
+
+        let compiled = cache
+            .get(0, root_id, &[ShaderDefVal::Bool("BRIGHT".into(), true)])
+            .expect("root shader should compile");
+        assert!(compiled.contains("fn fragment"));
+        assert!(
+            compiled.contains("* 2.0"),
+            "inline-qualified fn body missing: {compiled}"
+        );
+        assert!(
+            compiled.contains("+ 0.1"),
+            "imported fn body missing: {compiled}"
+        );
+
+        let (maths, lighting, _) = test_shaders();
+        assert!(
+            cache.set_shader(lighting_id, lighting).contains(&0),
+            "scanned import edge missing"
+        );
+        let _ = cache.get(0, root_id, &[ShaderDefVal::Bool("BRIGHT".into(), true)]);
+        assert!(
+            cache.set_shader(maths_id, maths).contains(&0),
+            "compile-result edge missing"
+        );
+    }
+
+    #[test]
+    fn valued_defs_become_the_constants_module() {
+        let mut cache = test_cache();
+        let mut shader = Shader::from_wesl(
+            r#"
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> scale: f32;
+var<uniform> batch: array<vec4<f32>, constants::BATCH_SIZE>;
+
+@fragment
+fn fragment() -> @location(0) vec4<f32> {
+    return vec4<f32>(scale) + batch[0];
+}
+"#,
+            "shaders/constants_user.wesl",
+        );
+        shader.shader_defs = vec![ShaderDefVal::UInt("BATCH_SIZE".into(), 4)];
+        let id = AssetId::Uuid {
+            uuid: bevy_asset::uuid::Uuid::from_u128(7),
+        };
+        cache.set_shader(id, shader);
+
+        let compiled = cache
+            .get(
+                0,
+                id,
+                &[ShaderDefVal::UInt("MATERIAL_BIND_GROUP".into(), 2)],
+            )
+            .expect("constants should resolve");
+        assert!(
+            compiled.contains("@group((2))") || compiled.contains("@group(2)"),
+            "constants:: not folded into @group: {compiled}"
+        );
+        assert!(
+            !compiled.contains("BATCH_SIZE"),
+            "constants:: array size not folded: {compiled}"
+        );
+    }
+
+    #[test]
+    fn compile_errors_are_diagnostics_with_display_names() {
+        let mut cache = test_cache();
+        let (maths, _, root) = test_shaders();
+        let (maths_id, lighting_id, root_id) = test_ids();
+        let broken_lighting = Shader::from_wesl_with_import_path(
+            "fn brighten(x: f32) -> f32 { return x + ; }",
+            "embedded://bevy_pbr/lighting.wesl",
+            Some("bevy_pbr::render::lighting"),
+        );
+        cache.set_shader(maths_id, maths);
+        cache.set_shader(lighting_id, broken_lighting);
+        cache.set_shader(root_id, root);
+
+        let error = cache
+            .get(0, root_id, &[ShaderDefVal::Bool("BRIGHT".into(), true)])
+            .expect_err("syntax error");
+        let ShaderCacheError::ProcessWeslShaderError(message) = error else {
+            panic!("expected ProcessWeslShaderError, got: {error:?}");
+        };
+        assert!(
+            message.contains("embedded://bevy_pbr/lighting.wesl"),
+            "diagnostic should name the offending shader: {message}"
+        );
+    }
+
+    #[test]
+    fn imports_loading_after_root_retry() {
+        let mut cache = test_cache();
+        let (maths, lighting, root) = test_shaders();
+        let (maths_id, lighting_id, root_id) = test_ids();
+
+        cache.set_shader(root_id, root);
+        assert!(matches!(
+            cache.get(0, root_id, &[]),
+            Err(ShaderCacheError::ShaderImportNotYetAvailable)
+        ));
+
+        cache.set_shader(lighting_id, lighting);
+        cache.set_shader(maths_id, maths);
+        cache.get(0, root_id, &[]).expect("all imports available");
+    }
+
+    fn test_shaders() -> (Shader, Shader, Shader) {
+        let maths = Shader::from_wesl_with_import_path(
+            "fn double(x: f32) -> f32 { return x * 2.0; }",
+            "embedded://bevy_render/maths.wesl",
+            Some("bevy_render::maths"),
+        );
+        let lighting = Shader::from_wesl_with_import_path(
+            "fn brighten(x: f32) -> f32 { return x + 0.1; }",
+            "embedded://bevy_pbr/lighting.wesl",
+            Some("bevy_pbr::render::lighting"),
+        );
+        let root = Shader::from_wesl(
+            r#"
+import bevy_pbr::render::lighting::brighten;
+
+@fragment
+fn fragment() -> @location(0) vec4<f32> {
+    var value = bevy_render::maths::double(1.0);
+    @if(BRIGHT) { value = brighten(value); }
+    return vec4<f32>(value);
+}
+"#,
+            "shaders/root.wesl",
+        );
+        (maths, lighting, root)
+    }
+
+    fn test_ids() -> (AssetId<Shader>, AssetId<Shader>, AssetId<Shader>) {
+        let id = |n| AssetId::Uuid {
+            uuid: bevy_asset::uuid::Uuid::from_u128(n),
+        };
+        (id(1), id(2), id(3))
+    }
+
+    fn set_test_shaders(
+        cache: &mut ShaderCache<String, ()>,
+    ) -> (AssetId<Shader>, AssetId<Shader>, AssetId<Shader>) {
+        let (maths, lighting, root) = test_shaders();
+        let (maths_id, lighting_id, root_id) = test_ids();
+        cache.set_shader(maths_id, maths);
+        cache.set_shader(lighting_id, lighting);
+        cache.set_shader(root_id, root);
+        (maths_id, lighting_id, root_id)
+    }
 }

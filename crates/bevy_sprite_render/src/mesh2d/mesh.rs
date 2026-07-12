@@ -212,6 +212,7 @@ fn load_mesh2d_bindings(render_device: Res<RenderDevice>, asset_server: Res<Asse
         move |settings| {
             *settings = ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
+                ..Default::default()
             }
         }
     );

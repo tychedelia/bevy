@@ -161,7 +161,8 @@ impl Plugin for MeshRenderPlugin {
                         MAX_CASCADES_PER_LIGHT as u32,
                     ),
                     ShaderDefVal::UInt("MAX_RECT_LIGHTS".into(), MAX_RECT_LIGHTS as u32,),
-                ]
+                ],
+                ..Default::default()
             });
         load_shader_library!(app, "mesh_view_bindings.wgsl");
         load_shader_library!(app, "mesh_types.wgsl");
@@ -331,6 +332,7 @@ impl Plugin for MeshRenderPlugin {
         load_shader_library!(app, "mesh_bindings.wgsl", move |settings| *settings =
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
+                ..Default::default()
             });
     }
 }

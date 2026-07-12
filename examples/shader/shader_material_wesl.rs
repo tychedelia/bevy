@@ -16,35 +16,10 @@ const FRAGMENT_SHADER_ASSET_PATH: &str = "shaders/custom_material.wesl";
 
 fn main() {
     App::new()
-        .add_plugins((
-            DefaultPlugins,
-            MaterialPlugin::<CustomMaterial>::default(),
-            CustomMaterialPlugin,
-        ))
+        .add_plugins((DefaultPlugins, MaterialPlugin::<CustomMaterial>::default()))
         .add_systems(Startup, setup)
         .add_systems(Update, update)
         .run();
-}
-
-/// A plugin that loads the custom material shader
-pub struct CustomMaterialPlugin;
-
-/// An example utility shader that is used by the custom material
-#[expect(
-    dead_code,
-    reason = "used to kept a strong handle, shader is referenced by the material"
-)]
-#[derive(Resource)]
-struct UtilityShader(Handle<Shader>);
-
-impl Plugin for CustomMaterialPlugin {
-    fn build(&self, app: &mut App) {
-        let handle = app
-            .world_mut()
-            .resource_mut::<AssetServer>()
-            .load::<Shader>("shaders/util.wesl");
-        app.insert_resource(UtilityShader(handle));
-    }
 }
 
 /// set up a simple 3D scene

@@ -255,9 +255,20 @@ impl PipelineCache {
             global_shader_defs.push("NO_CUBE_ARRAY_TEXTURES_SUPPORT".into());
         }
 
+        let available_storage_buffer_bindings =
+            device.limits().max_storage_buffers_per_shader_stage;
         global_shader_defs.push(ShaderDefVal::UInt(
             "AVAILABLE_STORAGE_BUFFER_BINDINGS".into(),
-            device.limits().max_storage_buffers_per_shader_stage,
+            available_storage_buffer_bindings,
+        ));
+        // wesl conditional compilation only supports boolean flags, not numeric comparisons.
+        global_shader_defs.push(ShaderDefVal::Bool(
+            "AVAILABLE_STORAGE_BUFFER_BINDINGS__GE_3".into(),
+            available_storage_buffer_bindings >= 3,
+        ));
+        global_shader_defs.push(ShaderDefVal::Bool(
+            "AVAILABLE_STORAGE_BUFFER_BINDINGS__GE_6".into(),
+            available_storage_buffer_bindings >= 6,
         ));
 
         Self {
@@ -719,6 +730,16 @@ impl PipelineCache {
                 ShaderCacheError::ProcessShaderError(err) => {
                     let error_detail =
                         err.emit_to_string(&self.shader_cache.lock().unwrap().composer);
+                    if std::env::var("VERBOSE_SHADER_ERROR")
+                        .is_ok_and(|v| !(v.is_empty() || v == "0" || v == "false"))
+                    {
+                        error!("{}", pipeline_error_context(cached_pipeline));
+                    }
+                    error!("failed to process shader error:\n{}", error_detail);
+                    return;
+                }
+                ShaderCacheError::ProcessWeslShaderError(error_detail) => {
+                    let error_detail = error_detail.clone();
                     if std::env::var("VERBOSE_SHADER_ERROR")
                         .is_ok_and(|v| !(v.is_empty() || v == "0" || v == "false"))
                     {
