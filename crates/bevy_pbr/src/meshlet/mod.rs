@@ -148,7 +148,7 @@ impl Plugin for MeshletPlugin {
         embedded_asset!(app, "visibility_buffer_hardware_raster.wgsl");
         embedded_asset!(app, "meshlet_mesh_material.wgsl");
         embedded_asset!(app, "resolve_render_targets.wgsl");
-        embedded_asset!(app, "remap_1d_to_2d_dispatch.wgsl");
+        embedded_asset!(app, "remap_1d_to_2d_dispatch.wesl");
         embedded_asset!(app, "fill_counts.wgsl");
 
         app.init_asset::<MeshletMesh>()

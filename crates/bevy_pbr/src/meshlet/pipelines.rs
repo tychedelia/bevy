@@ -110,7 +110,7 @@ pub fn init_meshlet_pipelines(
     let resolve_render_targets =
         load_embedded_asset!(asset_server.as_ref(), "resolve_render_targets.wgsl");
     let remap_1d_to_2d_dispatch =
-        load_embedded_asset!(asset_server.as_ref(), "remap_1d_to_2d_dispatch.wgsl");
+        load_embedded_asset!(asset_server.as_ref(), "remap_1d_to_2d_dispatch.wesl");
     let fill_counts = load_embedded_asset!(asset_server.as_ref(), "fill_counts.wgsl");
     let meshlet_mesh_material =
         load_embedded_asset!(asset_server.as_ref(), "meshlet_mesh_material.wgsl");
