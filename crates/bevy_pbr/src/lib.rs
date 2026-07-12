@@ -191,10 +191,22 @@ impl Plugin for PbrPlugin {
             "render/pbr_types.wesl",
             import_path = "bevy_pbr::pbr_types"
         );
-        load_shader_library!(app, "render/pbr_bindings.wesl");
+        load_shader_library!(
+            app,
+            "render/pbr_bindings.wesl",
+            import_path = "bevy_pbr::pbr_bindings"
+        );
         load_shader_library!(app, "render/utils.wesl", import_path = "bevy_pbr::utils");
-        load_shader_library!(app, "render/clustered_forward.wesl");
-        load_shader_library!(app, "render/pbr_lighting.wesl");
+        load_shader_library!(
+            app,
+            "render/clustered_forward.wesl",
+            import_path = "bevy_pbr::clustered_forward"
+        );
+        load_shader_library!(
+            app,
+            "render/pbr_lighting.wesl",
+            import_path = "bevy_pbr::lighting"
+        );
         load_shader_library!(
             app,
             "render/shadows.wesl",
@@ -205,7 +217,11 @@ impl Plugin for PbrPlugin {
             "deferred/pbr_deferred_types.wesl",
             import_path = "bevy_pbr::pbr_deferred_types"
         );
-        load_shader_library!(app, "deferred/pbr_deferred_functions.wesl");
+        load_shader_library!(
+            app,
+            "deferred/pbr_deferred_functions.wesl",
+            import_path = "bevy_pbr::pbr_deferred_functions"
+        );
         load_shader_library!(app, "render/shadow_sampling.wesl");
         load_shader_library!(app, "render/pbr_functions.wesl");
         load_shader_library!(app, "render/rgb9e5.wesl", import_path = "bevy_pbr::rgb9e5");

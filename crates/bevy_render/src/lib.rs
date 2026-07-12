@@ -359,7 +359,7 @@ impl Plugin for RenderPlugin {
             "color_operations.wesl",
             import_path = "bevy_render::color_operations"
         );
-        load_shader_library!(app, "bindless.wesl");
+        load_shader_library!(app, "bindless.wesl", import_path = "bevy_render::bindless");
 
         if insert_future_resources(&self.render_creation, app.world_mut()) {
             // We only create the render world and set up extraction if we

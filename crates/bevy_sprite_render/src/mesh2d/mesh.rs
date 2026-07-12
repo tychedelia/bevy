@@ -73,8 +73,16 @@ pub struct Mesh2dRenderPlugin;
 
 impl Plugin for Mesh2dRenderPlugin {
     fn build(&self, app: &mut bevy_app::App) {
-        load_shader_library!(app, "mesh2d_vertex_output.wesl");
-        load_shader_library!(app, "mesh2d_vertex_input.wesl");
+        load_shader_library!(
+            app,
+            "mesh2d_vertex_output.wesl",
+            import_path = "bevy_sprite::mesh2d_vertex_output"
+        );
+        load_shader_library!(
+            app,
+            "mesh2d_vertex_input.wesl",
+            import_path = "bevy_sprite::mesh2d_vertex_input"
+        );
         load_shader_library!(
             app,
             "mesh2d_view_types.wesl",
@@ -90,7 +98,11 @@ impl Plugin for Mesh2dRenderPlugin {
             "mesh2d_types.wesl",
             import_path = "bevy_sprite::mesh2d_types"
         );
-        load_shader_library!(app, "mesh2d_functions.wesl");
+        load_shader_library!(
+            app,
+            "mesh2d_functions.wesl",
+            import_path = "bevy_sprite::mesh2d_functions"
+        );
 
         embedded_asset!(app, "mesh2d.wesl");
 
@@ -225,7 +237,8 @@ fn load_mesh2d_bindings(render_device: Res<RenderDevice>, asset_server: Res<Asse
             *settings = ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
                 ..Default::default()
-            }
+            };
+            settings.import_path = Some("bevy_sprite::mesh2d_bindings".into());
         }
     );
     // Forget the handle so we don't have to store it anywhere, and we keep the embedded asset

@@ -162,13 +162,14 @@ impl Plugin for MeshRenderPlugin {
                     ),
                     ShaderDefVal::UInt("MAX_RECT_LIGHTS".into(), MAX_RECT_LIGHTS as u32,),
                 ],
+                import_path: Some("bevy_pbr::mesh_view_types".into()),
                 ..Default::default()
             });
         load_shader_library!(app, "mesh_view_bindings.wesl");
-        load_shader_library!(app, "mesh_types.wesl");
+        load_shader_library!(app, "mesh_types.wesl", import_path = "bevy_pbr::mesh_types");
         load_shader_library!(app, "mesh_functions.wesl");
-        load_shader_library!(app, "skinning.wesl");
-        load_shader_library!(app, "morph.wesl");
+        load_shader_library!(app, "skinning.wesl", import_path = "bevy_pbr::skinning");
+        load_shader_library!(app, "morph.wesl", import_path = "bevy_pbr::morph");
         load_shader_library!(
             app,
             "occlusion_culling.wesl",
@@ -336,6 +337,7 @@ impl Plugin for MeshRenderPlugin {
         load_shader_library!(app, "mesh_bindings.wesl", move |settings| *settings =
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
+                import_path: Some("bevy_pbr::mesh_bindings".into()),
                 ..Default::default()
             });
     }

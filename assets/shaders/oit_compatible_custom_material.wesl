@@ -3,14 +3,13 @@
 //! See examples/3d/order_independent_transpatency.rs
 
 // As an hard-coded always transparent material it is only meant to be forward rendered
-#import bevy_pbr::forward_io::{VertexOutput, FragmentOutput}
-#import bevy_pbr::utils
+import bevy_pbr::forward_io::{VertexOutput, FragmentOutput};
+import bevy_pbr::utils;
 
-#ifdef OIT_ENABLED
-#import bevy_core_pipeline::oit::oit_draw
-#endif // OIT_ENABLED
+@if(OIT_ENABLED)
+import bevy_core_pipeline::oit::oit_draw;
 
-@group(#{MATERIAL_BIND_GROUP}) @binding(0) var<uniform> material_color: vec4<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> material_color: vec4<f32>;
 
 @fragment
 fn fragment(
@@ -23,10 +22,10 @@ fn fragment(
     let alpha = gradient_noise(in.world_position.xyz, 5.0);
     let color = vec4f(material_color.rgb, alpha);
 
-#ifdef OIT_ENABLED
+    @if(OIT_ENABLED)
     oit_draw(in.position, color);
+    @if(OIT_ENABLED)
     discard;
-#endif // OIT_ENABLED
 
     return color;
 }

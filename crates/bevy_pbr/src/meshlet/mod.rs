@@ -137,9 +137,17 @@ impl Plugin for MeshletPlugin {
             std::process::exit(1);
         }
 
-        load_shader_library!(app, "meshlet_bindings.wesl");
+        load_shader_library!(
+            app,
+            "meshlet_bindings.wesl",
+            import_path = "bevy_pbr::meshlet_bindings"
+        );
         load_shader_library!(app, "visibility_buffer_resolve.wesl");
-        load_shader_library!(app, "meshlet_cull_shared.wesl");
+        load_shader_library!(
+            app,
+            "meshlet_cull_shared.wesl",
+            import_path = "bevy_pbr::meshlet_cull_shared"
+        );
         embedded_asset!(app, "clear_visibility_buffer.wesl");
         embedded_asset!(app, "cull_instances.wesl");
         embedded_asset!(app, "cull_bvh.wesl");
