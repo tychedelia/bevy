@@ -304,9 +304,17 @@ impl<ShaderModule, RenderDevice> ShaderCache<ShaderModule, RenderDevice> {
                                             .insert(key.to_string(), (*value).into());
                                     }
                                     ShaderDefVal::Int(key, value) => {
+                                        compiler_options
+                                            .features
+                                            .flags
+                                            .insert(key.to_string(), true.into());
                                         constants.insert(key.as_ref(), value.to_string());
                                     }
                                     ShaderDefVal::UInt(key, value) => {
+                                        compiler_options
+                                            .features
+                                            .flags
+                                            .insert(key.to_string(), true.into());
                                         constants.insert(key.as_ref(), value.to_string());
                                     }
                                 }
