@@ -37,29 +37,29 @@ impl Plugin for SolariLightingPlugin {
         load_shader_library!(
             app,
             "gbuffer_utils.wesl",
-            import_path = "bevy_solari::gbuffer_utils"
+            import_path = "bevy_solari::realtime::gbuffer_utils"
         );
         load_shader_library!(
             app,
-            "realtime_bindings.wesl",
-            import_path = "bevy_solari::realtime_bindings"
+            "bindings.wesl",
+            import_path = "bevy_solari::realtime::bindings"
         );
         load_shader_library!(
             app,
             "presample_light_tiles.wesl",
-            import_path = "bevy_solari::presample_light_tiles"
+            import_path = "bevy_solari::realtime::presample_light_tiles"
         );
         embedded_asset!(app, "restir_di.wesl");
         embedded_asset!(app, "restir_gi.wesl");
         load_shader_library!(
             app,
             "specular_gi.wesl",
-            import_path = "bevy_solari::specular_gi"
+            import_path = "bevy_solari::realtime::specular_gi"
         );
         load_shader_library!(
             app,
             "world_cache_query.wesl",
-            import_path = "bevy_solari::world_cache"
+            import_path = "bevy_solari::realtime::world_cache_query"
         );
         embedded_asset!(app, "world_cache_compact.wesl");
         embedded_asset!(app, "world_cache_update.wesl");
@@ -67,7 +67,7 @@ impl Plugin for SolariLightingPlugin {
         load_shader_library!(
             app,
             "resolve_dlss_rr_textures.wesl",
-            import_path = "bevy_solari::resolve_dlss_rr_textures"
+            import_path = "bevy_solari::realtime::resolve_dlss_rr_textures"
         );
 
         app.insert_resource(DefaultOpaqueRendererMethod::deferred());

@@ -1,22 +1,24 @@
 import bevy_pbr::{
-    pbr_prepass_functions,
-    pbr_bindings,
-    pbr_bindings::material,
-    pbr_types,
-    pbr_functions,
-    pbr_functions::SampleBias,
-    prepass_io,
-    mesh_bindings::mesh,
-    mesh_view_bindings::view,
+    render::{
+        pbr_prepass_functions,
+        pbr_bindings,
+        pbr_bindings::material,
+        pbr_types,
+        pbr_functions,
+        pbr_functions::SampleBias,
+        mesh_bindings::mesh,
+        mesh_view_bindings::view,
+    },
+    prepass::io as prepass_io,
 };
 
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 
 @if(MESHLET_MESH_MATERIAL_PASS)
-import bevy_pbr::meshlet_visibility_buffer_resolve::resolve_vertex_output;
+import bevy_pbr::meshlet::visibility_buffer_resolve::resolve_vertex_output;
 
 @if(BINDLESS)
-import bevy_pbr::pbr_bindings::material_indices;
+import bevy_pbr::render::pbr_bindings::material_indices;
 
 @if(PREPASS_FRAGMENT)
 @fragment

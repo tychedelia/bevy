@@ -1,4 +1,4 @@
-import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_view_bindings::{
         view,
         visibility_ranges,
@@ -9,7 +9,7 @@ import bevy_pbr::{
     view_transformations::position_world_to_clip,
 };
 import bevy_render::maths::{affine3_to_square, mat2x4_f32_to_mat3x3_unpack};
-import bevy_render::mesh_metadata_types::MeshMetadata;
+import bevy_render::mesh::metadata_types::MeshMetadata;
 
 @if(!MESHLET_MESH_MATERIAL_PASS)
 fn get_world_from_local(instance_index: u32) -> mat4x4<f32> {

@@ -3,7 +3,7 @@
 //
 // This is used for the mirror example: `examples/3d/mirror.rs`.
 
-import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_bindings::emissive_texture,
     pbr_fragment::pbr_input_from_standard_material,

@@ -65,7 +65,7 @@ impl Plugin for SpriteRenderPlugin {
         load_shader_library!(
             app,
             "render/sprite_view_bindings.wesl",
-            import_path = "bevy_sprite::sprite_view_bindings"
+            import_path = "bevy_sprite_render::render::sprite_view_bindings"
         );
 
         embedded_asset!(app, "render/sprite.wesl");

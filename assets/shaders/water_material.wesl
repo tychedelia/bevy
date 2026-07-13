@@ -4,9 +4,9 @@
 // This is used in the `ssr` example. It only supports deferred rendering.
 
 import bevy_pbr::{
-    pbr_deferred_functions::deferred_output,
-    pbr_fragment::pbr_input_from_standard_material,
-    prepass_io::{VertexOutput, FragmentOutput},
+    deferred::functions::deferred_output,
+    render::pbr_fragment::pbr_input_from_standard_material,
+    prepass::io::{VertexOutput, FragmentOutput},
 };
 import bevy_render::globals::Globals;
 

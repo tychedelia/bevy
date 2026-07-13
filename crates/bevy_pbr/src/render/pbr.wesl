@@ -1,30 +1,32 @@
 import bevy_pbr::{
-    pbr_types,
-    pbr_functions::alpha_discard,
-    pbr_fragment::pbr_input_from_standard_material,
+    render::{
+        pbr_types,
+        pbr_functions::alpha_discard,
+        pbr_fragment::pbr_input_from_standard_material,
+    },
     decal::clustered::apply_decals,
 };
 
 @if(PREPASS_PIPELINE)
 import bevy_pbr::{
-    prepass_io::{VertexOutput, FragmentOutput},
-    pbr_deferred_functions::deferred_output,
+    prepass::io::{VertexOutput, FragmentOutput},
+    deferred::functions::deferred_output,
 };
 @else
-import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
 };
 
 @if(VISIBILITY_RANGE_DITHER)
-import bevy_pbr::pbr_functions::visibility_range_dither;
+import bevy_pbr::render::pbr_functions::visibility_range_dither;
 
 @if(MESHLET_MESH_MATERIAL_PASS)
-import bevy_pbr::meshlet_visibility_buffer_resolve::resolve_vertex_output;
+import bevy_pbr::meshlet::visibility_buffer_resolve::resolve_vertex_output;
 
 @if(OIT_ENABLED)
-import bevy_core_pipeline::oit::oit_draw;
+import bevy_core_pipeline::oit::draw::oit_draw;
 
 @if(FORWARD_DECAL)
 import bevy_pbr::decal::forward::get_forward_decal_info;

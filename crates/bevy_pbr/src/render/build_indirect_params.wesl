@@ -8,7 +8,7 @@
 // instance of this shader corresponds to a single *batch* which could contain
 // arbitrarily many instances of a single mesh.
 
-import bevy_pbr::mesh_preprocess_types::{
+import bevy_render::occlusion_culling::mesh_preprocess_types::{
     IndirectBatchSet,
     IndirectParametersIndexed,
     IndirectParametersNonIndexed,

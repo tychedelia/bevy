@@ -1,13 +1,13 @@
-import bevy_pbr::mesh_view_bindings::view;
-import bevy_pbr::mesh_view_bindings::depth_prepass_texture;
-import bevy_pbr::mesh_view_bindings::normal_prepass_texture;
-import bevy_pbr::mesh_view_bindings::motion_vector_prepass_texture;
-import bevy_pbr::mesh_view_bindings::deferred_prepass_texture;
-import bevy_pbr::view_transformations::depth_ndc_to_view_z;
-import bevy_pbr::pbr_deferred_types::unpack_24bit_normal;
-import bevy_pbr::pbr_deferred_types::unpack_unorm4x8_;
-import bevy_pbr::pbr_deferred_types::unpack_unorm3x4_plus_unorm_20_;
-import bevy_pbr::rgb9e5::rgb9e5_to_vec3_;
+import bevy_pbr::render::mesh_view_bindings::view;
+import bevy_pbr::render::mesh_view_bindings::depth_prepass_texture;
+import bevy_pbr::render::mesh_view_bindings::normal_prepass_texture;
+import bevy_pbr::render::mesh_view_bindings::motion_vector_prepass_texture;
+import bevy_pbr::render::mesh_view_bindings::deferred_prepass_texture;
+import bevy_pbr::render::view_transformations::depth_ndc_to_view_z;
+import bevy_pbr::deferred::types::unpack_24bit_normal;
+import bevy_pbr::deferred::types::unpack_unorm4x8_;
+import bevy_pbr::deferred::types::unpack_unorm3x4_plus_unorm_20_;
+import bevy_pbr::render::rgb9e5::rgb9e5_to_vec3_;
 import bevy_render::utils::octahedral_decode;
 
 struct DebugBufferConfig {

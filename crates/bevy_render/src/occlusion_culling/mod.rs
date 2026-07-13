@@ -21,7 +21,7 @@ impl Plugin for OcclusionCullingPlugin {
         load_shader_library!(
             app,
             "mesh_preprocess_types.wesl",
-            import_path = "bevy_pbr::mesh_preprocess_types"
+            import_path = "bevy_render::occlusion_culling::mesh_preprocess_types"
         );
     }
 }

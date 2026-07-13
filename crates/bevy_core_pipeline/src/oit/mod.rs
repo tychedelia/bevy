@@ -86,8 +86,8 @@ impl Plugin for OrderIndependentTransparencyPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(
             app,
-            "oit_draw.wesl",
-            import_path = "bevy_core_pipeline::oit"
+            "draw.wesl",
+            import_path = "bevy_core_pipeline::oit::draw"
         );
 
         app.add_plugins((

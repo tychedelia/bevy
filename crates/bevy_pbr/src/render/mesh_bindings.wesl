@@ -1,5 +1,5 @@
-import bevy_pbr::mesh_types::Mesh;
-import bevy_render::mesh_metadata_types::MeshMetadata;
+import bevy_pbr::render::mesh_types::Mesh;
+import bevy_render::mesh::metadata_types::MeshMetadata;
 
 @if(!MESHLET_MESH_MATERIAL_PASS && PER_OBJECT_BUFFER_BATCH_SIZE)
 @group(2) @binding(0) var<uniform> mesh: array<Mesh, u32(constants::PER_OBJECT_BUFFER_BATCH_SIZE)>;

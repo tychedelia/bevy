@@ -96,7 +96,7 @@ use bevy_render::{
     view::{ExtractedView, ViewUniform, ViewUniformOffset, ViewUniforms},
     GpuResourceAppExt, MainWorld, Render, RenderApp, RenderSystems,
 };
-use bevy_shader::{load_shader_library, Shader, ShaderDefVal};
+use bevy_shader::{Shader, ShaderDefVal};
 use bevy_utils::default;
 use bytemuck::{Pod, Zeroable};
 use tracing::{error, trace, warn};
@@ -123,7 +123,6 @@ pub struct GpuClusteringPlugin;
 
 impl Plugin for GpuClusteringPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "cluster.wesl", import_path = "bevy_pbr::cluster");
         embedded_asset!(app, "cluster_z_slice.wesl");
         embedded_asset!(app, "cluster_raster.wesl");
         embedded_asset!(app, "cluster_allocate.wesl");

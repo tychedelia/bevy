@@ -31,13 +31,13 @@ pub struct RaytracingScenePlugin;
 
 impl Plugin for RaytracingScenePlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "brdf.wesl", import_path = "bevy_solari::brdf");
+        load_shader_library!(app, "brdf.wesl", import_path = "bevy_solari::scene::brdf");
         load_shader_library!(
             app,
-            "raytracing_scene_bindings.wesl",
-            import_path = "bevy_solari::scene_bindings"
+            "bindings.wesl",
+            import_path = "bevy_solari::scene::bindings"
         );
-        load_shader_library!(app, "sampling.wesl", import_path = "bevy_solari::sampling");
+        load_shader_library!(app, "sampling.wesl", import_path = "bevy_solari::scene::sampling");
     }
 
     fn finish(&self, app: &mut App) {

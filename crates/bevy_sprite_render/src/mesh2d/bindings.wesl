@@ -1,5 +1,5 @@
-import bevy_sprite::mesh2d_types::Mesh2d;
-import bevy_render::mesh_metadata_types::MeshMetadata;
+import bevy_sprite_render::mesh2d::types::Mesh2d;
+import bevy_render::mesh::metadata_types::MeshMetadata;
 
 @if(PER_OBJECT_BUFFER_BATCH_SIZE)
 @group(1) @binding(0) var<uniform> mesh: array<Mesh2d, u32(constants::PER_OBJECT_BUFFER_BATCH_SIZE)>;

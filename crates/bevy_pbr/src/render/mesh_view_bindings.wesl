@@ -1,4 +1,4 @@
-import bevy_pbr::mesh_view_types as types;
+import bevy_pbr::render::mesh_view_types as types;
 import bevy_pbr::atmosphere::types as atmosphere_types;
 import bevy_render::{
     view::View,

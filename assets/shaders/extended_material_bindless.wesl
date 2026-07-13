@@ -3,7 +3,7 @@
 // This code demonstrates how to write shaders that are compatible with both
 // bindless and non-bindless mode. See the `#ifdef BINDLESS` blocks.
 
-import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{FragmentOutput, VertexOutput},
     mesh_bindings::mesh,
     pbr_fragment::pbr_input_from_standard_material,
@@ -12,9 +12,9 @@ import bevy_pbr::{
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 
 @if(BINDLESS)
-import bevy_pbr::pbr_bindings::{material_array, material_indices};
+import bevy_pbr::render::pbr_bindings::{material_array, material_indices};
 @else
-import bevy_pbr::pbr_bindings::material;
+import bevy_pbr::render::pbr_bindings::material;
 
 // Stores the indices of the bindless resources in the bindless resource arrays,
 // for the `ExampleBindlessExtension` fields.

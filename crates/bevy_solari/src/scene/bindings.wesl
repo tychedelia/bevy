@@ -1,5 +1,5 @@
-import bevy_pbr::lighting::perceptualRoughnessToRoughness;
-import bevy_pbr::pbr_functions::calculate_tbn_mikktspace;
+import bevy_pbr::render::pbr_lighting::perceptualRoughnessToRoughness;
+import bevy_pbr::render::pbr_functions::calculate_tbn_mikktspace;
 
 enable wgpu_ray_query;
 

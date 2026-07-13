@@ -1,16 +1,16 @@
 // https://intro-to-restir.cwyman.org/presentations/2023ReSTIR_Course_Notes.pdf
 import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
-import bevy_pbr::prepass_bindings::PreviousViewUniforms;
-import bevy_pbr::utils::{rand_f, sample_uniform_hemisphere, uniform_hemisphere_inverse_pdf, sample_disk};
+import bevy_pbr::prepass::bindings::PreviousViewUniforms;
+import bevy_pbr::render::utils::{rand_f, sample_uniform_hemisphere, uniform_hemisphere_inverse_pdf, sample_disk};
 import bevy_render::maths::PI;
 import bevy_render::view::View;
-import bevy_solari::brdf::{evaluate_diffuse_brdf, F_AB};
-import bevy_solari::gbuffer_utils::{gpixel_resolve, pixel_dissimilar, permute_pixel};
-import bevy_solari::sampling::{sample_random_light, trace_point_visibility, balance_heuristic, isinf, isnan};
-import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN, RAY_T_MAX};
-import bevy_solari::world_cache::{query_world_cache, WORLD_CACHE_CELL_LIFETIME};
-import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gi_reservoirs_b, gbuffer, depth_buffer, motion_vectors, previous_gbuffer, previous_depth_buffer, view, previous_view, push_constants, Reservoir};
-import bevy_solari::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD;
+import bevy_solari::scene::brdf::{evaluate_diffuse_brdf, F_AB};
+import bevy_solari::realtime::gbuffer_utils::{gpixel_resolve, pixel_dissimilar, permute_pixel};
+import bevy_solari::scene::sampling::{sample_random_light, trace_point_visibility, balance_heuristic, isinf, isnan};
+import bevy_solari::scene::bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN, RAY_T_MAX};
+import bevy_solari::realtime::world_cache_query::{query_world_cache, WORLD_CACHE_CELL_LIFETIME};
+import bevy_solari::realtime::bindings::{view_output, gi_reservoirs_a, gi_reservoirs_b, gbuffer, depth_buffer, motion_vectors, previous_gbuffer, previous_depth_buffer, view, previous_view, push_constants, Reservoir};
+import bevy_solari::realtime::specular_gi::DIFFUSE_GI_REUSE_ROUGHNESS_THRESHOLD;
 
 enable wgpu_ray_query;
 

@@ -148,7 +148,7 @@ pub struct MeshPipelineSystems;
 
 impl Plugin for MeshRenderPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "forward_io.wesl", import_path = "bevy_pbr::forward_io");
+        load_shader_library!(app, "forward_io.wesl", import_path = "bevy_pbr::render::forward_io");
         load_shader_library!(app, "mesh_view_types.wesl", |settings| *settings =
             ShaderSettings {
                 shader_defs: vec![
@@ -162,25 +162,25 @@ impl Plugin for MeshRenderPlugin {
                     ),
                     ShaderDefVal::UInt("MAX_RECT_LIGHTS".into(), MAX_RECT_LIGHTS as u32,),
                 ],
-                import_path: Some("bevy_pbr::mesh_view_types".into()),
+                import_path: Some("bevy_pbr::render::mesh_view_types".into()),
             });
         load_shader_library!(
             app,
             "mesh_view_bindings.wesl",
-            import_path = "bevy_pbr::mesh_view_bindings"
+            import_path = "bevy_pbr::render::mesh_view_bindings"
         );
-        load_shader_library!(app, "mesh_types.wesl", import_path = "bevy_pbr::mesh_types");
+        load_shader_library!(app, "mesh_types.wesl", import_path = "bevy_pbr::render::mesh_types");
         load_shader_library!(
             app,
             "mesh_functions.wesl",
-            import_path = "bevy_pbr::mesh_functions"
+            import_path = "bevy_pbr::render::mesh_functions"
         );
-        load_shader_library!(app, "skinning.wesl", import_path = "bevy_pbr::skinning");
-        load_shader_library!(app, "morph.wesl", import_path = "bevy_pbr::morph");
+        load_shader_library!(app, "skinning.wesl", import_path = "bevy_pbr::render::skinning");
+        load_shader_library!(app, "morph.wesl", import_path = "bevy_pbr::render::morph");
         load_shader_library!(
             app,
             "occlusion_culling.wesl",
-            import_path = "bevy_pbr::occlusion_culling"
+            import_path = "bevy_pbr::render::occlusion_culling"
         );
 
         embedded_asset!(app, "mesh.wesl");
@@ -344,7 +344,7 @@ impl Plugin for MeshRenderPlugin {
         load_shader_library!(app, "mesh_bindings.wesl", move |settings| *settings =
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
-                import_path: Some("bevy_pbr::mesh_bindings".into()),
+                import_path: Some("bevy_pbr::render::mesh_bindings".into()),
             });
     }
 }
@@ -3713,7 +3713,7 @@ impl SpecializedMeshPipeline for MeshPipeline {
         let format = key.target_format();
 
         // This is defined here so that custom shaders that use something other than
-        // the mesh binding from bevy_pbr::mesh_bindings can easily make use of this
+        // the mesh binding from bevy_pbr::render::mesh_bindings can easily make use of this
         // in their own shaders.
         if let Some(per_object_buffer_batch_size) = self.per_object_buffer_batch_size {
             shader_defs.push(ShaderDefVal::UInt(

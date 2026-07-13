@@ -353,6 +353,7 @@ impl Plugin for RenderPlugin {
         app.init_asset::<Shader>()
             .init_asset_loader::<ShaderLoader>();
         load_shader_library!(app, "utils.wesl", import_path = "bevy_render::utils");
+        load_shader_library!(app, "view.wesl", import_path = "bevy_render::view");
         load_shader_library!(app, "maths.wesl", import_path = "bevy_render::maths");
         load_shader_library!(
             app,

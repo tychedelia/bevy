@@ -3,7 +3,7 @@
 
 // First we import everything we need from bevy_pbr
 // A 2D shader would be very similar but import from bevy_sprite instead
-import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_functions,
     view_transformations::position_world_to_clip
 };
@@ -36,7 +36,7 @@ fn vertex(vertex: Vertex) -> VertexOutput {
     // The vertex.instance_index is very important. Especially if you are using batching and gpu preprocessing
     var world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
     @if(VERTEX_POSITIONS_COMPRESSED)
-    let mesh_uniform = bevy_pbr::mesh_bindings::mesh[vertex.instance_index];
+    let mesh_uniform = bevy_pbr::render::mesh_bindings::mesh[vertex.instance_index];
     @if(VERTEX_POSITIONS_COMPRESSED)
     let vertex_position = bevy_render::utils::decompress_vertex_position(vertex.compressed_position, mesh_uniform.aabb_center, mesh_uniform.aabb_half_extents);
     @else

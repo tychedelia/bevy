@@ -1,5 +1,5 @@
-import bevy_sprite::mesh2d_vertex_output::VertexOutput;
-import bevy_sprite::mesh2d_bindings::mesh;
+import bevy_sprite_render::mesh2d::vertex_output::VertexOutput;
+import bevy_sprite_render::mesh2d::bindings::mesh;
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 // we can import items from shader modules in the assets folder with a quoted path
 import super::custom_material_import::COLOR_MULTIPLIER;

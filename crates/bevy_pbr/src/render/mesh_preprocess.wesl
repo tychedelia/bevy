@@ -14,17 +14,17 @@
 // are known as *early mesh preprocessing* and *late mesh preprocessing*
 // respectively.
 
-import bevy_pbr::mesh_preprocess_types::{
+import bevy_render::occlusion_culling::mesh_preprocess_types::{
     IndirectParametersMetadata, MeshInput, PreviousMeshInput, PreprocessWorkItem
 };
-import bevy_pbr::mesh_types::{
+import bevy_pbr::render::mesh_types::{
     Mesh, MESH_FLAGS_AABB_BASED_VISIBILITY_RANGE_BIT, MESH_FLAGS_NO_FRUSTUM_CULLING_BIT,
     MESH_FLAGS_VISIBILITY_RANGE_INDEX_BITS
 };
-import bevy_pbr::mesh_view_bindings::view;
-import bevy_pbr::occlusion_culling;
-import bevy_pbr::prepass_bindings::previous_view_uniforms;
-import bevy_pbr::view_transformations::{
+import bevy_pbr::render::mesh_view_bindings::view;
+import bevy_pbr::render::occlusion_culling;
+import bevy_pbr::prepass::bindings::previous_view_uniforms;
+import bevy_pbr::render::view_transformations::{
     position_world_to_ndc, position_world_to_view, ndc_to_uv, view_z_to_depth_ndc,
     position_world_to_prev_ndc, position_world_to_prev_view, prev_view_z_to_depth_ndc
 };

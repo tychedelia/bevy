@@ -1,6 +1,6 @@
-import bevy_sprite::{
-    mesh2d_vertex_output::VertexOutput,
-    mesh2d_view_bindings::view,
+import bevy_sprite_render::mesh2d::{
+    vertex_output::VertexOutput,
+    view_bindings::view,
 };
 
 @if(TONEMAP_IN_SHADER)

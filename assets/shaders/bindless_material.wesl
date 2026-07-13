@@ -1,5 +1,5 @@
-import bevy_pbr::forward_io::VertexOutput;
-import bevy_pbr::mesh_bindings::mesh;
+import bevy_pbr::render::forward_io::VertexOutput;
+import bevy_pbr::render::mesh_bindings::mesh;
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 
 struct Color {

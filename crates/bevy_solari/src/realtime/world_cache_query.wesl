@@ -1,6 +1,6 @@
-import bevy_pbr::utils::{rand_f, rand_vec2f};
+import bevy_pbr::render::utils::{rand_f, rand_vec2f};
 import bevy_render::maths::orthonormalize;
-import bevy_solari::realtime_bindings::{
+import bevy_solari::realtime::bindings::{
     world_cache_life,
     world_cache_checksums,
     world_cache_radiance,

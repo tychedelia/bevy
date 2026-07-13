@@ -1,13 +1,13 @@
 import bevy_pbr::light_probe::{light_probe_iterator_new, light_probe_iterator_next};
-import bevy_pbr::mesh_view_bindings::{
+import bevy_pbr::render::mesh_view_bindings::{
     irradiance_volumes,
     irradiance_volume,
     irradiance_volume_sampler,
     light_probes,
 };
-import bevy_pbr::clustered_forward::ClusterableObjectIndexRanges;
+import bevy_pbr::render::clustered_forward::ClusterableObjectIndexRanges;
 
-@if(LIGHTMAP) import bevy_pbr::mesh_view_types::LIGHT_PROBE_FLAG_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE;
+@if(LIGHTMAP) import bevy_pbr::render::mesh_view_types::LIGHT_PROBE_FLAG_AFFECTS_LIGHTMAPPED_MESH_DIFFUSE;
 
 @if(IRRADIANCE_VOLUMES_ARE_USABLE)
 

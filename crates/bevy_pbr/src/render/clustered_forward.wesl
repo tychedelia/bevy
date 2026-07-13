@@ -1,4 +1,4 @@
-import bevy_pbr::{
+import bevy_pbr::render::{
     mesh_view_bindings as bindings,
     utils::rand_f,
 };

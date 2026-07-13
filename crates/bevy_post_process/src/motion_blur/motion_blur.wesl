@@ -1,5 +1,5 @@
-import bevy_pbr::prepass_utils;
-import bevy_pbr::utils;
+import bevy_pbr::prepass::utils as prepass_utils;
+import bevy_pbr::render::utils;
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 import bevy_render::globals::Globals;
 

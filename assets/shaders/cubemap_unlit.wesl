@@ -1,4 +1,4 @@
-import bevy_pbr::forward_io::VertexOutput;
+import bevy_pbr::render::forward_io::VertexOutput;
 
 @if(CUBEMAP_ARRAY)
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var base_color_texture: texture_cube_array<f32>;

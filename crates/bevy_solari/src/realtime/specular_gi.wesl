@@ -1,18 +1,18 @@
 import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
-import bevy_pbr::pbr_functions::{calculate_diffuse_color, calculate_F0};
-import bevy_pbr::utils::rand_f;
+import bevy_pbr::render::pbr_functions::{calculate_diffuse_color, calculate_F0};
+import bevy_pbr::render::utils::rand_f;
 import bevy_render::maths::{orthonormalize, PI};
 import bevy_render::view::View;
-import bevy_solari::brdf::{evaluate_brdf, evaluate_specular_brdf, F_AB};
-import bevy_solari::gbuffer_utils::{gpixel_resolve, ResolvedGPixel};
-import bevy_solari::sampling::{sample_random_light, random_emissive_light_pdf, sample_ggx_vndf, ggx_vndf_pdf, ggx_vndf_sample_invalid, power_heuristic};
-import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, ResolvedRayHitFull, RAY_T_MIN, RAY_T_MAX, MIRROR_ROUGHNESS_THRESHOLD};
-import bevy_solari::world_cache::{query_world_cache, get_cell_size, WORLD_CACHE_CELL_LIFETIME};
-import bevy_solari::realtime_bindings::{view_output, gi_reservoirs_a, gbuffer, depth_buffer, view, push_constants};
+import bevy_solari::scene::brdf::{evaluate_brdf, evaluate_specular_brdf, F_AB};
+import bevy_solari::realtime::gbuffer_utils::{gpixel_resolve, ResolvedGPixel};
+import bevy_solari::scene::sampling::{sample_random_light, random_emissive_light_pdf, sample_ggx_vndf, ggx_vndf_pdf, ggx_vndf_sample_invalid, power_heuristic};
+import bevy_solari::scene::bindings::{trace_ray, resolve_ray_hit_full, ResolvedRayHitFull, RAY_T_MIN, RAY_T_MAX, MIRROR_ROUGHNESS_THRESHOLD};
+import bevy_solari::realtime::world_cache_query::{query_world_cache, get_cell_size, WORLD_CACHE_CELL_LIFETIME};
+import bevy_solari::realtime::bindings::{view_output, gi_reservoirs_a, gbuffer, depth_buffer, view, push_constants};
 @if(DLSS_RR_GUIDE_BUFFERS)
-import bevy_solari::realtime_bindings::{diffuse_albedo, specular_albedo, normal_roughness, specular_motion_vectors, previous_view};
+import bevy_solari::realtime::bindings::{diffuse_albedo, specular_albedo, normal_roughness, specular_motion_vectors, previous_view};
 @if(DLSS_RR_GUIDE_BUFFERS)
-import bevy_solari::resolve_dlss_rr_textures::env_brdf_approx2;
+import bevy_solari::realtime::resolve_dlss_rr_textures::env_brdf_approx2;
 
 enable wgpu_ray_query;
 

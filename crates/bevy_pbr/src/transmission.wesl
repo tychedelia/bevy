@@ -1,9 +1,11 @@
 import bevy_pbr::{
-    lighting,
-    prepass_utils,
-    utils::interleaved_gradient_noise,
-    utils,
-    mesh_view_bindings as view_bindings,
+    render::{
+        pbr_lighting as lighting,
+        utils::interleaved_gradient_noise,
+        utils,
+        mesh_view_bindings as view_bindings,
+    },
+    prepass::utils as prepass_utils,
 };
 
 import bevy_render::maths::PI;

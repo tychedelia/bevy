@@ -1,17 +1,17 @@
 import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
-import bevy_pbr::utils::{rand_f, rand_range_u, sample_cosine_hemisphere};
+import bevy_pbr::render::utils::{rand_f, rand_range_u, sample_cosine_hemisphere};
 import bevy_render::view::View;
-import bevy_solari::presample_light_tiles::{ResolvedLightSamplePacked, unpack_resolved_light_sample};
-import bevy_solari::sampling::{calculate_resolved_light_contribution, trace_light_visibility};
-import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN};
-import bevy_solari::world_cache::{
+import bevy_solari::realtime::presample_light_tiles::{ResolvedLightSamplePacked, unpack_resolved_light_sample};
+import bevy_solari::scene::sampling::{calculate_resolved_light_contribution, trace_light_visibility};
+import bevy_solari::scene::bindings::{trace_ray, resolve_ray_hit_full, RAY_T_MIN};
+import bevy_solari::realtime::world_cache_query::{
     WORLD_CACHE_MAX_TEMPORAL_SAMPLES,
     WORLD_CACHE_DIRECT_LIGHT_SAMPLE_COUNT,
     WORLD_CACHE_MAX_GI_RAY_DISTANCE,
     WORLD_CACHE_CELL_UPDATES_SOFT_CAP,
     query_world_cache,
 };
-import bevy_solari::realtime_bindings::{
+import bevy_solari::realtime::bindings::{
     light_tile_resolved_samples,
     view,
     push_constants,

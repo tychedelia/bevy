@@ -1,16 +1,18 @@
 import bevy_render::bindless::{bindless_samplers_filtering, bindless_textures_2d};
 
 import bevy_pbr::{
-    prepass_io::VertexOutput,
-    prepass_bindings::previous_view_uniforms,
-    mesh_bindings::mesh,
-    mesh_view_bindings::view,
-    pbr_bindings,
-    pbr_types,
+    prepass::io::VertexOutput,
+    prepass::bindings::previous_view_uniforms,
+    render::{
+        mesh_bindings::mesh,
+        mesh_view_bindings::view,
+        pbr_bindings,
+        pbr_types,
+    },
 };
 
 @if(BINDLESS)
-import bevy_pbr::pbr_bindings::material_indices;
+import bevy_pbr::render::pbr_bindings::material_indices;
 
 // Cutoff used for the premultiplied alpha modes BLEND, ADD, and ALPHA_TO_COVERAGE.
 const PREMULTIPLIED_ALPHA_CUTOFF = 0.05;

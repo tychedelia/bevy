@@ -1,10 +1,12 @@
 import bevy_pbr::{
-    forward_io::VertexOutput,
-    mesh_functions::get_world_from_local,
-    mesh_view_bindings::view,
-    pbr_functions::calculate_tbn_mikktspace,
-    prepass_utils::prepass_depth,
-    view_transformations::depth_ndc_to_view_z,
+    render::{
+        forward_io::VertexOutput,
+        mesh_functions::get_world_from_local,
+        mesh_view_bindings::view,
+        pbr_functions::calculate_tbn_mikktspace,
+        view_transformations::depth_ndc_to_view_z,
+    },
+    prepass::utils::prepass_depth,
 };
 import bevy_render::maths::project_onto;
 

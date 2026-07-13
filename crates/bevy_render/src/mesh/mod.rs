@@ -41,8 +41,8 @@ impl Plugin for MeshRenderAssetPlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(
             app,
-            "mesh_metadata_types.wesl",
-            import_path = "bevy_render::mesh_metadata_types"
+            "metadata_types.wesl",
+            import_path = "bevy_render::mesh::metadata_types"
         );
 
         app

@@ -26,7 +26,7 @@ pub mod _macro {
 /// dependencies of shaders.
 ///
 /// The `import_path = "..."` form registers the shader under a logical import
-/// path (e.g. `bevy_pbr::mesh_view_bindings`).
+/// path (e.g. `bevy_pbr::render::mesh_view_bindings`).
 #[macro_export]
 macro_rules! load_shader_library {
     ($asset_server_provider: expr, $path: literal, import_path = $import_path: literal) => {

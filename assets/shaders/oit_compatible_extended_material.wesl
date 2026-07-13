@@ -6,19 +6,19 @@
 // this is the general setup if it's not always the case.
 @if(PREPASS_PIPELINE)
 import bevy_pbr::{
-    prepass_io::{VertexOutput, FragmentOutput},
+    prepass::io::{VertexOutput, FragmentOutput},
 };
 @else
-import bevy_pbr::{
+import bevy_pbr::render::{
     forward_io::{VertexOutput, FragmentOutput},
 };
 
 @if(OIT_ENABLED)
-import bevy_core_pipeline::oit::oit_draw;
+import bevy_core_pipeline::oit::draw::oit_draw;
 @if(OIT_ENABLED)
-import bevy_pbr::pbr_types;
+import bevy_pbr::render::pbr_types;
 @if(OIT_ENABLED)
-import bevy_pbr::pbr_fragment::pbr_input_from_standard_material;
+import bevy_pbr::render::pbr_fragment::pbr_input_from_standard_material;
 
 // The material parameters
 struct Colors {

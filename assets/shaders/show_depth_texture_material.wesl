@@ -1,4 +1,4 @@
-import bevy_pbr::forward_io::VertexOutput;
+import bevy_pbr::render::forward_io::VertexOutput;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var depth_texture: texture_depth_2d;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var depth_sampler: sampler_comparison;

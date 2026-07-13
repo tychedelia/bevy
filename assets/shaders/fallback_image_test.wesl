@@ -1,4 +1,4 @@
-import bevy_pbr::forward_io::VertexOutput;
+import bevy_pbr::render::forward_io::VertexOutput;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var test_texture_1d: texture_1d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var test_texture_1d_sampler: sampler;

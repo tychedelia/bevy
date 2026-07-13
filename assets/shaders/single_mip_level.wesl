@@ -1,6 +1,6 @@
 // A shader that displays only one mip level of a texture.
 
-import bevy_sprite::mesh2d_vertex_output::VertexOutput;
+import bevy_sprite_render::mesh2d::vertex_output::VertexOutput;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> mip_level: u32;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var base_color_texture: texture_2d<f32>;

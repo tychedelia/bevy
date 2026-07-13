@@ -1,5 +1,5 @@
 import bevy_pbr::{
-    meshlet_bindings::{
+    meshlet::bindings::{
         Meshlet,
         meshlet_visibility_buffer,
         meshlet_raster_clusters,
@@ -10,17 +10,19 @@ import bevy_pbr::{
         get_meshlet_vertex_normal,
         get_meshlet_vertex_uv,
     },
-    mesh_view_bindings::view,
-    mesh_functions::mesh_position_local_to_world,
-    mesh_types::Mesh,
-    view_transformations::{position_world_to_clip, frag_coord_to_ndc},
+    render::{
+        mesh_view_bindings::view,
+        mesh_functions::mesh_position_local_to_world,
+        mesh_types::Mesh,
+        view_transformations::{position_world_to_clip, frag_coord_to_ndc},
+    },
 };
 import bevy_render::maths::{affine3_to_square, mat2x4_f32_to_mat3x3_unpack};
 
 @if(PREPASS_FRAGMENT && MOTION_VECTOR_PREPASS)
 import bevy_pbr::{
-    prepass_bindings::previous_view_uniforms,
-    pbr_prepass_functions::calculate_motion_vector,
+    prepass::bindings::previous_view_uniforms,
+    render::pbr_prepass_functions::calculate_motion_vector,
 };
 
 /// Functions to be used by materials for reading from a meshlet visibility buffer texture.

@@ -75,40 +75,40 @@ impl Plugin for Mesh2dRenderPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         load_shader_library!(
             app,
-            "mesh2d_vertex_output.wesl",
-            import_path = "bevy_sprite::mesh2d_vertex_output"
+            "vertex_output.wesl",
+            import_path = "bevy_sprite_render::mesh2d::vertex_output"
         );
         load_shader_library!(
             app,
-            "mesh2d_vertex_input.wesl",
-            import_path = "bevy_sprite::mesh2d_vertex_input"
+            "vertex_input.wesl",
+            import_path = "bevy_sprite_render::mesh2d::vertex_input"
         );
         load_shader_library!(
             app,
-            "mesh2d_view_types.wesl",
-            import_path = "bevy_sprite::mesh2d_view_types"
+            "view_types.wesl",
+            import_path = "bevy_sprite_render::mesh2d::view_types"
         );
         load_shader_library!(
             app,
-            "mesh2d_view_bindings.wesl",
-            import_path = "bevy_sprite::mesh2d_view_bindings"
+            "view_bindings.wesl",
+            import_path = "bevy_sprite_render::mesh2d::view_bindings"
         );
         load_shader_library!(
             app,
-            "mesh2d_types.wesl",
-            import_path = "bevy_sprite::mesh2d_types"
+            "types.wesl",
+            import_path = "bevy_sprite_render::mesh2d::types"
         );
         load_shader_library!(
             app,
-            "mesh2d_functions.wesl",
-            import_path = "bevy_sprite::mesh2d_functions"
+            "functions.wesl",
+            import_path = "bevy_sprite_render::mesh2d::functions"
         );
 
         embedded_asset!(app, "mesh2d.wesl");
 
         // These bindings should be loaded as a shader library, but it depends on runtime
         // information, so we will load it in a system.
-        embedded_asset!(app, "mesh2d_bindings.wesl");
+        embedded_asset!(app, "bindings.wesl");
 
         if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
@@ -232,13 +232,13 @@ fn load_mesh2d_bindings(render_device: Res<RenderDevice>, asset_server: Res<Asse
     // whether storage buffers are supported, or the maximum uniform buffer binding size.
     let handle: Handle<Shader> = load_embedded_asset!(
         asset_server.as_ref(),
-        "mesh2d_bindings.wesl",
+        "bindings.wesl",
         move |settings| {
             *settings = ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
                 ..Default::default()
             };
-            settings.import_path = Some("bevy_sprite::mesh2d_bindings".into());
+            settings.import_path = Some("bevy_sprite_render::mesh2d::bindings".into());
         }
     );
     // Forget the handle so we don't have to store it anywhere, and we keep the embedded asset

@@ -1,4 +1,4 @@
-import bevy_sprite::sprite_types::SpriteMaterial;
+import bevy_sprite_render::sprite_mesh::types::SpriteMaterial;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> material: SpriteMaterial;
 @group(constants::MATERIAL_BIND_GROUP) @binding(1) var texture: texture_2d<f32>;

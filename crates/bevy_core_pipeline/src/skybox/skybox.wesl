@@ -1,5 +1,5 @@
 import bevy_render::view::View;
-import bevy_pbr::utils::coords_to_viewport_uv;
+import bevy_pbr::render::utils::coords_to_viewport_uv;
 
 struct SkyboxUniforms {
 	brightness: f32,

@@ -1,5 +1,5 @@
-import bevy_pbr::{
-    lighting::{EnvBRDFApprox, F_AB},
+import bevy_pbr::render::{
+    pbr_lighting::{EnvBRDFApprox, F_AB},
     mesh_view_bindings::lights,
 };
 

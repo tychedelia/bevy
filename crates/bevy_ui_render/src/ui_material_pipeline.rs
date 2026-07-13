@@ -47,7 +47,7 @@ where
         load_shader_library!(
             app,
             "ui_vertex_output.wesl",
-            import_path = "bevy_ui::ui_vertex_output"
+            import_path = "bevy_ui_render::ui_vertex_output"
         );
 
         embedded_asset!(app, "ui_material.wesl");

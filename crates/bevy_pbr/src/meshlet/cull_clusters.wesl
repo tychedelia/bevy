@@ -1,4 +1,4 @@
-import bevy_pbr::meshlet_bindings::{
+import bevy_pbr::meshlet::bindings::{
     InstancedOffset,
     get_aabb,
     get_aabb_error,
@@ -15,7 +15,7 @@ import bevy_pbr::meshlet_bindings::{
     meshlet_meshlet_cull_dispatch,
     meshlet_meshlet_cull_queue,
 };
-import bevy_pbr::meshlet_cull_shared::{
+import bevy_pbr::meshlet::cull_shared::{
     ScreenAabb,
     project_aabb,
     lod_error_is_imperceptible,

@@ -1,7 +1,7 @@
 import bevy_render::view::View;
 
 import bevy_pbr::{
-    mesh_view_types::Lights,
+    render::mesh_view_types::Lights,
     atmosphere::types::{Atmosphere, AtmosphereSettings, AtmosphereTransforms}
 };
 

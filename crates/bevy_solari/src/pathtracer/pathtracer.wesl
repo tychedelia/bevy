@@ -1,10 +1,10 @@
 import bevy_core_pipeline::tonemapping::tonemapping_luminance as luminance;
-import bevy_pbr::utils::{rand_f, rand_vec2f};
+import bevy_pbr::render::utils::{rand_f, rand_vec2f};
 import bevy_render::maths::{PI, orthonormalize};
 import bevy_render::view::View;
-import bevy_solari::brdf::{evaluate_brdf, evaluate_and_sample_brdf, brdf_pdf, F_AB};
-import bevy_solari::sampling::{sample_random_light, random_emissive_light_pdf, ggx_vndf_pdf, power_heuristic};
-import bevy_solari::scene_bindings::{trace_ray, resolve_ray_hit_full, ResolvedRayHitFull, RAY_T_MIN, RAY_T_MAX, MIRROR_ROUGHNESS_THRESHOLD};
+import bevy_solari::scene::brdf::{evaluate_brdf, evaluate_and_sample_brdf, brdf_pdf, F_AB};
+import bevy_solari::scene::sampling::{sample_random_light, random_emissive_light_pdf, ggx_vndf_pdf, power_heuristic};
+import bevy_solari::scene::bindings::{trace_ray, resolve_ray_hit_full, ResolvedRayHitFull, RAY_T_MIN, RAY_T_MAX, MIRROR_ROUGHNESS_THRESHOLD};
 
 enable wgpu_ray_query;
 

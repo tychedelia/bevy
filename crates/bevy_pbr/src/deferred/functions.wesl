@@ -1,19 +1,21 @@
 import bevy_pbr::{
-    pbr_types::{PbrInput, pbr_input_new, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
-    pbr_deferred_types as deferred_types,
-    pbr_functions,
-    rgb9e5,
-    mesh_view_bindings::view,
-    prepass_io::FragmentOutput,
-    view_transformations::{position_ndc_to_world, frag_coord_to_ndc},
+    render::{
+        pbr_types::{PbrInput, pbr_input_new, STANDARD_MATERIAL_FLAGS_UNLIT_BIT},
+        pbr_functions,
+        rgb9e5,
+        mesh_view_bindings::view,
+        view_transformations::{position_ndc_to_world, frag_coord_to_ndc},
+    },
+    deferred::types as deferred_types,
+    prepass::io::FragmentOutput,
 };
 import bevy_render::utils::{octahedral_encode, octahedral_decode};
 
-@if(MESHLET_MESH_MATERIAL_PASS) import bevy_pbr::meshlet_visibility_buffer_resolve::VertexOutput;
-@else import bevy_pbr::prepass_io::VertexOutput;
+@if(MESHLET_MESH_MATERIAL_PASS) import bevy_pbr::meshlet::visibility_buffer_resolve::VertexOutput;
+@else import bevy_pbr::prepass::io::VertexOutput;
 
 @if(MOTION_VECTOR_PREPASS)
-    import bevy_pbr::pbr_prepass_functions::calculate_motion_vector;
+    import bevy_pbr::render::pbr_prepass_functions::calculate_motion_vector;
 
 // Creates the deferred gbuffer from a PbrInput.
 fn deferred_gbuffer_from_pbr_input(in: PbrInput) -> vec4<u32> {

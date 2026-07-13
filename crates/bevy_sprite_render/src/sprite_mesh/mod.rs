@@ -27,18 +27,18 @@ impl Plugin for SpriteMeshPlugin {
     fn build(&self, app: &mut bevy_app::App) {
         load_shader_library!(
             app,
-            "sprite_bindings.wesl",
-            import_path = "bevy_sprite::sprite_bindings"
+            "bindings.wesl",
+            import_path = "bevy_sprite_render::sprite_mesh::bindings"
         );
         load_shader_library!(
             app,
-            "sprite_functions.wesl",
-            import_path = "bevy_sprite::sprite_functions"
+            "functions.wesl",
+            import_path = "bevy_sprite_render::sprite_mesh::functions"
         );
         load_shader_library!(
             app,
-            "sprite_types.wesl",
-            import_path = "bevy_sprite::sprite_types"
+            "types.wesl",
+            import_path = "bevy_sprite_render::sprite_mesh::types"
         );
 
         app.add_plugins(SpriteMaterialPlugin);

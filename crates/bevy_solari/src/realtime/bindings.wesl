@@ -1,6 +1,6 @@
 import bevy_render::view::View;
-import bevy_pbr::prepass_bindings::PreviousViewUniforms;
-import bevy_solari::sampling::LightSample;
+import bevy_pbr::prepass::bindings::PreviousViewUniforms;
+import bevy_solari::scene::sampling::LightSample;
 
 enable wgpu_ray_query;
 

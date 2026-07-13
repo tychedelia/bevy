@@ -2,35 +2,39 @@
 
 import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput;
 import bevy_pbr::{
-    clustered_forward,
-    lighting,
-    lighting::{LAYER_BASE, LAYER_CLEARCOAT},
-    mesh_view_bindings::{
-        view,
-        globals,
-        depth_prepass_texture,
-        deferred_prepass_texture,
-        ssr_settings
+    render::{
+        clustered_forward,
+        pbr_lighting as lighting,
+        pbr_lighting::{LAYER_BASE, LAYER_CLEARCOAT},
+        mesh_view_bindings::{
+            view,
+            globals,
+            depth_prepass_texture,
+            deferred_prepass_texture,
+            ssr_settings
+        },
+        pbr_functions,
+        utils,
+        view_transformations::{
+            depth_ndc_to_view_z,
+            frag_coord_to_ndc,
+            ndc_to_frag_coord,
+            ndc_to_uv,
+            position_view_to_ndc,
+            position_world_to_ndc,
+            position_world_to_view,
+        },
     },
-    pbr_deferred_functions::pbr_input_from_deferred_gbuffer,
-    pbr_deferred_types,
-    pbr_functions,
-    prepass_utils,
-    raymarch::{
+    deferred::{
+        functions::pbr_input_from_deferred_gbuffer,
+        types as pbr_deferred_types,
+    },
+    prepass::utils as prepass_utils,
+    ssr::raymarch::{
         depth_ray_march_from_cs,
         depth_ray_march_march,
         depth_ray_march_new_from_depth,
         depth_ray_march_to_ws_dir,
-    },
-    utils,
-    view_transformations::{
-        depth_ndc_to_view_z,
-        frag_coord_to_ndc,
-        ndc_to_frag_coord,
-        ndc_to_uv,
-        position_view_to_ndc,
-        position_world_to_ndc,
-        position_world_to_view,
     },
 };
 import bevy_render::{
@@ -38,7 +42,7 @@ import bevy_render::{
     maths::orthonormalize,
 };
 
-@if(ENVIRONMENT_MAP) import bevy_pbr::environment_map;
+@if(ENVIRONMENT_MAP) import bevy_pbr::light_probe::environment_map;
 
 // The texture representing the color framebuffer.
 @group(2) @binding(0) var color_texture: texture_2d<f32>;

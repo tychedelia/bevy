@@ -79,15 +79,15 @@ impl Plugin for PrepassPipelinePlugin {
 
         load_shader_library!(
             app,
-            "prepass_bindings.wesl",
-            import_path = "bevy_pbr::prepass_bindings"
+            "bindings.wesl",
+            import_path = "bevy_pbr::prepass::bindings"
         );
         load_shader_library!(
             app,
-            "prepass_utils.wesl",
-            import_path = "bevy_pbr::prepass_utils"
+            "utils.wesl",
+            import_path = "bevy_pbr::prepass::utils"
         );
-        load_shader_library!(app, "prepass_io.wesl", import_path = "bevy_pbr::prepass_io");
+        load_shader_library!(app, "io.wesl", import_path = "bevy_pbr::prepass::io");
 
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;

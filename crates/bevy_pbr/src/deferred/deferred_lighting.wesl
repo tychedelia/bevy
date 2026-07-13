@@ -1,15 +1,19 @@
 import bevy_pbr::{
-    prepass_utils,
-    pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
-    pbr_functions,
-    pbr_deferred_functions::pbr_input_from_deferred_gbuffer,
-    pbr_deferred_types::unpack_unorm3x4_plus_unorm_20_,
-    lighting,
-    mesh_view_bindings::deferred_prepass_texture,
+    prepass::utils as prepass_utils,
+    render::{
+        pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
+        pbr_functions,
+        pbr_lighting as lighting,
+        mesh_view_bindings::deferred_prepass_texture,
+    },
+    deferred::{
+        functions::pbr_input_from_deferred_gbuffer,
+        types::unpack_unorm3x4_plus_unorm_20_,
+    },
 };
 
-@if(SCREEN_SPACE_AMBIENT_OCCLUSION) import bevy_pbr::mesh_view_bindings::screen_space_ambient_occlusion_texture;
-@if(SCREEN_SPACE_AMBIENT_OCCLUSION) import bevy_pbr::ssao_utils::ssao_multibounce;
+@if(SCREEN_SPACE_AMBIENT_OCCLUSION) import bevy_pbr::render::mesh_view_bindings::screen_space_ambient_occlusion_texture;
+@if(SCREEN_SPACE_AMBIENT_OCCLUSION) import bevy_pbr::ssao::utils::ssao_multibounce;
 
 struct FullscreenVertexOutput {
     @builtin(position)

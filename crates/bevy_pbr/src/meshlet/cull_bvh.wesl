@@ -1,4 +1,4 @@
-import bevy_pbr::meshlet_bindings::{
+import bevy_pbr::meshlet::bindings::{
     InstancedOffset,
     get_aabb,
     get_aabb_error,
@@ -18,7 +18,7 @@ import bevy_pbr::meshlet_bindings::{
     meshlet_second_pass_bvh_dispatch,
     meshlet_second_pass_bvh_queue,
 };
-import bevy_pbr::meshlet_cull_shared::{
+import bevy_pbr::meshlet::cull_shared::{
     lod_error_is_imperceptible,
     aabb_in_frustum,
     should_occlusion_cull_aabb,

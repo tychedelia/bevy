@@ -6,7 +6,7 @@
 // Before launching `build_indirect_params.wgsl`, we need to reinitialize the
 // value to 0.
 
-import bevy_pbr::mesh_preprocess_types::IndirectBatchSet;
+import bevy_render::occlusion_culling::mesh_preprocess_types::IndirectBatchSet;
 
 @group(0) @binding(0) var<storage, read_write> indirect_batch_sets: array<IndirectBatchSet>;
 

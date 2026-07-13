@@ -1,10 +1,10 @@
-import bevy_sprite::{
-    mesh2d_functions as mesh_functions,
-    mesh2d_vertex_output::VertexOutput,
-    mesh2d_view_bindings::view,
-    mesh2d_vertex_input::{Vertex, decompress_vertex},
-    sprite_bindings::material,
-    sprite_functions,
+import bevy_sprite_render::{
+    mesh2d::functions as mesh_functions,
+    mesh2d::vertex_output::VertexOutput,
+    mesh2d::view_bindings::view,
+    mesh2d::vertex_input::{Vertex, decompress_vertex},
+    sprite_mesh::bindings::material,
+    sprite_mesh::functions as sprite_functions,
 };
 
 @if(TONEMAP_IN_SHADER)

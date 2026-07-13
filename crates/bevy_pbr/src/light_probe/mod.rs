@@ -374,18 +374,13 @@ impl Plugin for LightProbePlugin {
     fn build(&self, app: &mut App) {
         load_shader_library!(
             app,
-            "light_probe.wesl",
-            import_path = "bevy_pbr::light_probe"
-        );
-        load_shader_library!(
-            app,
             "environment_map.wesl",
-            import_path = "bevy_pbr::environment_map"
+            import_path = "bevy_pbr::light_probe::environment_map"
         );
         load_shader_library!(
             app,
             "irradiance_volume.wesl",
-            import_path = "bevy_pbr::irradiance_volume"
+            import_path = "bevy_pbr::light_probe::irradiance_volume"
         );
 
         app.add_plugins((

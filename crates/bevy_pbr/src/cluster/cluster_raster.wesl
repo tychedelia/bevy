@@ -4,9 +4,9 @@ import bevy_pbr::cluster::{
     CLUSTERABLE_OBJECT_TYPE_SPOT_LIGHT, ClusterableObjectZSlice,
     calculate_sphere_cluster_bounds, compute_view_from_world_scale
 };
-import bevy_pbr::clustered_forward;
+import bevy_pbr::render::clustered_forward;
 import bevy_pbr::light_probes::transpose_affine_matrix;
-import bevy_pbr::mesh_view_types::{
+import bevy_pbr::render::mesh_view_types::{
     ClusterOffsetsAndCounts, ClusterableObjectIndexLists, ClusteredDecals, ClusteredLights,
     LightProbes, Lights, POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE
 };

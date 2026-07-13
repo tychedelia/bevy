@@ -12,12 +12,16 @@ WGSL files with no preprocessor directives keep working unchanged.
 To translate a shader:
 
 - `#import bevy_pbr::forward_io::VertexOutput` becomes
-  `import bevy_pbr::forward_io::VertexOutput;` (the trailing semicolon is
-  required).
-  Bevy's module names are unchanged. Imports must appear at the top of the
-  file, before any declaration or `enable` directive. Quoted asset-path
-  imports (`#import "shaders/util.wgsl"::foo`) become relative imports
-  (`import super::util::foo;`).
+  `import bevy_pbr::render::forward_io::VertexOutput;` (the trailing semicolon
+  is required).
+  Bevy's module names now match the shader's path within its crate, so most
+  have changed: `bevy_pbr::mesh_view_bindings` is
+  `bevy_pbr::render::mesh_view_bindings`, `bevy_pbr::prepass_utils` is
+  `bevy_pbr::prepass::utils`, `bevy_sprite::mesh2d_functions` is
+  `bevy_sprite_render::mesh2d::functions`, and so on. Imports must appear at
+  the top of the file, before any declaration or `enable` directive. Quoted
+  asset-path imports (`#import "shaders/util.wgsl"::foo`) become relative
+  imports (`import super::util::foo;`).
 - `#ifdef FLAG` / `#else` / `#endif` become `@if(FLAG)` / `@else` translate-time
   attributes attached to whole declarations, struct members, function
   parameters, imports, or statements. `#else ifdef` becomes `@elif(...)`.

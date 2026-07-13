@@ -1,5 +1,5 @@
-import bevy_sprite::{
-    sprite_types::{
+import bevy_sprite_render::sprite_mesh::{
+    types::{
         SPRITE_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS,
         SPRITE_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE,
         SPRITE_MATERIAL_FLAGS_ALPHA_MODE_MASK,
@@ -8,7 +8,7 @@ import bevy_sprite::{
         SPRITE_MATERIAL_FLAGS_TILE_X,
         SPRITE_MATERIAL_FLAGS_TILE_Y,
     },
-    sprite_bindings::{material, texture, texture_sampler},
+    bindings::{material, texture, texture_sampler},
 };
 
 // Applies all the transformations to the UV and samples the sprite's final color.

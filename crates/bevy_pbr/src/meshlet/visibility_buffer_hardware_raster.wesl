@@ -1,5 +1,5 @@
 import bevy_pbr::{
-    meshlet_bindings::{
+    meshlet::bindings::{
         meshlet_cluster_meshlet_ids,
         meshlets,
         meshlet_cluster_instance_ids,
@@ -12,7 +12,7 @@ import bevy_pbr::{
         get_meshlet_vertex_id,
         get_meshlet_vertex_position,
     },
-    mesh_functions::mesh_position_local_to_world,
+    render::mesh_functions::mesh_position_local_to_world,
 };
 import bevy_render::maths::affine3_to_square;
 var<immediate> meshlet_raster_cluster_rightmost_slot: u32;

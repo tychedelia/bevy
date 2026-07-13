@@ -1,8 +1,8 @@
-import bevy_sprite::{
-    mesh2d_view_bindings::view,
-    mesh2d_bindings::{mesh, metadata},
+import bevy_sprite_render::mesh2d::{
+    view_bindings::view,
+    bindings::{mesh, metadata},
 };
-import bevy_render::mesh_metadata_types::MeshMetadata;
+import bevy_render::mesh::metadata_types::MeshMetadata;
 import bevy_render::maths::{affine3_to_square, mat2x4_f32_to_mat3x3_unpack};
 
 fn get_world_from_local(instance_index: u32) -> mat4x4<f32> {

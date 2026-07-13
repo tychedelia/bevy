@@ -21,7 +21,7 @@ use derive_more::derive::From;
 /// Materials must also implement [`Asset`] so they can be treated as such.
 ///
 /// If you are only using the fragment shader, make sure your shader imports the `UiVertexOutput`
-/// from `bevy_ui::ui_vertex_output` and uses it as the input of your fragment shader like the
+/// from `bevy_ui_render::ui_vertex_output` and uses it as the input of your fragment shader like the
 /// example below does.
 ///
 /// # Example
@@ -77,12 +77,12 @@ use derive_more::derive::From;
 /// In WESL shaders, the material's binding would look like this:
 ///
 /// If you only use the fragment shader make sure to import `UiVertexOutput` from
-/// `bevy_ui::ui_vertex_output` in your wesl shader.
+/// `bevy_ui_render::ui_vertex_output` in your wesl shader.
 /// Also note that bind group 0 is always bound to the [`View Uniform`](bevy_render::view::ViewUniform)
 /// and the [`Globals Uniform`](bevy_render::globals::GlobalsUniform).
 ///
 /// ```wesl
-/// import bevy_ui::ui_vertex_output::UiVertexOutput;
+/// import bevy_ui_render::ui_vertex_output::UiVertexOutput;
 ///
 /// struct CustomMaterial {
 ///     color: vec4<f32>,

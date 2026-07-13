@@ -1,35 +1,37 @@
 import bevy_pbr::{
-    pbr_types,
-    pbr_bindings,
-    mesh_view_bindings as view_bindings,
-    mesh_view_types,
-    lighting,
-    lighting::{LAYER_BASE, LAYER_CLEARCOAT},
-    clustered_forward as clustering,
-    shadows,
-    ambient,
-    view_transformations,
-    raymarch,
-    utils,
-    mesh_types::{
-        MESH_FLAGS_SHADOW_RECEIVER_BIT,
-        MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT,
-        MESH_FLAGS_TRANSMITTED_SHADOW_RECEIVER_BIT,
+    render::{
+        pbr_types,
+        pbr_bindings,
+        mesh_view_bindings as view_bindings,
+        mesh_view_types,
+        pbr_lighting as lighting,
+        pbr_lighting::{LAYER_BASE, LAYER_CLEARCOAT},
+        clustered_forward as clustering,
+        shadows,
+        pbr_ambient as ambient,
+        view_transformations,
+        utils,
+        mesh_types::{
+            MESH_FLAGS_SHADOW_RECEIVER_BIT,
+            MESH_FLAGS_SIGN_DETERMINANT_MODEL_3X3_BIT,
+            MESH_FLAGS_TRANSMITTED_SHADOW_RECEIVER_BIT,
+        },
     },
+    ssr::raymarch,
 };
-import bevy_pbr::mesh_view_bindings::globals;
-import bevy_pbr::view_transformations::{position_world_to_ndc};
+import bevy_pbr::render::mesh_view_bindings::globals;
+import bevy_pbr::render::view_transformations::{position_world_to_ndc};
 import bevy_render::maths::{E, powsafe};
 
 @if(STANDARD_MATERIAL_SPECULAR_TRANSMISSION) import bevy_pbr::transmission;
 
-@if(IRRADIANCE_VOLUME) import bevy_pbr::irradiance_volume;
+@if(IRRADIANCE_VOLUME) import bevy_pbr::light_probe::irradiance_volume;
 
-@if(MESHLET_MESH_MATERIAL_PASS) import bevy_pbr::meshlet_visibility_buffer_resolve::VertexOutput;
-@elif(PREPASS_PIPELINE) import bevy_pbr::prepass_io::VertexOutput;
-@else import bevy_pbr::forward_io::VertexOutput;
+@if(MESHLET_MESH_MATERIAL_PASS) import bevy_pbr::meshlet::visibility_buffer_resolve::VertexOutput;
+@elif(PREPASS_PIPELINE) import bevy_pbr::prepass::io::VertexOutput;
+@else import bevy_pbr::render::forward_io::VertexOutput;
 
-@if(ENVIRONMENT_MAP) import bevy_pbr::environment_map;
+@if(ENVIRONMENT_MAP) import bevy_pbr::light_probe::environment_map;
 
 @if(TONEMAP_IN_SHADER) import bevy_core_pipeline::tonemapping::{tone_mapping, screen_space_dither};
 
@@ -892,13 +894,13 @@ fn apply_fog(
     }
 
     if fog_params.mode == mesh_view_types::FOG_MODE_LINEAR {
-        return bevy_pbr::fog::linear_fog(fog_params, input_color, distance, scattering);
+        return bevy_pbr::render::fog::linear_fog(fog_params, input_color, distance, scattering);
     } else if fog_params.mode == mesh_view_types::FOG_MODE_EXPONENTIAL {
-        return bevy_pbr::fog::exponential_fog(fog_params, input_color, distance, scattering);
+        return bevy_pbr::render::fog::exponential_fog(fog_params, input_color, distance, scattering);
     } else if fog_params.mode == mesh_view_types::FOG_MODE_EXPONENTIAL_SQUARED {
-        return bevy_pbr::fog::exponential_squared_fog(fog_params, input_color, distance, scattering);
+        return bevy_pbr::render::fog::exponential_squared_fog(fog_params, input_color, distance, scattering);
     } else if fog_params.mode == mesh_view_types::FOG_MODE_ATMOSPHERIC {
-        return bevy_pbr::fog::atmospheric_fog(fog_params, input_color, distance, scattering);
+        return bevy_pbr::render::fog::atmospheric_fog(fog_params, input_color, distance, scattering);
     } else {
         return input_color;
     }

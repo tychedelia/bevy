@@ -18,26 +18,26 @@ import bevy_pbr::atmosphere::{
     functions::{calculate_visible_sun_ratio, clamp_to_surface},
     bruneton_functions::transmittance_lut_r_mu_to_uv,
 };
-import bevy_pbr::mesh_functions::{get_world_from_local, mesh_position_local_to_clip};
-import bevy_pbr::mesh_view_bindings::{
+import bevy_pbr::render::mesh_functions::{get_world_from_local, mesh_position_local_to_clip};
+import bevy_pbr::render::mesh_view_bindings::{
     globals, lights, view, clustered_lights,
     atmosphere, atmosphere_transmittance_texture, atmosphere_transmittance_sampler
 };
-import bevy_pbr::mesh_view_types::{
+import bevy_pbr::render::mesh_view_types::{
     DIRECTIONAL_LIGHT_FLAGS_VOLUMETRIC_BIT,
     POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
     POINT_LIGHT_FLAGS_VOLUMETRIC_BIT,
     POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE,
 };
-import bevy_pbr::shadow_sampling::{
+import bevy_pbr::render::shadow_sampling::{
     sample_shadow_map_hardware,
     sample_shadow_cubemap,
     sample_shadow_map,
     SPOT_SHADOW_TEXEL_SIZE
 };
-import bevy_pbr::shadows::{get_cascade_index, world_to_directional_light_local};
-import bevy_pbr::utils::interleaved_gradient_noise;
-import bevy_pbr::view_transformations::{
+import bevy_pbr::render::shadows::{get_cascade_index, world_to_directional_light_local};
+import bevy_pbr::render::utils::interleaved_gradient_noise;
+import bevy_pbr::render::view_transformations::{
     depth_ndc_to_view_z,
     frag_coord_to_ndc,
     position_ndc_to_view,
@@ -45,8 +45,8 @@ import bevy_pbr::view_transformations::{
     position_view_to_world
 };
 import bevy_render::maths::orthonormalize;
-import bevy_pbr::clustered_forward as clustering;
-import bevy_pbr::lighting::getDistanceAttenuation;
+import bevy_pbr::render::clustered_forward as clustering;
+import bevy_pbr::render::pbr_lighting::getDistanceAttenuation;
 
 // The GPU version of [`VolumetricFog`]. See the comments in
 // `volumetric_fog/mod.rs` for descriptions of the fields here.
