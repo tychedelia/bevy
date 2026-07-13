@@ -169,7 +169,6 @@ pub struct ViewPlugin;
 
 impl Plugin for ViewPlugin {
     fn build(&self, app: &mut App) {
-
         app
             // NOTE: windows.is_changed() handles cases where a window was resized
             .add_plugins((

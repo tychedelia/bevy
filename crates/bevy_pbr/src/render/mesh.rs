@@ -148,7 +148,7 @@ pub struct MeshPipelineSystems;
 
 impl Plugin for MeshRenderPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "forward_io.wesl", import_path = "bevy_pbr::render::forward_io");
+        load_shader_library!(app, "forward_io.wesl");
         load_shader_library!(app, "mesh_view_types.wesl", |settings| *settings =
             ShaderSettings {
                 shader_defs: vec![
@@ -162,26 +162,13 @@ impl Plugin for MeshRenderPlugin {
                     ),
                     ShaderDefVal::UInt("MAX_RECT_LIGHTS".into(), MAX_RECT_LIGHTS as u32,),
                 ],
-                import_path: Some("bevy_pbr::render::mesh_view_types".into()),
             });
-        load_shader_library!(
-            app,
-            "mesh_view_bindings.wesl",
-            import_path = "bevy_pbr::render::mesh_view_bindings"
-        );
-        load_shader_library!(app, "mesh_types.wesl", import_path = "bevy_pbr::render::mesh_types");
-        load_shader_library!(
-            app,
-            "mesh_functions.wesl",
-            import_path = "bevy_pbr::render::mesh_functions"
-        );
-        load_shader_library!(app, "skinning.wesl", import_path = "bevy_pbr::render::skinning");
-        load_shader_library!(app, "morph.wesl", import_path = "bevy_pbr::render::morph");
-        load_shader_library!(
-            app,
-            "occlusion_culling.wesl",
-            import_path = "bevy_pbr::render::occlusion_culling"
-        );
+        load_shader_library!(app, "mesh_view_bindings.wesl");
+        load_shader_library!(app, "mesh_types.wesl");
+        load_shader_library!(app, "mesh_functions.wesl");
+        load_shader_library!(app, "skinning.wesl");
+        load_shader_library!(app, "morph.wesl");
+        load_shader_library!(app, "occlusion_culling.wesl");
 
         embedded_asset!(app, "mesh.wesl");
 
@@ -344,7 +331,6 @@ impl Plugin for MeshRenderPlugin {
         load_shader_library!(app, "mesh_bindings.wesl", move |settings| *settings =
             ShaderSettings {
                 shader_defs: mesh_bindings_shader_defs.clone(),
-                import_path: Some("bevy_pbr::render::mesh_bindings".into()),
             });
     }
 }

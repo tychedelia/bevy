@@ -9,7 +9,11 @@ pub struct FullscreenShader(Handle<Shader>);
 
 impl FromWorld for FullscreenShader {
     fn from_world(world: &mut bevy_ecs::world::World) -> Self {
-        Self(world.resource::<AssetServer>().load("embedded://bevy_core_pipeline/fullscreen_vertex_shader.wesl"))
+        Self(
+            world
+                .resource::<AssetServer>()
+                .load("embedded://bevy_core_pipeline/fullscreen_vertex_shader.wesl"),
+        )
     }
 }
 

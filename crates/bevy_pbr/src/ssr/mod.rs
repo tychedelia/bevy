@@ -192,7 +192,7 @@ pub struct ScreenSpaceReflectionsPipelineKey {
 
 impl Plugin for ScreenSpaceReflectionsPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "raymarch.wesl", import_path = "bevy_pbr::ssr::raymarch");
+        load_shader_library!(app, "raymarch.wesl");
 
         app.add_plugins(ExtractComponentPlugin::<ScreenSpaceReflections>::default());
 

@@ -126,7 +126,7 @@ pub struct FogPlugin;
 
 impl Plugin for FogPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(app, "fog.wesl", import_path = "bevy_pbr::render::fog");
+        load_shader_library!(app, "fog.wesl");
 
         app.add_plugins(ExtractComponentPlugin::<DistanceFog>::default());
 

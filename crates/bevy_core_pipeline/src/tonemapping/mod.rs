@@ -44,11 +44,7 @@ pub struct TonemappingPlugin;
 
 impl Plugin for TonemappingPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(
-            app,
-            "lut_bindings.wesl",
-            import_path = "bevy_core_pipeline::tonemapping::lut_bindings"
-        );
+        load_shader_library!(app, "lut_bindings.wesl");
 
         embedded_asset!(app, "tonemapping.wesl");
 

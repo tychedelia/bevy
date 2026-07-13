@@ -31,9 +31,11 @@ To translate a shader:
   to the virtual `constants` module: `@group(#{MATERIAL_BIND_GROUP})` becomes
   `@group(constants::MATERIAL_BIND_GROUP)`. Every `Int`/`UInt` shader def is
   available under `constants::` and also enables a flag of the same name.
-- `#define_import_path bevy_foo::bar` has been removed: pass the import path
-  when registering the library instead:
-  `load_shader_library!(app, "bar.wesl", import_path = "bevy_foo::bar");`
+- `#define_import_path bevy_foo::bar` has been removed. A shader loaded from
+  the `embedded://` asset source is importable under the crate name and file
+  path it is embedded at (`embedded://bevy_foo/bar.wesl` becomes
+  `bevy_foo::bar`), and any other shader under its asset path. Registering a
+  shader library is just `load_shader_library!(app, "bar.wesl");`.
 
 The `shader_format_wesl` cargo feature has been removed: WESL support is
 always enabled. `Shader::from_wgsl` no longer performs any preprocessing.

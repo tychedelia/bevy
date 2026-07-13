@@ -352,15 +352,11 @@ impl Plugin for RenderPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<Shader>()
             .init_asset_loader::<ShaderLoader>();
-        load_shader_library!(app, "utils.wesl", import_path = "bevy_render::utils");
-        load_shader_library!(app, "view.wesl", import_path = "bevy_render::view");
-        load_shader_library!(app, "maths.wesl", import_path = "bevy_render::maths");
-        load_shader_library!(
-            app,
-            "color_operations.wesl",
-            import_path = "bevy_render::color_operations"
-        );
-        load_shader_library!(app, "bindless.wesl", import_path = "bevy_render::bindless");
+        load_shader_library!(app, "utils.wesl");
+        load_shader_library!(app, "view.wesl");
+        load_shader_library!(app, "maths.wesl");
+        load_shader_library!(app, "color_operations.wesl");
+        load_shader_library!(app, "bindless.wesl");
 
         if insert_future_resources(&self.render_creation, app.world_mut()) {
             // We only create the render world and set up extraction if we

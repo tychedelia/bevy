@@ -627,10 +627,9 @@ fn fragment() -> @location(0) vec4<f32> {
         let mut cache = test_cache();
         let (maths, _, root) = test_shaders();
         let (maths_id, lighting_id, root_id) = test_ids();
-        let broken_lighting = Shader::from_wesl_with_import_path(
+        let broken_lighting = Shader::from_wesl(
             "fn brighten(x: f32) -> f32 { return x + ; }",
-            "embedded://bevy_pbr/lighting.wesl",
-            Some("bevy_pbr::render::lighting"),
+            "embedded://bevy_pbr/render/lighting.wesl",
         );
         cache.set_shader(maths_id, maths);
         cache.set_shader(lighting_id, broken_lighting);
@@ -643,7 +642,7 @@ fn fragment() -> @location(0) vec4<f32> {
             panic!("expected ProcessShaderError, got: {error:?}");
         };
         assert!(
-            message.contains("embedded://bevy_pbr/lighting.wesl"),
+            message.contains("embedded://bevy_pbr/render/lighting.wesl"),
             "diagnostic should name the offending shader: {message}"
         );
     }
@@ -666,15 +665,13 @@ fn fragment() -> @location(0) vec4<f32> {
     }
 
     fn test_shaders() -> (Shader, Shader, Shader) {
-        let maths = Shader::from_wesl_with_import_path(
+        let maths = Shader::from_wesl(
             "fn double(x: f32) -> f32 { return x * 2.0; }",
             "embedded://bevy_render/maths.wesl",
-            Some("bevy_render::maths"),
         );
-        let lighting = Shader::from_wesl_with_import_path(
+        let lighting = Shader::from_wesl(
             "fn brighten(x: f32) -> f32 { return x + 0.1; }",
-            "embedded://bevy_pbr/lighting.wesl",
-            Some("bevy_pbr::render::lighting"),
+            "embedded://bevy_pbr/render/lighting.wesl",
         );
         let root = Shader::from_wesl(
             r#"
@@ -706,16 +703,14 @@ fn fragment() -> @location(0) vec4<f32> {
             uuid: bevy_asset::uuid::Uuid::from_u128(n),
         };
 
-        let mut lib_a = Shader::from_wesl_with_import_path(
+        let mut lib_a = Shader::from_wesl(
             "var<uniform> batch_a: array<vec4<f32>, constants::BATCH_SIZE>;",
             "embedded://bevy_a/bindings.wesl",
-            Some("bevy_a::bindings"),
         );
         lib_a.shader_defs = vec![ShaderDefVal::UInt("BATCH_SIZE".into(), 3)];
-        let mut lib_b = Shader::from_wesl_with_import_path(
+        let mut lib_b = Shader::from_wesl(
             "var<uniform> batch_b: array<vec4<f32>, constants::BATCH_SIZE>;",
             "embedded://bevy_b/bindings.wesl",
-            Some("bevy_b::bindings"),
         );
         lib_b.shader_defs = vec![ShaderDefVal::UInt("BATCH_SIZE".into(), 7)];
 
@@ -759,22 +754,19 @@ fn fragment() -> @location(0) vec4<f32> { return batch_b[0]; }
         let id = |n| AssetId::Uuid {
             uuid: bevy_asset::uuid::Uuid::from_u128(n),
         };
-        let module_a = Shader::from_wesl_with_import_path(
+        let module_a = Shader::from_wesl(
             "import bevy_cycle::b::from_b;\nfn from_a() -> f32 { return 1.0; }",
             "embedded://bevy_cycle/a.wesl",
-            Some("bevy_cycle::a"),
         );
-        let module_b = Shader::from_wesl_with_import_path(
+        let module_b = Shader::from_wesl(
             "import bevy_cycle::a::from_a;\nfn from_b() -> f32 { return 2.0; }",
             "embedded://bevy_cycle/b.wesl",
-            Some("bevy_cycle::b"),
         );
         cache.set_shader(id(1), module_a);
         cache.set_shader(id(2), module_b);
-        let module_a = Shader::from_wesl_with_import_path(
+        let module_a = Shader::from_wesl(
             "import bevy_cycle::b::from_b;\nfn from_a() -> f32 { return 3.0; }",
             "embedded://bevy_cycle/a.wesl",
-            Some("bevy_cycle::a"),
         );
         cache.set_shader(id(1), module_a);
     }

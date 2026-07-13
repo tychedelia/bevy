@@ -84,11 +84,7 @@ impl Default for OrderIndependentTransparencySettings {
 pub struct OrderIndependentTransparencyPlugin;
 impl Plugin for OrderIndependentTransparencyPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(
-            app,
-            "draw.wesl",
-            import_path = "bevy_core_pipeline::oit::draw"
-        );
+        load_shader_library!(app, "draw.wesl");
 
         app.add_plugins((
             ExtractComponentPlugin::<OrderIndependentTransparencySettings>::default(),

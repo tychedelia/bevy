@@ -186,85 +186,29 @@ pub struct DfgLut {
 
 impl Plugin for PbrPlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(
-            app,
-            "render/pbr_types.wesl",
-            import_path = "bevy_pbr::render::pbr_types"
-        );
-        load_shader_library!(
-            app,
-            "render/pbr_bindings.wesl",
-            import_path = "bevy_pbr::render::pbr_bindings"
-        );
-        load_shader_library!(app, "cluster.wesl", import_path = "bevy_pbr::cluster");
-        load_shader_library!(app, "lightmap.wesl", import_path = "bevy_pbr::lightmap");
-        load_shader_library!(app, "ssr.wesl", import_path = "bevy_pbr::ssr");
-        load_shader_library!(app, "transmission.wesl", import_path = "bevy_pbr::transmission");
-        load_shader_library!(app, "light_probe.wesl", import_path = "bevy_pbr::light_probe");
-        load_shader_library!(app, "render/utils.wesl", import_path = "bevy_pbr::render::utils");
-        load_shader_library!(
-            app,
-            "render/clustered_forward.wesl",
-            import_path = "bevy_pbr::render::clustered_forward"
-        );
-        load_shader_library!(
-            app,
-            "render/pbr_lighting.wesl",
-            import_path = "bevy_pbr::render::pbr_lighting"
-        );
-        load_shader_library!(
-            app,
-            "render/shadows.wesl",
-            import_path = "bevy_pbr::render::shadows"
-        );
-        load_shader_library!(
-            app,
-            "deferred/types.wesl",
-            import_path = "bevy_pbr::deferred::types"
-        );
-        load_shader_library!(
-            app,
-            "deferred/functions.wesl",
-            import_path = "bevy_pbr::deferred::functions"
-        );
-        load_shader_library!(
-            app,
-            "render/shadow_sampling.wesl",
-            import_path = "bevy_pbr::render::shadow_sampling"
-        );
-        load_shader_library!(
-            app,
-            "render/pbr_functions.wesl",
-            import_path = "bevy_pbr::render::pbr_functions"
-        );
-        load_shader_library!(app, "render/rgb9e5.wesl", import_path = "bevy_pbr::render::rgb9e5");
-        load_shader_library!(
-            app,
-            "render/pbr_ambient.wesl",
-            import_path = "bevy_pbr::render::pbr_ambient"
-        );
-        load_shader_library!(
-            app,
-            "render/pbr_fragment.wesl",
-            import_path = "bevy_pbr::render::pbr_fragment"
-        );
+        load_shader_library!(app, "render/pbr_types.wesl");
+        load_shader_library!(app, "render/pbr_bindings.wesl");
+        load_shader_library!(app, "cluster.wesl");
+        load_shader_library!(app, "lightmap.wesl");
+        load_shader_library!(app, "ssr.wesl");
+        load_shader_library!(app, "transmission.wesl");
+        load_shader_library!(app, "light_probe.wesl");
+        load_shader_library!(app, "render/utils.wesl");
+        load_shader_library!(app, "render/clustered_forward.wesl");
+        load_shader_library!(app, "render/pbr_lighting.wesl");
+        load_shader_library!(app, "render/shadows.wesl");
+        load_shader_library!(app, "deferred/types.wesl");
+        load_shader_library!(app, "deferred/functions.wesl");
+        load_shader_library!(app, "render/shadow_sampling.wesl");
+        load_shader_library!(app, "render/pbr_functions.wesl");
+        load_shader_library!(app, "render/rgb9e5.wesl");
+        load_shader_library!(app, "render/pbr_ambient.wesl");
+        load_shader_library!(app, "render/pbr_fragment.wesl");
         load_shader_library!(app, "render/pbr.wesl");
-        load_shader_library!(
-            app,
-            "render/pbr_prepass_functions.wesl",
-            import_path = "bevy_pbr::render::pbr_prepass_functions"
-        );
+        load_shader_library!(app, "render/pbr_prepass_functions.wesl");
         load_shader_library!(app, "render/pbr_prepass.wesl");
-        load_shader_library!(
-            app,
-            "render/parallax_mapping.wesl",
-            import_path = "bevy_pbr::render::parallax_mapping"
-        );
-        load_shader_library!(
-            app,
-            "render/view_transformations.wesl",
-            import_path = "bevy_pbr::render::view_transformations"
-        );
+        load_shader_library!(app, "render/parallax_mapping.wesl");
+        load_shader_library!(app, "render/view_transformations.wesl");
 
         app.register_asset_reflect::<StandardMaterial>()
             .init_resource::<DefaultOpaqueRendererMethod>()

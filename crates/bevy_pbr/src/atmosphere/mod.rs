@@ -98,26 +98,10 @@ pub struct AtmospherePlugin;
 
 impl Plugin for AtmospherePlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(
-            app,
-            "types.wesl",
-            import_path = "bevy_pbr::atmosphere::types"
-        );
-        load_shader_library!(
-            app,
-            "functions.wesl",
-            import_path = "bevy_pbr::atmosphere::functions"
-        );
-        load_shader_library!(
-            app,
-            "bruneton_functions.wesl",
-            import_path = "bevy_pbr::atmosphere::bruneton_functions"
-        );
-        load_shader_library!(
-            app,
-            "bindings.wesl",
-            import_path = "bevy_pbr::atmosphere::bindings"
-        );
+        load_shader_library!(app, "types.wesl");
+        load_shader_library!(app, "functions.wesl");
+        load_shader_library!(app, "bruneton_functions.wesl");
+        load_shader_library!(app, "bindings.wesl");
 
         embedded_asset!(app, "transmittance_lut.wesl");
         embedded_asset!(app, "multiscattering_lut.wesl");

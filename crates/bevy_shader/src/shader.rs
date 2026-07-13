@@ -170,23 +170,22 @@ impl Shader {
         }
     }
 
-    /// Creates a new Wesl shader.
+    /// Creates a new Wesl shader, importable as `crate_name::module_path` if it
+    /// comes from the embedded asset source, otherwise by its asset path.
     pub fn from_wesl(source: impl Into<Cow<'static, str>>, path: impl Into<String>) -> Shader {
-        Self::from_wesl_with_import_path(source, path, None::<String>)
-    }
-
-    /// Creates a new Wesl shader, registered under the logical `import_path` if
-    /// provided, otherwise under its asset path.
-    pub fn from_wesl_with_import_path(
-        source: impl Into<Cow<'static, str>>,
-        path: impl Into<String>,
-        import_path: Option<impl Into<String>>,
-    ) -> Shader {
         let source = source.into();
         let path = path.into();
 
-        let import_path = match import_path {
-            Some(import_path) => ShaderImport::Custom(import_path.into()),
+        let import_path = match path.strip_prefix("embedded://") {
+            Some(embedded_path) => ShaderImport::Custom(
+                std::path::Path::new(embedded_path)
+                    .with_extension("")
+                    .to_string_lossy()
+                    .split('/')
+                    .filter(|component| !component.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            ),
             None => {
                 // Create the shader import path - always starting with "/"
                 let shader_path = std::path::Path::new("/").join(&path);
@@ -259,9 +258,6 @@ pub enum ShaderLoaderError {
 pub struct ShaderSettings {
     /// The shader defs to apply when this shader is loaded.
     pub shader_defs: Vec<ShaderDefVal>,
-    /// The logical import path to register this WESL shader under.
-    #[serde(default)]
-    pub import_path: Option<String>,
 }
 
 impl AssetLoader for ShaderLoader {
@@ -299,11 +295,7 @@ impl AssetLoader for ShaderLoader {
             "spv" => Shader::from_spirv(bytes, load_context.path().path().to_string_lossy()),
             "wgsl" => Shader::from_wgsl(String::from_utf8(bytes)?, path),
             "wesl" => {
-                let mut shader = Shader::from_wesl_with_import_path(
-                    String::from_utf8(bytes)?,
-                    path,
-                    settings.import_path.as_deref(),
-                );
+                let mut shader = Shader::from_wesl(String::from_utf8(bytes)?, path);
                 shader.shader_defs = settings.shader_defs.clone();
                 shader
             }

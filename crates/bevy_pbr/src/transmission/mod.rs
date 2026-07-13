@@ -28,7 +28,6 @@ pub struct ScreenSpaceTransmissionPlugin;
 
 impl Plugin for ScreenSpaceTransmissionPlugin {
     fn build(&self, app: &mut App) {
-
         app.add_plugins(ExtractComponentPlugin::<ScreenSpaceTransmission>::default())
             .register_required_components::<Camera3d, ScreenSpaceTransmission>();
 

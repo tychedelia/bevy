@@ -46,12 +46,8 @@ pub struct CorePipelinePlugin;
 
 impl Plugin for CorePipelinePlugin {
     fn build(&self, app: &mut App) {
-        load_shader_library!(
-            app,
-            "fullscreen_vertex_shader.wesl",
-            import_path = "bevy_core_pipeline::fullscreen_vertex_shader"
-        );
-        load_shader_library!(app, "tonemapping.wesl", import_path = "bevy_core_pipeline::tonemapping");
+        load_shader_library!(app, "fullscreen_vertex_shader.wesl");
+        load_shader_library!(app, "tonemapping.wesl");
 
         app.add_plugins((Core2dPlugin, Core3dPlugin, CopyDeferredLightingIdPlugin))
             .add_plugins((
