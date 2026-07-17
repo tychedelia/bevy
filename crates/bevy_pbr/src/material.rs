@@ -26,7 +26,7 @@ use bevy_material::{
     labels::{DrawFunctionLabel, InternedShaderLabel, ShaderLabel},
     MaterialProperties, OpaqueRendererMethod, RenderPhaseType,
 };
-use bevy_math::{Affine3, Affine3Ext as _};
+use bevy_math::{Affine3, Affine3Ext as _, Vec3};
 use bevy_mesh::{
     mark_3d_meshes_as_changed_if_their_assets_changed, Mesh3d, MeshVertexBufferLayoutRef,
 };
@@ -1447,29 +1447,35 @@ pub fn queue_material_meshes(
                     );
                 }
                 RenderPhaseType::Transparent => {
-                    let Some(mesh_instance) = maybe_mesh_instance.as_ref() else {
-                        continue;
-                    };
                     let Some(draw_function) = material
                         .properties
                         .get_draw_function(MainPassTransparentDrawFunction)
                     else {
                         continue;
                     };
+                    let mesh_center = match maybe_mesh_instance.as_ref() {
+                        Some(mesh_instance) => get_mesh_instance_world_from_local(
+                            *visible_entity,
+                            mesh_instance.current_uniform_index,
+                            &render_mesh_instances,
+                            maybe_batched_instance_buffers.as_deref(),
+                        )
+                        .transform_point3(
+                            mesh_assets
+                                .get(mesh_instance.mesh_asset_id())
+                                .unwrap()
+                                .aabb_center,
+                        ),
+                        // GPU-authored instance batches are sorted as a
+                        // whole; their instances live in a GPU buffer and
+                        // draw in buffer order, so there is no meaningful
+                        // per-instance center. Use the origin and rely on
+                        // order-independent blend modes for correctness.
+                        None => Vec3::ZERO,
+                    };
                     transparent_phase.add_retained(Transparent3d {
                         sorting_info: TransparentSortingInfo3d::Sorted {
-                            mesh_center: get_mesh_instance_world_from_local(
-                                *visible_entity,
-                                mesh_instance.current_uniform_index,
-                                &render_mesh_instances,
-                                maybe_batched_instance_buffers.as_deref(),
-                            )
-                            .transform_point3(
-                                mesh_assets
-                                    .get(mesh_instance.mesh_asset_id())
-                                    .unwrap()
-                                    .aabb_center,
-                            ),
+                            mesh_center,
                             depth_bias: material.properties.depth_bias,
                         },
                         entity: (Entity::PLACEHOLDER, *visible_entity),

@@ -193,6 +193,22 @@ pub trait GetFullBatchData: GetBatchData {
         indirect_parameters_buffers: &mut UntypedPhaseIndirectParametersBuffers,
         indirect_parameters_offset: u32,
     );
+
+    /// Returns the input-buffer base index and instance count if this entity
+    /// is a GPU-authored instance batch (its per-instance data is written by
+    /// user compute shaders rather than extracted from ECS), or `None` for
+    /// ordinary meshes.
+    ///
+    /// In sorted phases such a batch is drawn as a single phase item: it is
+    /// depth-sorted against other items as a whole, and its instances draw in
+    /// buffer order. Callers that rely on view-order compositing should use
+    /// order-independent blend modes (e.g. additive) for these batches.
+    fn get_instance_batch(
+        _param: &SystemParamItem<Self::Param>,
+        _query_item: MainEntity,
+    ) -> Option<(u32, core::num::NonZeroU32)> {
+        None
+    }
 }
 
 /// Sorts a render phase that uses bins.

@@ -2916,6 +2916,7 @@ impl GetBatchData for MeshPipeline {
         SRes<MeshAllocator>,
         SRes<SkinUniforms>,
         SRes<MorphIndices>,
+        SRes<RenderMeshInstanceBatches>,
     );
     type BatchSetCompareData = MeshBatchSetCompareData;
     type BatchCompareData = AssetId<Mesh>;
@@ -2923,7 +2924,7 @@ impl GetBatchData for MeshPipeline {
     type BufferData = MeshUniform;
 
     fn get_batch_data(
-        (mesh_instances, lightmaps, meshes, mesh_allocator, skin_uniforms, morph_indices): &SystemParamItem<
+        (mesh_instances, lightmaps, meshes, mesh_allocator, skin_uniforms, morph_indices, _): &SystemParamItem<
             Self::Param,
         >,
         (_entity, main_entity): (Entity, MainEntity),
@@ -2980,7 +2981,7 @@ impl GetFullBatchData for MeshPipeline {
     type BufferInputData = MeshInputUniform;
 
     fn get_index_and_compare_data(
-        (mesh_instances, lightmaps, meshes, mesh_allocator, _, _): &SystemParamItem<Self::Param>,
+        (mesh_instances, lightmaps, meshes, mesh_allocator, _, _, _): &SystemParamItem<Self::Param>,
         main_entity: MainEntity,
     ) -> Option<(
         NonMaxU32,
@@ -3016,7 +3017,7 @@ impl GetFullBatchData for MeshPipeline {
     }
 
     fn get_binned_batch_data(
-        (mesh_instances, lightmaps, _, mesh_allocator, skin_uniforms, morph_indices): &SystemParamItem<
+        (mesh_instances, lightmaps, _, mesh_allocator, skin_uniforms, morph_indices, _): &SystemParamItem<
             Self::Param,
         >,
         main_entity: MainEntity,
@@ -3052,7 +3053,7 @@ impl GetFullBatchData for MeshPipeline {
     }
 
     fn get_binned_index(
-        (mesh_instances, _, _, _, _, _): &SystemParamItem<Self::Param>,
+        (mesh_instances, _, _, _, _, _, _): &SystemParamItem<Self::Param>,
         main_entity: MainEntity,
     ) -> Option<NonMaxU32> {
         // This should only be called during GPU building.
@@ -3097,6 +3098,15 @@ impl GetFullBatchData for MeshPipeline {
                 .non_indexed
                 .set(indirect_parameters_offset, indirect_parameters);
         }
+    }
+
+    fn get_instance_batch(
+        (_, _, _, _, _, _, instance_batches): &SystemParamItem<Self::Param>,
+        main_entity: MainEntity,
+    ) -> Option<(u32, core::num::NonZeroU32)> {
+        instance_batches
+            .get(&main_entity)
+            .map(|batch| (batch.base_input_index, batch.count))
     }
 }
 

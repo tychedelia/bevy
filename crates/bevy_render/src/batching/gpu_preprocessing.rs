@@ -2109,6 +2109,69 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
             let item = &phase.items[current_index];
             let entity = item.main_entity();
             let item_is_indexed = item.indexed();
+
+            // GPU-authored instance batches occupy one sorted item each: the
+            // batch is depth-sorted against other items as a whole, and its
+            // instances draw in buffer order (order-independent blend modes
+            // are the intended use). It never merges with neighboring items.
+            if let Some((base_input_index, count)) =
+                GFBD::get_instance_batch(&system_param_item, entity)
+            {
+                if let Some(batch_set) = batch_set.take() {
+                    batch_set.flush(
+                        data_buffer.len() as u32,
+                        phase,
+                        &mut phase_indirect_parameters_buffers.buffers,
+                    );
+                }
+
+                let count = count.get();
+                let output_base = data_buffer.add_multiple(count as usize) as u32;
+
+                let extra_index = if no_indirect_drawing {
+                    for i in 0..count {
+                        work_item_buffer.push(
+                            item_is_indexed,
+                            PreprocessWorkItem {
+                                input_index: base_input_index + i,
+                                output_or_indirect_parameters_index: output_base + i,
+                            },
+                        );
+                    }
+                    PhaseItemExtraIndex::None
+                } else {
+                    let indirect_parameters_index = phase_indirect_parameters_buffers
+                        .allocate(no_indirect_drawing, item_is_indexed)
+                        .expect("indirect drawing allocates indirect parameters");
+                    GFBD::write_batch_indirect_parameters_metadata(
+                        item_is_indexed,
+                        output_base,
+                        None,
+                        &mut phase_indirect_parameters_buffers.buffers,
+                        indirect_parameters_index,
+                    );
+                    work_item_buffer.push_range(
+                        item_is_indexed,
+                        base_input_index,
+                        indirect_parameters_index,
+                        count,
+                    );
+                    phase_indirect_parameters_buffers
+                        .buffers
+                        .add_batch_set(item_is_indexed, indirect_parameters_index);
+                    PhaseItemExtraIndex::IndirectParametersIndex {
+                        range: indirect_parameters_index..(indirect_parameters_index + 1),
+                        batch_set_index: None,
+                    }
+                };
+
+                let (batch_range, batch_extra_index) =
+                    phase.items[current_index].batch_range_and_extra_index_mut();
+                *batch_range = output_base..(output_base + count);
+                *batch_extra_index = extra_index;
+                continue;
+            }
+
             let current_batch_input_index =
                 GFBD::get_index_and_compare_data(&system_param_item, entity);
 

@@ -2,8 +2,12 @@
 //! the preprocessing input buffer by user compute shaders rather than
 //! extracted from ECS entities.
 //!
-//! Transparent rendering, motion vectors, and per-instance attributes
-//! beyond the transform are not supported.
+//! Transparent (blended) materials draw the batch as a single sorted phase
+//! item: the batch is depth-sorted against other transparent items as a
+//! whole, and its instances draw in buffer order. Use order-independent
+//! blend modes (e.g. additive) unless instance order is acceptable.
+//! Motion vectors and per-instance attributes beyond the transform are not
+//! supported.
 
 use core::num::NonZeroU32;
 
