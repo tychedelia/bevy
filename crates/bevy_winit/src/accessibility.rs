@@ -17,7 +17,7 @@ use bevy_a11y::{
 };
 use bevy_app::{App, Plugin, PostUpdate};
 use bevy_derive::{Deref, DerefMut};
-use bevy_ecs::{entity::EntityHashMap, prelude::*, system::NonSendMarker};
+use bevy_ecs::{entity::EntityHashMap, prelude::*};
 use bevy_window::{PrimaryWindow, Window, WindowClosed};
 
 thread_local! {
@@ -161,14 +161,22 @@ pub(crate) fn prepare_accessibility_for_window(
 fn window_closed(
     mut handlers: ResMut<WinitActionRequestHandlers>,
     mut window_closed_reader: MessageReader<WindowClosed>,
-    _non_send_marker: NonSendMarker,
+    task_sender: Res<crate::WinitTaskSender>,
 ) {
-    ACCESS_KIT_ADAPTERS.with_borrow_mut(|adapters| {
-        for WindowClosed { window, .. } in window_closed_reader.read() {
-            adapters.remove(window);
-            handlers.remove(window);
-        }
-    });
+    let mut closed = Vec::new();
+    for WindowClosed { window, .. } in window_closed_reader.read() {
+        handlers.remove(window);
+        closed.push(*window);
+    }
+    if !closed.is_empty() {
+        let _ = task_sender.send(move |_| {
+            ACCESS_KIT_ADAPTERS.with_borrow_mut(|adapters| {
+                for entity in closed {
+                    adapters.remove(&entity);
+                }
+            });
+        });
+    }
 }
 
 fn poll_receivers(
@@ -200,38 +208,39 @@ fn update_accessibility_nodes(
         Option<&ChildOf>,
     )>,
     node_entities: Query<Entity, With<AccessibilityNode>>,
-    _non_send_marker: NonSendMarker,
+    task_sender: Res<crate::WinitTaskSender>,
 ) {
-    ACCESS_KIT_ADAPTERS.with_borrow_mut(|adapters| {
-        let Ok((primary_window_id, primary_window)) = primary_window.single() else {
+    let Ok((primary_window_id, primary_window)) = primary_window.single() else {
+        return;
+    };
+    let Some(focus) = focus else {
+        return;
+    };
+    if focus.is_changed() || !nodes.is_empty() {
+        // Don't panic if the focused entity does not currently exist
+        // It's probably waiting to be spawned
+        if let Some(focused_entity) = focus.get()
+            && !node_entities.contains(focused_entity)
+        {
             return;
-        };
-        let Some(adapter) = adapters.get_mut(&primary_window_id) else {
-            return;
-        };
-        let Some(focus) = focus else {
-            return;
-        };
-        if focus.is_changed() || !nodes.is_empty() {
-            // Don't panic if the focused entity does not currently exist
-            // It's probably waiting to be spawned
-            if let Some(focused_entity) = focus.get()
-                && !node_entities.contains(focused_entity)
-            {
-                return;
-            }
-
-            adapter.update_if_active(|| {
-                update_adapter(
-                    nodes,
-                    node_entities,
-                    primary_window,
-                    primary_window_id,
-                    focus,
-                )
-            });
         }
-    });
+
+        // Build the update here; apply it on the event loop thread where the adapter TLS lives.
+        let tree_update = update_adapter(
+            nodes,
+            node_entities,
+            primary_window,
+            primary_window_id,
+            focus,
+        );
+        let _ = task_sender.send(move |_| {
+            ACCESS_KIT_ADAPTERS.with_borrow_mut(|adapters| {
+                if let Some(adapter) = adapters.get_mut(&primary_window_id) {
+                    adapter.update_if_active(|| tree_update);
+                }
+            });
+        });
+    }
 }
 
 fn update_adapter(

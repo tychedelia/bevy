@@ -16,7 +16,6 @@
 //!  - [`Tables`] - columnar contiguous blocks of memory, optimized for fast iteration.
 //!  - [`SparseSets`] - sparse `HashMap`-like mappings from entities to components, optimized for random
 //!    lookup and regular insertion/removal of components.
-//!  - [`NonSends`] - singleton storage for non send data in the world.
 //!
 //! # Safety
 //! To avoid trivially unsound use of the APIs in this module, it is explicitly impossible to get a mutable
@@ -26,12 +25,10 @@
 //! [`World::storages`]: crate::world::World::storages
 
 mod blob_array;
-mod non_send;
 mod sparse_set;
 mod table;
 mod thin_array_ptr;
 
-pub use non_send::*;
 pub use sparse_set::*;
 pub use table::*;
 
@@ -46,8 +43,6 @@ pub struct Storages {
     pub sparse_sets: SparseSets,
     /// Backing storage for [`Table`] components.
     pub tables: Tables,
-    /// Backing storage for `!Send` data.
-    pub non_sends: NonSends,
 }
 
 impl Storages {

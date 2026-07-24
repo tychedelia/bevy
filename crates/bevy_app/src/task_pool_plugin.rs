@@ -8,16 +8,7 @@ use log::trace;
 
 cfg_select! {
     not(all(target_arch = "wasm32", feature = "web")) => {
-        use {crate::Last, bevy_tasks::tick_global_task_pools_on_main_thread};
-        use bevy_ecs::system::NonSendMarker;
-
-        /// A system used to check and advanced our task pools.
-        ///
-        /// Calls [`tick_global_task_pools_on_main_thread`],
-        /// and uses [`NonSendMarker`] to ensure that this system runs on the main thread
-        fn tick_global_task_pools(_main_thread_marker: NonSendMarker) {
-            tick_global_task_pools_on_main_thread();
-        }
+        use crate::Last;
     }
     _ => {}
 }
@@ -35,7 +26,7 @@ impl Plugin for TaskPoolPlugin {
         self.task_pool_options.create_default_pools();
 
         #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
-        _app.add_systems(Last, tick_global_task_pools);
+        _app.add_systems(Last, bevy_tasks::tick_global_task_pools);
     }
 }
 

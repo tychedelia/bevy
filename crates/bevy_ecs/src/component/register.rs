@@ -290,7 +290,7 @@ impl<'w> ComponentsRegistrator<'w> {
         id
     }
 
-    /// Registers a [non-send resource](crate::system::NonSend) of type `T` with this instance.
+    /// Registers a non-send resource of type `T` with this instance.
     /// If a resource of this type has already been registered, this will return
     /// the ID of the pre-existing resource.
     #[inline]

@@ -25,6 +25,8 @@ extern crate alloc;
 extern crate self as bevy_app;
 
 mod app;
+#[cfg(feature = "std")]
+pub mod event_loop_executor;
 mod hierarchy;
 mod main_schedule;
 mod panic_handler;

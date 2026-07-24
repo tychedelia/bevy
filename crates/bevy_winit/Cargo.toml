@@ -71,6 +71,9 @@ approx = { version = "0.5", default-features = false }
 accesskit = "0.24"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+crossbeam-channel = "0.5"
+
 [target.'cfg(target_os = "android")'.dependencies]
 bevy_android = { path = "../bevy_android", version = "0.20.0-dev", default-features = false }
 

@@ -86,7 +86,7 @@ pub use futures_lite::future::poll_once;
 
 cfg::web! {
     if {} else {
-        pub use usages::tick_global_task_pools_on_main_thread;
+        pub use usages::tick_global_task_pools;
     }
 }
 

@@ -57,7 +57,20 @@ impl Plugin for WindowRenderPlugin {
                         .before(prepare_windows),
                 )
                 .add_systems(Render, prepare_windows.in_set(RenderSystems::PrepareViews));
+
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            render_app.add_systems(ExtractSchedule, extract_event_loop_runner);
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn extract_event_loop_runner(
+    mut commands: Commands,
+    runner: Extract<Option<Res<bevy_app::event_loop_executor::EventLoopTaskRunner>>>,
+) {
+    if let Some(runner) = runner.as_deref() {
+        commands.insert_resource(runner.clone());
     }
 }
 
@@ -348,9 +361,6 @@ const DEFAULT_DESIRED_MAXIMUM_FRAME_LATENCY: u32 = 2;
 /// Creates window surfaces.
 pub fn create_surfaces(
     mut commands: Commands,
-    // By accessing a NonSend resource, we tell the scheduler to put this system on the main thread,
-    // which is necessary for some OS's
-    #[cfg(any(target_os = "macos", target_os = "ios"))] _marker: bevy_ecs::system::NonSendMarker,
     mut windows: Query<(
         Entity,
         &mut ExtractedWindow,
@@ -360,20 +370,59 @@ pub fn create_surfaces(
     render_instance: Res<RenderInstance>,
     render_adapter: Res<RenderAdapter>,
     render_device: Res<RenderDevice>,
+    // macOS/iOS require surface creation on the event loop (main) thread.
+    #[cfg(any(target_os = "macos", target_os = "ios"))] event_loop: Option<
+        Res<bevy_app::event_loop_executor::EventLoopTaskRunner>,
+    >,
 ) {
     for (entity, mut window, handle, mut maybe_surface_data) in &mut windows {
         let Some(data) = maybe_surface_data.as_mut() else {
-            let surface_target = SurfaceTargetUnsafe::RawHandle {
-                raw_display_handle: Some(handle.get_display_handle()),
-                raw_window_handle: handle.get_window_handle(),
-            };
-            // SAFETY: The window handles in ExtractedWindows will always be valid objects to create surfaces on
-            let surface = unsafe {
-                // NOTE: On some OSes this MUST be called from the main thread.
-                // As of wgpu 0.15, only fallible if the given window is a HTML canvas and obtaining a WebGPU or WebGL2 context fails.
-                render_instance
-                    .create_surface_unsafe(surface_target)
-                    .expect("Failed to create wgpu surface")
+            let surface = {
+                #[cfg(any(target_os = "macos", target_os = "ios"))]
+                {
+                    let Some(event_loop) = event_loop.as_ref() else {
+                        warn!("EventLoopTaskRunner not available, cannot create surfaces on macOS/iOS");
+                        continue;
+                    };
+                    let handle = handle.clone();
+                    let instance = render_instance.clone();
+                    match event_loop.run(move || {
+                        let surface_target = SurfaceTargetUnsafe::RawHandle {
+                            raw_display_handle: Some(handle.get_display_handle()),
+                            raw_window_handle: handle.get_window_handle(),
+                        };
+                        // SAFETY: The window handles in ExtractedWindows will always be valid objects to create surfaces on.
+                        // Don't panic here: this may run after the caller gave up.
+                        unsafe { instance.create_surface_unsafe(surface_target).ok() }
+                    }) {
+                        Ok(Some(surface)) => surface,
+                        Ok(None) => {
+                            warn!("Failed to create wgpu surface for {:?}; will retry", entity);
+                            continue;
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Deferring surface creation for {:?}; event loop task did not complete: {err:?}",
+                                entity
+                            );
+                            continue;
+                        }
+                    }
+                }
+                #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+                {
+                    let surface_target = SurfaceTargetUnsafe::RawHandle {
+                        raw_display_handle: Some(handle.get_display_handle()),
+                        raw_window_handle: handle.get_window_handle(),
+                    };
+                    // SAFETY: The window handles in ExtractedWindows will always be valid objects to create surfaces on.
+                    // As of wgpu 0.15, only fallible if the given window is a HTML canvas and obtaining a WebGPU or WebGL2 context fails.
+                    unsafe {
+                        render_instance
+                            .create_surface_unsafe(surface_target)
+                            .expect("Failed to create wgpu surface")
+                    }
+                }
             };
             let caps = surface.get_capabilities(&render_adapter);
             let present_mode = present_mode(&window, &caps);

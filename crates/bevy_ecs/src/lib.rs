@@ -94,9 +94,8 @@ pub mod prelude {
         spawn::{Spawn, SpawnIter, SpawnRelated, SpawnWith, WithOneRelated, WithRelated},
         system::{
             Command, Commands, Deferred, EntityCommand, EntityCommands, If, In, InMut, InRef,
-            IntoSystem, Local, NonSend, NonSendMut, ParamSet, Populated, Query, ReadOnlySystem,
-            Res, ResMut, Single, System, SystemIn, SystemInput, SystemParamBuilder,
-            SystemParamFunction,
+            IntoSystem, Local, ParamSet, Populated, Query, ReadOnlySystem, Res, ResMut, Single,
+            System, SystemIn, SystemInput, SystemParamBuilder, SystemParamFunction,
         },
         template::{template, FromTemplate, Template},
         world::{
@@ -1416,36 +1415,6 @@ mod tests {
     }
 
     #[test]
-    fn non_send() {
-        let mut world = World::default();
-        world.insert_non_send(123i32);
-        world.insert_non_send(456i64);
-        assert_eq!(*world.non_send::<i32>(), 123);
-        assert_eq!(*world.non_send_mut::<i64>(), 456);
-    }
-
-    #[test]
-    fn non_send_points_to_distinct_data() {
-        let mut world = World::default();
-        world.insert_resource(ResA(123));
-        world.insert_non_send(ResA(456));
-        assert_eq!(*world.resource::<ResA>(), ResA(123));
-        assert_eq!(*world.non_send::<ResA>(), ResA(456));
-    }
-
-    #[test]
-    #[should_panic]
-    fn non_send_panic() {
-        let mut world = World::default();
-        world.insert_non_send(0i32);
-        std::thread::spawn(move || {
-            let _ = world.non_send_mut::<i32>();
-        })
-        .join()
-        .unwrap();
-    }
-
-    #[test]
     fn exact_size_query() {
         let mut world = World::default();
         world.spawn((A(0), B(0)));
@@ -1616,47 +1585,6 @@ mod tests {
         });
         assert_eq!(r, Some(()));
         assert!(world.contains_resource::<ResA>());
-    }
-
-    #[test]
-    fn non_send_drop_from_different_thread() {
-        struct MustNotDrop;
-        impl Drop for MustNotDrop {
-            fn drop(&mut self) {
-                panic!("Must not be dropped");
-            }
-        }
-
-        let mut world = World::default();
-        world.insert_non_send(MustNotDrop);
-
-        let thread = std::thread::spawn(move || {
-            // Dropping the world in another thread must
-            // not access the non-send resource to drop it.
-            drop(world);
-        });
-
-        if let Err(err) = thread.join() {
-            std::panic::resume_unwind(err);
-        }
-    }
-
-    #[test]
-    fn non_send_drop_from_same_thread() {
-        let mut world = World::default();
-        let (dropck, dropped) = DropCk::new_pair();
-        world.insert_non_send(dropck);
-        drop(world);
-        // The non-send data was dropped with the world.
-        assert_eq!(1, dropped.load(Ordering::Relaxed));
-
-        let mut world = World::default();
-        let (dropck, dropped) = DropCk::new_pair();
-        world.insert_non_send(dropck);
-        let _removed = world.remove_non_send::<DropCk>();
-        drop(world);
-        // The non-send data was not dropped, since it was removed from the world.
-        assert_eq!(0, dropped.load(Ordering::Relaxed));
     }
 
     #[test]

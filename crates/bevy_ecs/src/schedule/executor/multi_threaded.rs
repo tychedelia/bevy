@@ -1,7 +1,6 @@
 use alloc::{boxed::Box, vec::Vec};
 use bevy_platform::cell::SyncUnsafeCell;
-use bevy_platform::sync::Arc;
-use bevy_tasks::{ComputeTaskPool, Scope, TaskPool, ThreadExecutor};
+use bevy_tasks::{ComputeTaskPool, Scope, TaskPool};
 use concurrent_queue::ConcurrentQueue;
 use core::{any::Any, panic::AssertUnwindSafe};
 use fixedbitset::FixedBitSet;
@@ -20,7 +19,6 @@ use crate::{
         BevyError, ErrorContext, ErrorHandler, Result, Severity,
         PANIC_ORIGINATES_FROM_ERROR_HANDLER,
     },
-    prelude::Resource,
     schedule::{
         is_apply_deferred, ConditionWithAccess, SystemExecutor, SystemSchedule, SystemWithAccess,
     },
@@ -270,28 +268,19 @@ impl SystemExecutor for MultiThreadedExecutor {
             }
         }
 
-        let thread_executor = world
-            .get_resource::<MainThreadExecutor>()
-            .map(|e| e.0.clone());
-        let thread_executor = thread_executor.as_deref();
-
         let environment = &Environment::new(self, schedule, world);
 
-        ComputeTaskPool::get_or_init(TaskPool::default).scope_with_executor(
-            false,
-            thread_executor,
-            |scope| {
-                let context = Context {
-                    environment,
-                    scope,
-                    error_handler,
-                };
+        ComputeTaskPool::get_or_init(TaskPool::default).scope(|scope| {
+            let context = Context {
+                environment,
+                scope,
+                error_handler,
+            };
 
-                // The first tick won't need to process finished systems, but we still need to run the loop in
-                // tick_executor() in case a system completes while the first tick still holds the mutex.
-                context.tick_executor();
-            },
-        );
+            // The first tick won't need to process finished systems, but we still need to run the loop in
+            // tick_executor() in case a system completes while the first tick still holds the mutex.
+            context.tick_executor();
+        });
 
         // End the borrows of self and world in environment by copying out the reference to systems.
         let systems = environment.systems;
@@ -902,23 +891,6 @@ fn handle_errors(
         })),
         // Success (or skipped system)
         _ => Ok(()),
-    }
-}
-
-/// New-typed [`ThreadExecutor`] [`Resource`] that is used to run systems on the main thread
-#[derive(Resource, Clone)]
-pub struct MainThreadExecutor(pub Arc<ThreadExecutor<'static>>);
-
-impl Default for MainThreadExecutor {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MainThreadExecutor {
-    /// Creates a new executor that can be used to run systems on the main thread.
-    pub fn new() -> Self {
-        MainThreadExecutor(TaskPool::get_thread_executor())
     }
 }
 

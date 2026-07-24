@@ -4,18 +4,16 @@ mod custom_cursor;
 #[cfg(feature = "custom_cursor")]
 pub use custom_cursor::*;
 
-use crate::{converters::convert_system_cursor_icon, state::WinitAppRunnerState, WINIT_WINDOWS};
+use crate::{converters::convert_system_cursor_icon, WINIT_WINDOWS};
 use bevy_app::{App, Last, Plugin};
 #[cfg(feature = "custom_cursor")]
 use bevy_asset::Assets;
-use bevy_ecs::{entity::EntityHashSet, prelude::*, system::SystemState};
+use bevy_ecs::{entity::EntityHashSet, prelude::*};
 #[cfg(feature = "custom_cursor")]
 use bevy_image::{Image, TextureAtlasLayout};
 #[cfg(feature = "custom_cursor")]
 use bevy_window::CustomCursor;
 use bevy_window::{CursorIcon, SystemCursorIcon, Window};
-#[cfg(feature = "custom_cursor")]
-use winit::event_loop::ActiveEventLoop;
 
 /// Adds support for custom cursors.
 pub(crate) struct WinitCursorPlugin;
@@ -55,54 +53,54 @@ pub enum CursorSource {
 #[derive(Component, Debug)]
 pub struct PendingCursor(pub Option<CursorSource>);
 
-impl WinitAppRunnerState {
-    pub(crate) fn update_cursors(
-        &mut self,
-        #[cfg(feature = "custom_cursor")] event_loop: &ActiveEventLoop,
-    ) {
-        #[cfg(feature = "custom_cursor")]
-        let mut windows_state: SystemState<(
-            ResMut<WinitCustomCursorCache>,
-            Query<(Entity, &mut PendingCursor), Changed<PendingCursor>>,
-        )> = SystemState::new(self.world_mut());
-        #[cfg(feature = "custom_cursor")]
-        let (mut cursor_cache, mut windows) = windows_state.get_mut(self.world_mut()).unwrap();
-        #[cfg(not(feature = "custom_cursor"))]
-        let mut windows_state: SystemState<(
-            Query<(Entity, &mut PendingCursor), Changed<PendingCursor>>,
-        )> = SystemState::new(self.world_mut());
-        #[cfg(not(feature = "custom_cursor"))]
-        let (mut windows,) = windows_state.get_mut(self.world_mut()).unwrap();
+/// Applies pending cursor changes.
+///
+/// TODO: cache custom cursors; the cache lives on the ECS thread but creation
+/// happens on the event loop thread.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn apply_pending_cursors(
+    mut windows: Query<(Entity, &mut PendingCursor), Changed<PendingCursor>>,
+    task_sender: Res<crate::WinitTaskSender>,
+    #[cfg(feature = "custom_cursor")] cursor_cache: Res<WinitCustomCursorCache>,
+) {
+    for (entity, mut pending_cursor) in windows.iter_mut() {
+        let Some(cursor_source) = pending_cursor.0.take() else {
+            continue;
+        };
 
-        WINIT_WINDOWS.with_borrow(|winit_windows| {
-            for (entity, mut pending_cursor) in windows.iter_mut() {
+        #[cfg(feature = "custom_cursor")]
+        let cached_cursor = match &cursor_source {
+            CursorSource::CustomCached(cache_key) => cursor_cache.0.get(cache_key).cloned(),
+            _ => None,
+        };
+
+        if let Err(e) = task_sender.send(move |_event_loop| {
+            WINIT_WINDOWS.with_borrow(|winit_windows| {
                 let Some(winit_window) = winit_windows.get_window(entity) else {
-                    continue;
-                };
-                let Some(pending_cursor) = pending_cursor.0.take() else {
-                    continue;
+                    return;
                 };
 
-                let final_cursor: winit::window::Cursor = match pending_cursor {
+                let final_cursor: winit::window::Cursor = match cursor_source {
                     #[cfg(feature = "custom_cursor")]
-                    CursorSource::CustomCached(cache_key) => {
-                        let Some(cached_cursor) = cursor_cache.0.get(&cache_key) else {
+                    CursorSource::CustomCached(_) => {
+                        if let Some(cursor) = cached_cursor {
+                            cursor.into()
+                        } else {
                             tracing::error!("Cursor should have been cached, but was not found");
-                            continue;
-                        };
-                        cached_cursor.clone().into()
+                            return;
+                        }
                     }
                     #[cfg(feature = "custom_cursor")]
-                    CursorSource::Custom((cache_key, cursor)) => {
-                        let custom_cursor = event_loop.create_custom_cursor(cursor);
-                        cursor_cache.0.insert(cache_key, custom_cursor.clone());
-                        custom_cursor.into()
+                    CursorSource::Custom((_cache_key, source)) => {
+                        _event_loop.create_custom_cursor(source).into()
                     }
                     CursorSource::System(system_cursor) => system_cursor.into(),
                 };
                 winit_window.set_cursor(final_cursor);
-            }
-        });
+            });
+        }) {
+            tracing::error!("Failed to send cursor update task: {}", e);
+        }
     }
 }
 

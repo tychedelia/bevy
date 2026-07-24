@@ -78,7 +78,7 @@ impl Plugin for ScheduleRunnerPlugin {
             if plugins_state != PluginsState::Cleaned {
                 while app.plugins_state() == PluginsState::Adding {
                     #[cfg(not(all(target_arch = "wasm32", feature = "web")))]
-                    bevy_tasks::tick_global_task_pools_on_main_thread();
+                    bevy_tasks::tick_global_task_pools();
                 }
                 app.finish();
                 app.cleanup();

@@ -364,7 +364,11 @@ impl Plugin for LogPlugin {
                 // note: the implementation of `Default` reads from the env var NO_COLOR
                 // to decide whether to use ANSI color codes, which is common convention
                 // https://no-color.org/
-                Box::new(tracing_subscriber::fmt::Layer::default().with_writer(std::io::stderr))
+                Box::new(
+                    tracing_subscriber::fmt::Layer::default()
+                        .with_writer(std::io::stderr)
+                        .with_thread_names(true),
+                )
             });
 
             // bevy_render::renderer logs a `tracy.frame_mark` event every frame

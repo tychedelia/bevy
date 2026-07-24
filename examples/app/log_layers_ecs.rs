@@ -5,13 +5,13 @@
 //!
 //! Inside the `custom_layer` function we will create a [`mpsc::Sender`] and a [`mpsc::Receiver`] from a
 //! [`mpsc::channel`]. The [`Sender`](mpsc::Sender) will go into the `AdvancedLayer` and the [`Receiver`](mpsc::Receiver) will
-//! go into a non-send resource called `LogEvents` (It has to be non-send because [`Receiver`](mpsc::Receiver) is [`!Sync`](Sync)).
+//! go into a resource called `LogEvents`.
 //! From there we will use `transfer_log_messages` to transfer log messages from `CapturedLogMessages` to an ECS message called `LogMessage`.
 //!
 //! Finally, after all that we can access the `LogMessage` message from our systems and use it.
 //! In this example we build a simple log viewer.
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 
 use bevy::{
     log::{
@@ -37,25 +37,26 @@ fn main() {
         .run();
 }
 
-/// A basic message. This is what we will be sending from the [`CaptureLayer`] to [`CapturedLogMessages`] non-send resource.
+/// A basic message. This is what we will be sending from the [`CaptureLayer`] to [`CapturedLogMessages`] resource.
 #[derive(Debug, Message)]
 struct LogMessage {
     message: String,
     level: Level,
 }
 
-/// This non-send resource temporarily stores [`LogMessage`]s before they are
+/// This resource temporarily stores [`LogMessage`]s before they are
 /// written to [`Messages<LogEvent>`] by [`transfer_log_messages`].
-#[derive(Deref, DerefMut)]
-struct CapturedLogMessages(mpsc::Receiver<LogMessage>);
+#[derive(Resource)]
+struct CapturedLogMessages(Mutex<mpsc::Receiver<LogMessage>>);
 
 /// Transfers information from the [`CapturedLogMessages`] resource to [`Messages<LogEvent>`](LogMessage).
 fn transfer_log_messages(
-    receiver: NonSend<CapturedLogMessages>,
+    receiver: Res<CapturedLogMessages>,
     mut message_writer: MessageWriter<LogMessage>,
 ) {
     // Make sure to use `try_iter()` and not `iter()` to prevent blocking.
-    message_writer.write_batch(receiver.try_iter());
+    let rx = receiver.0.lock().unwrap();
+    message_writer.write_batch(rx.try_iter());
 }
 
 /// This is the [`Layer`] that we will use to capture log messages and then send them to Bevy's
@@ -102,9 +103,9 @@ fn custom_layer(app: &mut App) -> Option<BoxedLayer> {
     let (sender, receiver) = mpsc::channel();
 
     let layer = CaptureLayer { sender };
-    let resource = CapturedLogMessages(receiver);
+    let resource = CapturedLogMessages(Mutex::new(receiver));
 
-    app.insert_non_send(resource);
+    app.insert_resource(resource);
     app.add_message::<LogMessage>();
     app.add_systems(Update, transfer_log_messages);
 

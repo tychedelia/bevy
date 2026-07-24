@@ -95,8 +95,6 @@
 //! - [`Local`]
 //! - [`MessageReader`](crate::message::MessageReader)
 //! - [`MessageWriter`](crate::message::MessageWriter)
-//! - [`NonSend`] and `Option<NonSend>`
-//! - [`NonSendMut`] and `Option<NonSendMut>`
 //! - [`RemovedComponents`](crate::lifecycle::RemovedComponents)
 //! - [`SystemName`]
 //! - [`SystemChangeTick`]
@@ -418,8 +416,8 @@ mod tests {
             SystemCondition,
         },
         system::{
-            Commands, ExclusiveMarker, In, InMut, IntoSystem, Local, NonSend, NonSendMut, ParamSet,
-            Query, Res, ResMut, Single, StaticSystemParam, System, SystemState,
+            Commands, ExclusiveMarker, In, InMut, IntoSystem, Local, ParamSet, Query, Res, ResMut,
+            Single, StaticSystemParam, System, SystemState,
         },
         world::{DeferredWorld, EntityMut, FromWorld, World},
     };
@@ -1016,63 +1014,6 @@ mod tests {
         run_system(&mut world, sys);
 
         // ensure the system actually ran
-        assert_eq!(*world.resource::<SystemRan>(), SystemRan::Yes);
-    }
-
-    #[test]
-    #[expect(
-        dead_code,
-        reason = "The `NotSend1` and `NotSend2` structs is used to verify that a system will run, even if the system params include a non-Send resource. As such, the inner value doesn't matter."
-    )]
-    fn non_send_option_system() {
-        let mut world = World::default();
-
-        world.insert_resource(SystemRan::No);
-        // Two structs are used, one which is inserted and one which is not, to verify that wrapping
-        // non-Send resources in an `Option` will allow the system to run regardless of their
-        // existence.
-        struct NotSend1(alloc::rc::Rc<i32>);
-        struct NotSend2(alloc::rc::Rc<i32>);
-        world.insert_non_send(NotSend1(alloc::rc::Rc::new(0)));
-
-        fn sys(
-            op: Option<NonSend<NotSend1>>,
-            mut _op2: Option<NonSendMut<NotSend2>>,
-            mut system_ran: ResMut<SystemRan>,
-        ) {
-            op.expect("NonSend should exist");
-            *system_ran = SystemRan::Yes;
-        }
-
-        run_system(&mut world, sys);
-        // ensure the system actually ran
-        assert_eq!(*world.resource::<SystemRan>(), SystemRan::Yes);
-    }
-
-    #[test]
-    #[expect(
-        dead_code,
-        reason = "The `NotSend1` and `NotSend2` structs are used to verify that a system will run, even if the system params include a non-Send resource. As such, the inner value doesn't matter."
-    )]
-    fn non_send_system() {
-        let mut world = World::default();
-
-        world.insert_resource(SystemRan::No);
-        struct NotSend1(alloc::rc::Rc<i32>);
-        struct NotSend2(alloc::rc::Rc<i32>);
-
-        world.insert_non_send(NotSend1(alloc::rc::Rc::new(1)));
-        world.insert_non_send(NotSend2(alloc::rc::Rc::new(2)));
-
-        fn sys(
-            _op: NonSend<NotSend1>,
-            mut _op2: NonSendMut<NotSend2>,
-            mut system_ran: ResMut<SystemRan>,
-        ) {
-            *system_ran = SystemRan::Yes;
-        }
-
-        run_system(&mut world, sys);
         assert_eq!(*world.resource::<SystemRan>(), SystemRan::Yes);
     }
 

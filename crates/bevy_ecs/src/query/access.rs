@@ -1070,9 +1070,18 @@ impl FilteredAccessSet {
     }
 
     /// Adds a read access to a component to the set.
+    #[cfg(test)]
     pub(crate) fn add_unfiltered_component_read(&mut self, index: ComponentId) {
         let mut filter = FilteredAccess::default();
         filter.add_read(index);
+        self.add(filter);
+    }
+
+    /// Adds a write access to a component to the set.
+    #[cfg(test)]
+    pub(crate) fn add_unfiltered_component_write(&mut self, index: ComponentId) {
+        let mut filter = FilteredAccess::default();
+        filter.add_write(index);
         self.add(filter);
     }
 
@@ -1088,13 +1097,6 @@ impl FilteredAccessSet {
         let mut filter = FilteredAccess::default();
         filter.add_write(index);
         filter.and_with(IS_RESOURCE);
-        self.add(filter);
-    }
-
-    /// Adds a write access to a resource to the set.
-    pub(crate) fn add_unfiltered_component_write(&mut self, index: ComponentId) {
-        let mut filter = FilteredAccess::default();
-        filter.add_write(index);
         self.add(filter);
     }
 

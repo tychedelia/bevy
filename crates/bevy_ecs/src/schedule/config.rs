@@ -16,7 +16,7 @@ fn new_condition<M>(condition: impl SystemCondition<M>) -> BoxedCondition {
     let condition_system = IntoSystem::into_system(condition);
     assert!(
         condition_system.is_send(),
-        "SystemCondition `{}` accesses `NonSend` resources. This is not currently supported.",
+        "SystemCondition `{}` is not `Send`. System conditions must be `Send`.",
         condition_system.name()
     );
 

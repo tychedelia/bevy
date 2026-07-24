@@ -3,7 +3,7 @@
     reason = "See #11590. To be removed once all applicable unsafe code has an unsafe block with a safety comment."
 )]
 
-pub use crate::change_detection::{NonSend, NonSendMut, Res, ResMut};
+pub use crate::change_detection::{Res, ResMut};
 use crate::{
     archetype::Archetypes,
     bundle::Bundles,
@@ -1280,136 +1280,6 @@ unsafe impl SystemParam for ExclusiveMarker {
 
 // SAFETY: Does not read any world state
 unsafe impl ReadOnlySystemParam for ExclusiveMarker {}
-
-/// A dummy type that is [`!Send`](Send), to force systems to run on the main thread.
-pub struct NonSendMarker(PhantomData<*mut ()>);
-
-// SAFETY: No world access.
-unsafe impl SystemParam for NonSendMarker {
-    type State = ();
-    type Item<'w, 's> = Self;
-
-    #[inline]
-    fn init_state(_world: &mut World) -> Self::State {}
-
-    fn init_access(
-        _state: &Self::State,
-        system_meta: &mut SystemMeta,
-        _component_access_set: &mut FilteredAccessSet,
-        _world: &mut World,
-    ) {
-        system_meta.set_non_send();
-    }
-
-    #[inline]
-    unsafe fn get_param<'world, 'state>(
-        _state: &'state mut Self::State,
-        _system_meta: &SystemMeta,
-        _world: UnsafeWorldCell<'world>,
-        _change_tick: Tick,
-    ) -> Result<Self::Item<'world, 'state>, SystemParamValidationError> {
-        Ok(Self(PhantomData))
-    }
-}
-
-// SAFETY: Does not read any world state
-unsafe impl ReadOnlySystemParam for NonSendMarker {}
-
-// SAFETY: Only reads a single World non-send resource
-unsafe impl<'w, T> ReadOnlySystemParam for NonSend<'w, T> {}
-
-// SAFETY: NonSendComponentId access is applied to SystemMeta. If this
-// NonSend conflicts with any prior access, a panic will occur.
-unsafe impl<'a, T: 'static> SystemParam for NonSend<'a, T> {
-    type State = ComponentId;
-    type Item<'w, 's> = NonSend<'w, T>;
-
-    fn init_state(world: &mut World) -> Self::State {
-        world.components_registrator().register_non_send::<T>()
-    }
-
-    fn init_access(
-        &component_id: &Self::State,
-        system_meta: &mut SystemMeta,
-        component_access_set: &mut FilteredAccessSet,
-        _world: &mut World,
-    ) {
-        system_meta.set_non_send();
-
-        let combined_access = component_access_set.combined_access();
-        assert!(
-            !combined_access.has_write(component_id),
-            "error[B0002]: NonSend<{}> in system {} conflicts with a previous mutable resource access ({0}). Consider removing the duplicate access. See: https://bevy.org/learn/errors/b0002",
-            DebugName::type_name::<T>(),
-            system_meta.name,
-        );
-        component_access_set.add_unfiltered_component_read(component_id);
-    }
-
-    #[inline]
-    unsafe fn get_param<'w, 's>(
-        &mut component_id: &'s mut Self::State,
-        system_meta: &SystemMeta,
-        world: UnsafeWorldCell<'w>,
-        change_tick: Tick,
-    ) -> Result<Self::Item<'w, 's>, SystemParamValidationError> {
-        let (ptr, ticks) = world.get_non_send_with_ticks(component_id).ok_or_else(|| {
-            SystemParamValidationError::invalid::<Self>("Non-send data not found")
-        })?;
-        Ok(NonSend {
-            value: ptr.deref(),
-            ticks: ComponentTicksRef::from_tick_cells(ticks, system_meta.last_run, change_tick),
-        })
-    }
-}
-
-// SAFETY: NonSendMut ComponentId access is applied to SystemMeta. If this
-// NonSendMut conflicts with any prior access, a panic will occur.
-unsafe impl<'a, T: 'static> SystemParam for NonSendMut<'a, T> {
-    type State = ComponentId;
-    type Item<'w, 's> = NonSendMut<'w, T>;
-
-    fn init_state(world: &mut World) -> Self::State {
-        world.components_registrator().register_non_send::<T>()
-    }
-
-    fn init_access(
-        &component_id: &Self::State,
-        system_meta: &mut SystemMeta,
-        component_access_set: &mut FilteredAccessSet,
-        _world: &mut World,
-    ) {
-        system_meta.set_non_send();
-
-        let combined_access = component_access_set.combined_access();
-        if combined_access.has_write(component_id) {
-            panic!(
-                "error[B0002]: NonSendMut<{}> in system {} conflicts with a previous mutable resource access ({0}). Consider removing the duplicate access. See: https://bevy.org/learn/errors/b0002",
-                DebugName::type_name::<T>(), system_meta.name);
-        } else if combined_access.has_read(component_id) {
-            panic!(
-                "error[B0002]: NonSendMut<{}> in system {} conflicts with a previous immutable resource access ({0}). Consider removing the duplicate access. See: https://bevy.org/learn/errors/b0002",
-                DebugName::type_name::<T>(), system_meta.name);
-        }
-        component_access_set.add_unfiltered_component_write(component_id);
-    }
-
-    #[inline]
-    unsafe fn get_param<'w, 's>(
-        &mut component_id: &'s mut Self::State,
-        system_meta: &SystemMeta,
-        world: UnsafeWorldCell<'w>,
-        change_tick: Tick,
-    ) -> Result<Self::Item<'w, 's>, SystemParamValidationError> {
-        let (ptr, ticks) = world.get_non_send_with_ticks(component_id).ok_or_else(|| {
-            SystemParamValidationError::invalid::<Self>("Non-send data not found")
-        })?;
-        Ok(NonSendMut {
-            value: ptr.assert_unique().deref_mut(),
-            ticks: ComponentTicksMut::from_tick_cells(ticks, system_meta.last_run, change_tick),
-        })
-    }
-}
 
 // SAFETY: Only reads World archetypes
 unsafe impl<'a> ReadOnlySystemParam for &'a Archetypes {}
@@ -2752,33 +2622,6 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn non_send_alias() {
-        #[derive(Resource)]
-        struct A(usize);
-        fn my_system(mut res0: NonSendMut<A>, mut res1: NonSendMut<A>) {
-            res0.0 += 1;
-            res1.0 += 1;
-        }
-        let mut world = World::new();
-        world.insert_non_send(A(42));
-        let mut schedule = crate::schedule::Schedule::default();
-        schedule.add_systems(my_system);
-        schedule.run(&mut world);
-    }
-
-    #[test]
-    #[should_panic]
-    fn non_send_and_entities() {
-        #[derive(Resource)]
-        struct A(usize);
-        fn my_system(mut ns: NonSendMut<A>, _: Query<EntityMut>) {
-            ns.0 += 1;
-        }
-        assert_is_system(my_system);
-    }
-
-    #[test]
-    #[should_panic]
     fn res_and_entities() {
         #[derive(Resource)]
         struct A(usize);
@@ -2796,12 +2639,6 @@ mod tests {
             res.0 += 1;
         }
         assert_is_system(res_system);
-
-        fn non_send_system(mut ns: NonSendMut<A>, _: Query<EntityMut, Without<A>>) {
-            ns.0 += 1;
-        }
-
-        assert_is_system(non_send_system);
     }
 
     // Compile test for https://github.com/bevyengine/bevy/pull/2838.
@@ -2991,36 +2828,6 @@ mod tests {
         let mut world = World::new();
         let mut schedule = crate::schedule::Schedule::default();
         schedule.add_systems(non_sync_system);
-        schedule.run(&mut world);
-    }
-
-    // Regression test for https://github.com/bevyengine/bevy/issues/10207.
-    #[test]
-    fn param_set_non_send_first() {
-        fn non_send_param_set(mut p: ParamSet<(NonSend<*mut u8>, ())>) {
-            let _ = p.p0();
-            p.p1();
-        }
-
-        let mut world = World::new();
-        world.insert_non_send(core::ptr::null_mut::<u8>());
-        let mut schedule = crate::schedule::Schedule::default();
-        schedule.add_systems((non_send_param_set, non_send_param_set, non_send_param_set));
-        schedule.run(&mut world);
-    }
-
-    // Regression test for https://github.com/bevyengine/bevy/issues/10207.
-    #[test]
-    fn param_set_non_send_second() {
-        fn non_send_param_set(mut p: ParamSet<((), NonSendMut<*mut u8>)>) {
-            p.p0();
-            let _ = p.p1();
-        }
-
-        let mut world = World::new();
-        world.insert_non_send(core::ptr::null_mut::<u8>());
-        let mut schedule = crate::schedule::Schedule::default();
-        schedule.add_systems((non_send_param_set, non_send_param_set, non_send_param_set));
         schedule.run(&mut world);
     }
 

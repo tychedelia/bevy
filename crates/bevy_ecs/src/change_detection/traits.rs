@@ -180,7 +180,7 @@ pub trait DetectChangesMut: DetectChanges {
     /// then consider applying a `map_unchanged` beforehand to allow changing only the relevant
     /// field and prevent unnecessary copying and cloning.
     /// See the docs of [`Mut::map_unchanged`], [`MutUntyped::map_unchanged`],
-    /// [`ResMut::map_unchanged`] or [`NonSendMut::map_unchanged`] for an example
+    /// or [`ResMut::map_unchanged`] for an example
     ///
     /// If you need the previous value, use [`replace_if_neq`](DetectChangesMut::replace_if_neq).
     ///
@@ -215,7 +215,6 @@ pub trait DetectChangesMut: DetectChanges {
     /// [`Mut::map_unchanged`]: crate::change_detection::params::Mut::map_unchanged
     /// [`MutUntyped::map_unchanged`]: crate::change_detection::params::MutUntyped::map_unchanged
     /// [`ResMut::map_unchanged`]: crate::change_detection::params::ResMut::map_unchanged
-    /// [`NonSendMut::map_unchanged`]: crate::change_detection::params::NonSendMut::map_unchanged
     #[inline]
     #[track_caller]
     fn set_if_neq(&mut self, value: Self::Inner) -> bool
@@ -242,7 +241,7 @@ pub trait DetectChangesMut: DetectChanges {
     /// then consider applying a `map_unchanged` beforehand to allow
     /// changing only the relevant field and prevent unnecessary copying and cloning.
     /// See the docs of [`Mut::map_unchanged`], [`MutUntyped::map_unchanged`],
-    /// [`ResMut::map_unchanged`] or [`NonSendMut::map_unchanged`] for an example
+    /// or [`ResMut::map_unchanged`] for an example
     ///
     /// If you don't need the previous value, use [`set_if_neq`](DetectChangesMut::set_if_neq).
     ///
@@ -297,7 +296,6 @@ pub trait DetectChangesMut: DetectChanges {
     /// [`Mut::map_unchanged`]: crate::change_detection::params::Mut::map_unchanged
     /// [`MutUntyped::map_unchanged`]: crate::change_detection::params::MutUntyped::map_unchanged
     /// [`ResMut::map_unchanged`]: crate::change_detection::params::ResMut::map_unchanged
-    /// [`NonSendMut::map_unchanged`]: crate::change_detection::params::NonSendMut::map_unchanged
     #[inline]
     #[must_use = "If you don't need to handle the previous value, use `set_if_neq` instead."]
     fn replace_if_neq(&mut self, value: Self::Inner) -> Option<Self::Inner>

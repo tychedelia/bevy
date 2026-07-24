@@ -11,7 +11,7 @@ use bevy_ecs::{entity::Entity, resource::Resource};
 /// [13669] for investigations and discussions.
 ///
 /// [13669]: https://github.com/bevyengine/bevy/pull/13669
-#[derive(Resource, Debug, Default)]
+#[derive(Resource, Debug, Default, Clone)]
 pub struct WinitMonitors {
     /// Stores [`winit`] monitors and their corresponding entities
     // We can't use a `BtreeMap` here because clippy complains about using `MonitorHandle` as a key
