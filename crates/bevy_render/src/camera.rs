@@ -900,39 +900,49 @@ impl DirtySpecializations {
     /// Iterates over all entities that need to have their pipelines
     /// re-specialized this frame.
     ///
+    /// Entities are drawn from all the given
+    /// [`RenderVisibleEntitiesClass`]es (e.g. `Mesh3d` and
+    /// `GpuInstances3d`).
+    ///
     /// `last_frame_view_pending_queues` should be the contents of the
     /// [`ViewPendingQueues::prev_frame`] list.
     pub fn iter_to_specialize<'a>(
         &'a self,
         view: RetainedViewEntity,
-        render_view_visible_mesh_entities: &'a RenderVisibleEntitiesClass,
+        classes: &'a [&'a RenderVisibleEntitiesClass],
         last_frame_view_pending_queues: &'a HashSet<(Entity, MainEntity)>,
     ) -> impl Iterator<Item = (&'a Entity, &'a MainEntity)> {
-        (if self.must_wipe_specializations_for_view(view) {
-            Either::Left(render_view_visible_mesh_entities.iter_visible())
-        } else {
-            Either::Right(
-                render_view_visible_mesh_entities
-                    .added_entities()
-                    .iter()
-                    .map(|(entity, main_entity)| (entity, main_entity))
-                    .chain(self.changed_renderables.iter().filter_map(|main_entity| {
-                        self.entity_pair_from_visible_main_entity(
-                            render_view_visible_mesh_entities,
-                            main_entity,
-                        )
-                    })),
-            )
-        })
-        .chain(last_frame_view_pending_queues.iter().filter_map(
-            |(entity, main_entity)| {
-                if render_view_visible_mesh_entities.entity_pair_is_visible(*entity, *main_entity) {
-                    Some((entity, main_entity))
+        let must_wipe = self.must_wipe_specializations_for_view(view);
+        classes
+            .iter()
+            .copied()
+            .flat_map(move |class| {
+                if must_wipe {
+                    Either::Left(class.iter_visible())
                 } else {
-                    None
+                    Either::Right(
+                        class
+                            .added_entities()
+                            .iter()
+                            .map(|(entity, main_entity)| (entity, main_entity))
+                            .chain(self.changed_renderables.iter().filter_map(|main_entity| {
+                                self.entity_pair_from_visible_main_entity(class, main_entity)
+                            })),
+                    )
                 }
-            },
-        ))
+            })
+            .chain(last_frame_view_pending_queues.iter().filter_map(
+                move |(entity, main_entity)| {
+                    if classes
+                        .iter()
+                        .any(|class| class.entity_pair_is_visible(*entity, *main_entity))
+                    {
+                        Some((entity, main_entity))
+                    } else {
+                        None
+                    }
+                },
+            ))
     }
 
     /// Iterates over all renderables that should be removed from the phase.
@@ -942,24 +952,33 @@ impl DirtySpecializations {
     /// renderables that are in [`DirtySpecializations::removed_renderables`].
     /// If this view must itself be re-specialized, this will iterate over all
     /// visible entities in addition to those that became invisible.
+    ///
+    /// Entities are drawn from all the given
+    /// [`RenderVisibleEntitiesClass`]es.
     pub fn iter_to_dequeue<'a>(
         &'a self,
         view: RetainedViewEntity,
-        render_visible_mesh_entities: &'a RenderVisibleEntitiesClass,
+        classes: &'a [&'a RenderVisibleEntitiesClass],
     ) -> impl Iterator<Item = &'a MainEntity> {
-        render_visible_mesh_entities
-            .removed_entities
+        classes
             .iter()
-            .map(|(_, main_entity)| main_entity)
+            .copied()
+            .flat_map(|class| {
+                class
+                    .removed_entities
+                    .iter()
+                    .map(|(_, main_entity)| main_entity)
+            })
             .chain(if self.must_wipe_specializations_for_view(view) {
                 // All visible entities must be removed.
                 // Note that this includes potentially-invisible entities, but
                 // that's OK as they shouldn't be in the caller's bins in the
                 // first place.
                 Either::Left(
-                    render_visible_mesh_entities
-                        .iter_visible()
-                        .map(|(_, main_entity)| main_entity),
+                    classes
+                        .iter()
+                        .copied()
+                        .flat_map(|class| class.iter_visible().map(|(_, main_entity)| main_entity)),
                 )
             } else {
                 // Only entities that changed must be removed.
@@ -977,6 +996,9 @@ impl DirtySpecializations {
     /// [`DirtySpecializations::changed_renderables`]. If this view must itself
     /// be re-specialized, this will iterate over all visible renderables.
     ///
+    /// Entities are drawn from all the given
+    /// [`RenderVisibleEntitiesClass`]es.
+    ///
     /// `last_frame_view_pending_queues` should be the contents of the
     /// [`ViewPendingQueues::prev_frame`] list.
     /// `mesh_instances_queued_this_iteration_scratch_space` should be a
@@ -985,7 +1007,7 @@ impl DirtySpecializations {
     pub fn iter_to_queue<'a>(
         &'a self,
         view: RetainedViewEntity,
-        render_visible_mesh_entities: &'a RenderVisibleEntitiesClass,
+        classes: &'a [&'a RenderVisibleEntitiesClass],
         last_frame_view_pending_queues: &'a HashSet<(Entity, MainEntity)>,
         mesh_instances_queued_this_iteration_scratch_space: &'a mut MainEntityHashSet,
     ) -> impl Iterator<Item = (&'a Entity, &'a MainEntity)> {
@@ -995,30 +1017,33 @@ impl DirtySpecializations {
         // yielding the same mesh instance twice.
         // Yielding a mesh instance twice would result in binning it twice,
         // which is illegal.
-        (if self.must_wipe_specializations_for_view(view) {
-            Either::Left(render_visible_mesh_entities.iter_visible())
-        } else {
-            Either::Right(
-                render_visible_mesh_entities
-                    .added_entities()
+        let must_wipe = self.must_wipe_specializations_for_view(view);
+        classes
+            .iter()
+            .copied()
+            .flat_map(move |class| {
+                if must_wipe {
+                    Either::Left(class.iter_visible())
+                } else {
+                    Either::Right(
+                        class
+                            .added_entities()
+                            .iter()
+                            .map(|(entity, main_entity)| (entity, main_entity))
+                            .chain(self.changed_renderables.iter().filter_map(|main_entity| {
+                                self.entity_pair_from_visible_main_entity(class, main_entity)
+                            })),
+                    )
+                }
+            })
+            .chain(
+                last_frame_view_pending_queues
                     .iter()
-                    .map(|(entity, main_entity)| (entity, main_entity))
-                    .chain(self.changed_renderables.iter().filter_map(|main_entity| {
-                        self.entity_pair_from_visible_main_entity(
-                            render_visible_mesh_entities,
-                            main_entity,
-                        )
-                    })),
+                    .map(|(entity, main_entity)| (entity, main_entity)),
             )
-        })
-        .chain(
-            last_frame_view_pending_queues
-                .iter()
-                .map(|(entity, main_entity)| (entity, main_entity)),
-        )
-        .filter(|(_, main_entity)| {
-            mesh_instances_queued_this_iteration_scratch_space.insert(**main_entity)
-        })
+            .filter(|(_, main_entity)| {
+                mesh_instances_queued_this_iteration_scratch_space.insert(**main_entity)
+            })
     }
 }
 

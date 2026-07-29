@@ -262,6 +262,14 @@ pub type WithLight = Or<(
 #[derive(Debug, Component, Reflect, Default, Clone, PartialEq)]
 #[reflect(Component, Default, Debug, Clone, PartialEq)]
 pub struct NotShadowCaster;
+/// Includes an entity that has no [`Mesh3d`] in shadow-map visibility checks.
+///
+/// Renderables that aren't represented as `Mesh3d` entities, such as
+/// GPU-authored mesh instances, add this component so that the lights that
+/// shadow them consider them visible.
+#[derive(Debug, Component, Reflect, Default, Clone, PartialEq)]
+#[reflect(Component, Default, Debug, Clone, PartialEq)]
+pub struct NonMeshShadowCaster;
 /// Add this component to make a [`Mesh3d`] not receive shadows.
 ///
 /// **Note:** If you're using diffuse transmission, setting [`NotShadowReceiver`] will
@@ -365,7 +373,7 @@ pub fn check_dir_light_mesh_visibility(
             Without<NotShadowCaster>,
             Without<DirectionalLight>,
             Without<NoCpuCulling>,
-            With<Mesh3d>,
+            Or<(With<Mesh3d>, With<NonMeshShadowCaster>)>,
         ),
     >,
     visible_entity_ranges: Option<Res<VisibleEntityRanges>>,
@@ -545,7 +553,7 @@ pub fn check_point_light_mesh_visibility(
             Without<NotShadowCaster>,
             Without<DirectionalLight>,
             Without<NoCpuCulling>,
-            With<Mesh3d>,
+            Or<(With<Mesh3d>, With<NonMeshShadowCaster>)>,
         ),
     >,
     mut camera_query: Query<(Entity, &RenderTarget), With<Camera>>,

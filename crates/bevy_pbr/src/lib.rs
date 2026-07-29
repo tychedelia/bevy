@@ -40,6 +40,7 @@ pub mod deferred;
 pub mod diagnostic;
 mod extended_material;
 mod fog;
+pub mod gpu_instances;
 mod light_probe;
 mod lightmap;
 mod material;
@@ -232,6 +233,7 @@ impl Plugin for PbrPlugin {
                 ContactShadowsPlugin,
             ))
             .add_plugins((
+                gpu_instances::GpuInstancePlugin,
                 decal::ForwardDecalPlugin,
                 SyncComponentPlugin::<DirectionalLight, Self>::default(),
                 SyncComponentPlugin::<PointLight, Self>::default(),

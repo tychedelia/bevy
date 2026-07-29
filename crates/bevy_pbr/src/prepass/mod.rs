@@ -2,12 +2,13 @@ mod prepass_bindings;
 
 use crate::{
     alpha_mode_pipeline_key, binding_arrays_are_usable, buffer_layout,
-    collect_meshes_for_gpu_building, init_material_pipeline, set_mesh_motion_vector_flags,
-    setup_morph_and_skinning_defs, skin, DeferredAlphaMaskDrawFunction, DeferredFragmentShader,
-    DeferredOpaqueDrawFunction, DeferredVertexShader, DrawMesh, MaterialPipeline,
-    MaterialPropertiesExt, MeshLayouts, MeshPipeline, MeshPipelineKey, PreparedMaterial,
-    PrepassAlphaMaskDrawFunction, PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction,
-    PrepassOpaqueDrawFunction, PrepassVertexShader, RenderLightmaps, RenderMaterialInstances,
+    collect_meshes_for_gpu_building, gpu_instances::mesh_and_gpu_instances_visibility_classes,
+    init_material_pipeline, set_mesh_motion_vector_flags, setup_morph_and_skinning_defs, skin,
+    DeferredAlphaMaskDrawFunction, DeferredFragmentShader, DeferredOpaqueDrawFunction,
+    DeferredVertexShader, DrawMesh, MaterialPipeline, MaterialPropertiesExt, MeshLayouts,
+    MeshPipeline, MeshPipelineKey, PreparedMaterial, PrepassAlphaMaskDrawFunction,
+    PrepassFragmentShader, PrepassOpaqueDepthOnlyDrawFunction, PrepassOpaqueDrawFunction,
+    PrepassVertexShader, RenderGpuInstanceRanges, RenderLightmaps, RenderMaterialInstances,
     RenderMeshInstanceFlags, RenderMeshInstances, SetMaterialBindGroup, SetMeshBindGroup,
     ShadowView,
 };
@@ -973,6 +974,7 @@ pub(crate) struct SpecializePrepassSystemParam<'w, 's> {
     render_meshes: Res<'w, RenderAssets<RenderMesh>>,
     render_materials: Res<'w, ErasedRenderAssets<PreparedMaterial>>,
     render_mesh_instances: Res<'w, RenderMeshInstances>,
+    render_gpu_instance_ranges: Res<'w, RenderGpuInstanceRanges>,
     render_material_instances: Res<'w, RenderMaterialInstances>,
     render_lightmaps: Res<'w, RenderLightmaps>,
     render_visibility_ranges: Res<'w, RenderVisibilityRanges>,
@@ -1017,6 +1019,7 @@ pub(crate) fn specialize_prepass_material_meshes(
             render_meshes,
             render_materials,
             render_mesh_instances,
+            render_gpu_instance_ranges,
             render_material_instances,
             render_lightmaps,
             render_visibility_ranges,
@@ -1053,9 +1056,10 @@ pub(crate) fn specialize_prepass_material_meshes(
 
             all_views.insert(extracted_view.retained_view_entity);
 
-            let Some(render_visible_mesh_entities) = visible_entities.get::<Mesh3d>() else {
+            let classes = mesh_and_gpu_instances_visibility_classes(visible_entities);
+            if classes.is_empty() {
                 continue;
-            };
+            }
 
             // Fetch the pending mesh material queues for this view.
             let view_pending_prepass_mesh_material_queues = pending_prepass_mesh_material_queues
@@ -1085,7 +1089,7 @@ pub(crate) fn specialize_prepass_material_meshes(
             // Now process all meshes that need to be specialized.
             for (render_entity, visible_entity) in dirty_specializations.iter_to_specialize(
                 extracted_view.retained_view_entity,
-                render_visible_mesh_entities,
+                &classes,
                 &view_pending_prepass_mesh_material_queues.prev_frame,
             ) {
                 if maybe_specialized_prepass_material_pipeline_cache
@@ -1109,9 +1113,13 @@ pub(crate) fn specialize_prepass_material_meshes(
                         .insert((*render_entity, *visible_entity));
                     continue;
                 };
-                let Some(mesh_instance) =
+                let (mesh_asset_id, maybe_mesh_instance) = if let Some(mesh_instance) =
                     render_mesh_instances.render_mesh_queue_data(*visible_entity)
-                else {
+                {
+                    (mesh_instance.mesh_asset_id(), Some(mesh_instance))
+                } else if let Some(range) = render_gpu_instance_ranges.get(visible_entity) {
+                    (range.asset_id, None)
+                } else {
                     view_pending_prepass_mesh_material_queues
                         .current_frame
                         .insert((*render_entity, *visible_entity));
@@ -1128,7 +1136,7 @@ pub(crate) fn specialize_prepass_material_meshes(
                     removals.push((extracted_view.retained_view_entity, *visible_entity));
                     continue;
                 }
-                let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
+                let Some(mesh) = render_meshes.get(mesh_asset_id) else {
                     continue;
                 };
 
@@ -1170,42 +1178,44 @@ pub(crate) fn specialize_prepass_material_meshes(
                     mesh_key |= MeshPipelineKey::DEFERRED_PREPASS;
                 }
 
-                if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
-                    // Even though we don't use the lightmap in the forward prepass, the
-                    // `SetMeshBindGroup` render command will bind the data for it. So
-                    // we need to include the appropriate flag in the mesh pipeline key
-                    // to ensure that the necessary bind group layout entries are
-                    // present.
-                    mesh_key |= MeshPipelineKey::LIGHTMAPPED;
+                if let Some(mesh_instance) = maybe_mesh_instance {
+                    if let Some(lightmap) = render_lightmaps.render_lightmaps.get(visible_entity) {
+                        // Even though we don't use the lightmap in the forward prepass, the
+                        // `SetMeshBindGroup` render command will bind the data for it. So
+                        // we need to include the appropriate flag in the mesh pipeline key
+                        // to ensure that the necessary bind group layout entries are
+                        // present.
+                        mesh_key |= MeshPipelineKey::LIGHTMAPPED;
 
-                    if lightmap.bicubic_sampling && deferred {
-                        mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
+                        if lightmap.bicubic_sampling && deferred {
+                            mesh_key |= MeshPipelineKey::LIGHTMAP_BICUBIC_SAMPLING;
+                        }
                     }
-                }
 
-                if render_visibility_ranges
-                    .entity_has_crossfading_visibility_ranges(*visible_entity)
-                {
-                    mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
-                }
-
-                if material.properties.prepass_reads_material() {
-                    mesh_key |= MeshPipelineKey::PREPASS_READS_MATERIAL;
-                }
-
-                // If the previous frame has skins or morph targets, note that.
-                if motion_vector_prepass.is_some() {
-                    if mesh_instance
-                        .flags()
-                        .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
+                    if render_visibility_ranges
+                        .entity_has_crossfading_visibility_ranges(*visible_entity)
                     {
-                        mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
+                        mesh_key |= MeshPipelineKey::VISIBILITY_RANGE_DITHER;
                     }
-                    if mesh_instance
-                        .flags()
-                        .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
-                    {
-                        mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
+
+                    if material.properties.prepass_reads_material() {
+                        mesh_key |= MeshPipelineKey::PREPASS_READS_MATERIAL;
+                    }
+
+                    // If the previous frame has skins or morph targets, note that.
+                    if motion_vector_prepass.is_some() {
+                        if mesh_instance
+                            .flags()
+                            .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_SKIN)
+                        {
+                            mesh_key |= MeshPipelineKey::HAS_PREVIOUS_SKIN;
+                        }
+                        if mesh_instance
+                            .flags()
+                            .contains(RenderMeshInstanceFlags::HAS_PREVIOUS_MORPH)
+                        {
+                            mesh_key |= MeshPipelineKey::HAS_PREVIOUS_MORPH;
+                        }
                     }
                 }
 
@@ -1299,6 +1309,7 @@ pub(crate) fn specialize_prepass_material_meshes(
 
 pub fn queue_prepass_material_meshes(
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_gpu_instance_ranges: Res<RenderGpuInstanceRanges>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_allocator: Res<MeshAllocator>,
@@ -1341,9 +1352,10 @@ pub fn queue_prepass_material_meshes(
             continue;
         }
 
-        let Some(render_visible_mesh_entities) = visible_entities.get::<Mesh3d>() else {
+        let classes = mesh_and_gpu_instances_visibility_classes(visible_entities);
+        if classes.is_empty() {
             continue;
-        };
+        }
 
         // Fetch the pending mesh material queues for this view.
         let view_pending_prepass_mesh_material_queues = pending_prepass_mesh_material_queues
@@ -1354,10 +1366,9 @@ pub fn queue_prepass_material_meshes(
             );
 
         // First, remove meshes that need to be respecialized, and those that were removed, from the bins.
-        for &main_entity in dirty_specializations.iter_to_dequeue(
-            extracted_view.retained_view_entity,
-            render_visible_mesh_entities,
-        ) {
+        for &main_entity in
+            dirty_specializations.iter_to_dequeue(extracted_view.retained_view_entity, &classes)
+        {
             if let Some(ref mut opaque_phase) = opaque_phase {
                 opaque_phase.remove(main_entity);
             }
@@ -1375,7 +1386,7 @@ pub fn queue_prepass_material_meshes(
         // Now iterate through all newly-visible entities and those needing respecialization.
         for (render_entity, visible_entity) in dirty_specializations.iter_to_queue(
             extracted_view.retained_view_entity,
-            render_visible_mesh_entities,
+            &classes,
             &view_pending_prepass_mesh_material_queues.prev_frame,
             &mut mesh_instances_queued_this_iteration_scratch_space,
         ) {
@@ -1396,20 +1407,39 @@ pub fn queue_prepass_material_meshes(
                     .insert((*render_entity, *visible_entity));
                 continue;
             };
-            let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(*visible_entity)
-            else {
-                view_pending_prepass_mesh_material_queues
-                    .current_frame
-                    .insert((*render_entity, *visible_entity));
-                continue;
-            };
+            let (mesh_asset_id, uniform_index, phase_type, representative_entity) =
+                if let Some(mesh_instance) =
+                    render_mesh_instances.render_mesh_queue_data(*visible_entity)
+                {
+                    (
+                        mesh_instance.mesh_asset_id(),
+                        mesh_instance.current_uniform_index,
+                        BinnedRenderPhaseType::mesh(
+                            mesh_instance.should_batch(),
+                            &gpu_preprocessing_support,
+                        ),
+                        (*render_entity, *visible_entity),
+                    )
+                } else if let Some(range) = render_gpu_instance_ranges.get(visible_entity) {
+                    (
+                        range.asset_id,
+                        InputUniformIndex(range.base_input_index),
+                        BinnedRenderPhaseType::InstanceBatch { count: range.count },
+                        (Entity::PLACEHOLDER, *visible_entity),
+                    )
+                } else {
+                    view_pending_prepass_mesh_material_queues
+                        .current_frame
+                        .insert((*render_entity, *visible_entity));
+                    continue;
+                };
             let Some(material) = render_materials.get(material_instance.asset_id) else {
                 view_pending_prepass_mesh_material_queues
                     .current_frame
                     .insert((*render_entity, *visible_entity));
                 continue;
             };
-            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id()) else {
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id) else {
                 continue;
             };
 
@@ -1430,14 +1460,11 @@ pub fn queue_prepass_material_meshes(
                                 slabs: mesh_slabs,
                             },
                             OpaqueNoLightmap3dBinKey {
-                                asset_id: mesh_instance.mesh_asset_id().into(),
+                                asset_id: mesh_asset_id.into(),
                             },
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
+                            representative_entity,
+                            uniform_index,
+                            phase_type,
                         );
                     } else if let Some(opaque_phase) = opaque_phase.as_mut() {
                         let depth_only_draw_function = material
@@ -1457,14 +1484,11 @@ pub fn queue_prepass_material_meshes(
                                 slabs: mesh_slabs,
                             },
                             OpaqueNoLightmap3dBinKey {
-                                asset_id: mesh_instance.mesh_asset_id().into(),
+                                asset_id: mesh_asset_id.into(),
                             },
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
+                            representative_entity,
+                            uniform_index,
+                            phase_type,
                         );
                     }
                 }
@@ -1478,14 +1502,11 @@ pub fn queue_prepass_material_meshes(
                                 slabs: mesh_slabs,
                             },
                             OpaqueNoLightmap3dBinKey {
-                                asset_id: mesh_instance.mesh_asset_id().into(),
+                                asset_id: mesh_asset_id.into(),
                             },
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
+                            representative_entity,
+                            uniform_index,
+                            phase_type,
                         );
                     } else if let Some(alpha_mask_phase) = alpha_mask_phase.as_mut() {
                         alpha_mask_phase.add(
@@ -1496,14 +1517,11 @@ pub fn queue_prepass_material_meshes(
                                 slabs: mesh_slabs,
                             },
                             OpaqueNoLightmap3dBinKey {
-                                asset_id: mesh_instance.mesh_asset_id().into(),
+                                asset_id: mesh_asset_id.into(),
                             },
-                            (*render_entity, *visible_entity),
-                            mesh_instance.current_uniform_index,
-                            BinnedRenderPhaseType::mesh(
-                                mesh_instance.should_batch(),
-                                &gpu_preprocessing_support,
-                            ),
+                            representative_entity,
+                            uniform_index,
+                            phase_type,
                         );
                     }
                 }

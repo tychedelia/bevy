@@ -127,7 +127,9 @@ fn allocate_local_scan(
         // These parameters get filled in later. Initialize them to zero for now.
         // This is required in the case of the early/late instance counts
         // because the mesh preprocessing shader will atomically increment them.
-        indirect_parameters_metadata[indirect_parameters_offset].mesh_index = 0u;
+        indirect_parameters_metadata[indirect_parameters_offset].first_vertex_index = 0u;
+        indirect_parameters_metadata[indirect_parameters_offset].first_index_index = 0u;
+        indirect_parameters_metadata[indirect_parameters_offset].index_count = 0u;
         indirect_parameters_metadata[indirect_parameters_offset].early_instance_count = 0u;
         indirect_parameters_metadata[indirect_parameters_offset].late_instance_count = 0u;
     }

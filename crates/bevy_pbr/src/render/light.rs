@@ -2387,6 +2387,7 @@ pub struct PendingShadowQueues(pub PendingQueues);
 pub(crate) struct SpecializeShadowsSystemParam<'w, 's> {
     render_meshes: Res<'w, RenderAssets<RenderMesh>>,
     render_mesh_instances: Res<'w, RenderMeshInstances>,
+    render_gpu_instance_ranges: Res<'w, RenderGpuInstanceRanges>,
     render_materials: Res<'w, ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<'w, RenderMaterialInstances>,
     shadow_render_phases: Res<'w, ViewBinnedRenderPhases<Shadow>>,
@@ -2412,6 +2413,7 @@ pub(crate) fn specialize_shadows(
         let SpecializeShadowsSystemParam {
             render_meshes,
             render_mesh_instances,
+            render_gpu_instance_ranges,
             render_materials,
             render_material_instances,
             shadow_render_phases,
@@ -2468,14 +2470,16 @@ pub(crate) fn specialize_shadows(
             // NOTE: Lights with shadow mapping disabled will have no visible entities
             // so no meshes will be queued
 
-            let Some(visible_entities) = visible_entities.get::<Mesh3d>() else {
+            let classes =
+                gpu_instances::mesh_and_gpu_instances_visibility_classes(visible_entities);
+            if classes.is_empty() {
                 continue;
-            };
+            }
 
             // Now process all shadow meshes that need to be re-specialized.
             for (render_entity, visible_entity) in dirty_specializations.iter_to_specialize(
                 extracted_view_light.retained_view_entity,
-                visible_entities,
+                &classes,
                 &view_pending_shadow_queues.prev_frame,
             ) {
                 if maybe_specialized_shadow_material_pipeline_cache
@@ -2499,14 +2503,6 @@ pub(crate) fn specialize_shadows(
                         .insert((*render_entity, *visible_entity));
                     continue;
                 };
-                let Some(mesh_instance) =
-                    render_mesh_instances.render_mesh_queue_data(*visible_entity)
-                else {
-                    view_pending_shadow_queues
-                        .current_frame
-                        .insert((*render_entity, *visible_entity));
-                    continue;
-                };
                 let Some(material) = render_materials.get(material_instance.asset_id) else {
                     view_pending_shadow_queues
                         .current_frame
@@ -2518,13 +2514,31 @@ pub(crate) fn specialize_shadows(
                     // If the material is not a shadow caster, we don't need to specialize it.
                     continue;
                 }
-                if !mesh_instance
-                    .flags()
-                    .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
+
+                let (mesh_asset_id, maybe_mesh_instance) = if let Some(mesh_instance) =
+                    render_mesh_instances.render_mesh_queue_data(*visible_entity)
+                {
+                    (mesh_instance.mesh_asset_id(), Some(mesh_instance))
+                } else if let Some(range) = render_gpu_instance_ranges.get(visible_entity) {
+                    if !range.shadow_caster {
+                        continue;
+                    }
+                    (range.asset_id, None)
+                } else {
+                    view_pending_shadow_queues
+                        .current_frame
+                        .insert((*render_entity, *visible_entity));
+                    continue;
+                };
+
+                if let Some(mesh_instance) = maybe_mesh_instance.as_ref()
+                    && !mesh_instance
+                        .flags()
+                        .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
                 {
                     continue;
                 }
-                let Some(mesh) = render_meshes.get(mesh_instance.mesh_asset_id()) else {
+                let Some(mesh) = render_meshes.get(mesh_asset_id) else {
                     continue;
                 };
 
@@ -2536,9 +2550,10 @@ pub(crate) fn specialize_shadows(
                 // we need to include the appropriate flag in the mesh pipeline key
                 // to ensure that the necessary bind group layout entries are
                 // present.
-                if render_lightmaps
-                    .render_lightmaps
-                    .contains_key(visible_entity)
+                if maybe_mesh_instance.is_some()
+                    && render_lightmaps
+                        .render_lightmaps
+                        .contains_key(visible_entity)
                 {
                     mesh_key |= MeshPipelineKey::LIGHTMAPPED;
                 }
@@ -2627,6 +2642,7 @@ pub(crate) fn specialize_shadows(
 /// appropriate.
 pub fn queue_shadows(
     render_mesh_instances: Res<RenderMeshInstances>,
+    render_gpu_instance_ranges: Res<RenderGpuInstanceRanges>,
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
     render_material_instances: Res<RenderMaterialInstances>,
     mut shadow_render_phases: ResMut<ViewBinnedRenderPhases<Shadow>>,
@@ -2663,13 +2679,14 @@ pub fn queue_shadows(
             extracted_view_light,
         );
 
-        let Some(visible_entities) = visible_entities.get::<Mesh3d>() else {
+        let classes = gpu_instances::mesh_and_gpu_instances_visibility_classes(visible_entities);
+        if classes.is_empty() {
             continue;
-        };
+        }
 
         // First, remove meshes that need to be respecialized, and those that were removed, from the bins.
         for &main_entity in dirty_specializations
-            .iter_to_dequeue(extracted_view_light.retained_view_entity, visible_entities)
+            .iter_to_dequeue(extracted_view_light.retained_view_entity, &classes)
         {
             shadow_phase.remove(main_entity);
         }
@@ -2677,7 +2694,7 @@ pub fn queue_shadows(
         // Now iterate through all newly-visible entities and those needing respecialization.
         for (render_entity, main_entity) in dirty_specializations.iter_to_queue(
             extracted_view_light.retained_view_entity,
-            visible_entities,
+            &classes,
             &view_pending_shadow_queues.prev_frame,
             &mut mesh_instances_queued_this_iteration_scratch_space,
         ) {
@@ -2687,27 +2704,50 @@ pub fn queue_shadows(
                 continue;
             };
 
-            let Some(mesh_instance) = render_mesh_instances.render_mesh_queue_data(*main_entity)
-            else {
-                // We couldn't fetch the mesh, probably because it hasn't
-                // loaded yet. Add the entity to the list of pending shadows
-                // and bail.
-                view_pending_shadow_queues
-                    .current_frame
-                    .insert((*render_entity, *main_entity));
-                continue;
-            };
-            if !mesh_instance
-                .flags()
-                .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
-            {
-                continue;
-            }
+            let (mesh_asset_id, uniform_index, phase_type, representative_entity) =
+                if let Some(mesh_instance) =
+                    render_mesh_instances.render_mesh_queue_data(*main_entity)
+                {
+                    if !mesh_instance
+                        .flags()
+                        .contains(RenderMeshInstanceFlags::SHADOW_CASTER)
+                    {
+                        continue;
+                    }
 
-            let mesh_layers = mesh_instance.render_layers.as_ref().unwrap_or_default();
-            if !view_light_render_layers.intersects(mesh_layers) {
-                continue;
-            }
+                    let mesh_layers = mesh_instance.render_layers.as_ref().unwrap_or_default();
+                    if !view_light_render_layers.intersects(mesh_layers) {
+                        continue;
+                    }
+
+                    (
+                        mesh_instance.mesh_asset_id(),
+                        mesh_instance.current_uniform_index,
+                        BinnedRenderPhaseType::mesh(
+                            mesh_instance.should_batch(),
+                            &gpu_preprocessing_support,
+                        ),
+                        (*render_entity, *main_entity),
+                    )
+                } else if let Some(range) = render_gpu_instance_ranges.get(main_entity) {
+                    if !range.shadow_caster {
+                        continue;
+                    }
+                    (
+                        range.asset_id,
+                        InputUniformIndex(range.base_input_index),
+                        BinnedRenderPhaseType::InstanceBatch { count: range.count },
+                        (Entity::PLACEHOLDER, *main_entity),
+                    )
+                } else {
+                    // We couldn't fetch the mesh, probably because it hasn't
+                    // loaded yet. Add the entity to the list of pending shadows
+                    // and bail.
+                    view_pending_shadow_queues
+                        .current_frame
+                        .insert((*render_entity, *main_entity));
+                    continue;
+                };
 
             let Some(material_instance) = render_material_instances.instances.get(main_entity)
             else {
@@ -2732,7 +2772,7 @@ pub fn queue_shadows(
                 Some(material.binding.group.0)
             };
 
-            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_instance.mesh_asset_id()) else {
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id) else {
                 continue;
             };
 
@@ -2746,14 +2786,11 @@ pub fn queue_shadows(
             shadow_phase.add(
                 batch_set_key,
                 ShadowBinKey {
-                    asset_id: mesh_instance.mesh_asset_id().into(),
+                    asset_id: mesh_asset_id.into(),
                 },
-                (*render_entity, *main_entity),
-                mesh_instance.current_uniform_index,
-                BinnedRenderPhaseType::mesh(
-                    mesh_instance.should_batch(),
-                    &gpu_preprocessing_support,
-                ),
+                representative_entity,
+                uniform_index,
+                phase_type,
             );
         }
     }

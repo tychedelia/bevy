@@ -855,7 +855,7 @@ pub fn specialize_material2d_meshes(
             // Now process all 2D meshes that need to be re-specialized.
             for (render_entity, visible_entity) in dirty_specializations.iter_to_specialize(
                 view.retained_view_entity,
-                visible_entities,
+                &[visible_entities],
                 &view_pending_mesh_material2d_queues.prev_frame,
             ) {
                 if view_specialized_material_pipeline_cache.contains_key(visible_entity) {
@@ -1027,7 +1027,7 @@ pub fn queue_material2d_meshes(
         // specialization.
         for (render_entity, visible_entity) in dirty_specializations.iter_to_queue(
             view.retained_view_entity,
-            visible_entities,
+            &[visible_entities],
             &view_pending_mesh_material2d_queues.prev_frame,
             &mut mesh_instances_queued_this_iteration_scratch_space,
         ) {

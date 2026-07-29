@@ -597,6 +597,27 @@ where
         set_dirty_bits_for_vector_growth(old_len, new_len, &mut self.summary, &mut self.dirty_bits);
     }
 
+    /// Grows the buffer by adding [`Default::default`] values so that it's at
+    /// least the given size.
+    ///
+    /// Unlike [`Self::grow`], which zero-fills, this fills the new elements
+    /// with `T::default()`, which may differ from the zeroed representation.
+    ///
+    /// If the buffer is already large enough, this method does nothing.
+    pub fn grow_default(&mut self, new_len: u32)
+    where
+        T: Default,
+    {
+        let old_len = self.values.len() as u32;
+        if old_len >= new_len {
+            return;
+        }
+        self.grow(new_len);
+        for index in old_len..new_len {
+            self.set(index, T::default());
+        }
+    }
+
     /// Writes the data to the GPU, either via a sparse upload or a bulk data
     /// upload.
     pub fn write_buffers(&mut self, render_device: &RenderDevice, render_queue: &RenderQueue) {

@@ -15,7 +15,7 @@
 // respectively.
 
 #import bevy_pbr::mesh_preprocess_types::{
-    IndirectParametersMetadata, MeshInput, PreviousMeshInput, PreprocessWorkItem
+    IndirectParametersMetadata, MeshCullingData, MeshInput, PreviousMeshInput, PreprocessWorkItem
 }
 #import bevy_pbr::mesh_types::{
     Mesh, MESH_FLAGS_AABB_BASED_VISIBILITY_RANGE_BIT, MESH_FLAGS_NO_FRUSTUM_CULLING_BIT,
@@ -30,18 +30,6 @@
 }
 #import bevy_render::maths
 #import bevy_render::view::View
-
-// Information about each mesh instance needed to cull it on GPU.
-//
-// At the moment, this just consists of its axis-aligned bounding box (AABB).
-struct MeshCullingData {
-    // The 3D center of the AABB in model space, padded with an extra unused
-    // float value.
-    aabb_center: vec4<f32>,
-    // The 3D extents of the AABB in model space, divided by two, padded with
-    // an extra unused float value.
-    aabb_half_extents: vec4<f32>,
-}
 
 // The parameters for the indirect compute dispatch for the late mesh
 // preprocessing phase.
@@ -187,12 +175,17 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
 #ifdef INDIRECT
     let indirect_parameters_index = work_items[instance_index].output_or_indirect_parameters_index;
 
-    // If we're the first mesh instance in this batch, write the index of our
-    // `MeshInput` into the appropriate slot so that the indirect parameters
-    // building shader can access it.
+    // If we're the first mesh instance in this batch, copy our `MeshInput`'s
+    // vertex and index ranges into the appropriate slot so that the indirect
+    // parameters building shader can access them.
 #ifndef LATE_PHASE
     if (instance_index == 0u) || (work_items[instance_index - 1].output_or_indirect_parameters_index != indirect_parameters_index) {
-        indirect_parameters_metadata[indirect_parameters_index].mesh_index = input_index;
+        indirect_parameters_metadata[indirect_parameters_index].first_vertex_index =
+            current_input[input_index].first_vertex_index;
+        indirect_parameters_metadata[indirect_parameters_index].first_index_index =
+            current_input[input_index].first_index_index;
+        indirect_parameters_metadata[indirect_parameters_index].index_count =
+            current_input[input_index].index_count;
     }
 #endif  // LATE_PHASE
 
@@ -205,10 +198,17 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     let world_from_local = maths::affine3_to_square(world_from_local_affine_transpose);
 
 #ifdef FRUSTUM_CULLING
+    // Skip instances that a GPU simulation has retired. This check runs
+    // before the `MESH_FLAGS_NO_FRUSTUM_CULLING_BIT` test so that instance
+    // batches that opt out of frustum culling still honor it.
+    if (mesh_culling_data[input_index].alive <= 0.0) {
+        return;
+    }
+
     // Frustum cull if necessary.
     if ((current_input[input_index].flags & MESH_FLAGS_NO_FRUSTUM_CULLING_BIT) == 0u) {
-        let aabb_center = mesh_culling_data[input_index].aabb_center.xyz;
-        let aabb_half_extents = mesh_culling_data[input_index].aabb_half_extents.xyz;
+        let aabb_center = mesh_culling_data[input_index].aabb_center;
+        let aabb_half_extents = mesh_culling_data[input_index].aabb_half_extents;
 
         // Do an OBB-based frustum cull.
         let model_center = world_from_local * vec4(aabb_center, 1.0);
@@ -228,7 +228,7 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
         // Otherwise, just use the center of the transform.
         var world_pos: vec3<f32>;
         if ((current_input[input_index].flags & MESH_FLAGS_AABB_BASED_VISIBILITY_RANGE_BIT) != 0u) {
-            let aabb_center = mesh_culling_data[input_index].aabb_center.xyz;
+            let aabb_center = mesh_culling_data[input_index].aabb_center;
             world_pos = (world_from_local * vec4(aabb_center, 1.0)).xyz;
         } else {
             world_pos = world_from_local[3].xyz;
@@ -269,8 +269,8 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     // hierarchical Z-buffer, then this mesh must be occluded, and we can skip
     // rendering it.
 #ifdef OCCLUSION_CULLING
-    let aabb_center = mesh_culling_data[input_index].aabb_center.xyz;
-    let aabb_half_extents = mesh_culling_data[input_index].aabb_half_extents.xyz;
+    let aabb_center = mesh_culling_data[input_index].aabb_center;
+    let aabb_half_extents = mesh_culling_data[input_index].aabb_half_extents;
 
     // Initialize the AABB and the maximum depth.
     let infinity = bitcast<f32>(0x7f800000u);

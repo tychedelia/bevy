@@ -795,7 +795,7 @@ pub fn specialize_wireframes(
         // Now iterate over all 2D wireframes that need specialization.
         for (_, visible_entity) in dirty_wireframe_specializations.iter_to_specialize(
             view.retained_view_entity,
-            visible_entities,
+            &[visible_entities],
             &view_pending_wireframe2d_queues.prev_frame,
         ) {
             if view_specialized_material_pipeline_cache.contains_key(visible_entity) {
@@ -875,7 +875,7 @@ fn queue_wireframes(
 
         // First, remove meshes that need to be respecialized, and those that were removed, from the bins.
         for &main_entity in dirty_wireframe_specializations
-            .iter_to_dequeue(view.retained_view_entity, visible_entities)
+            .iter_to_dequeue(view.retained_view_entity, &[visible_entities])
         {
             wireframe_phase.remove(main_entity);
         }
@@ -883,7 +883,7 @@ fn queue_wireframes(
         // Now iterate through all newly-visible entities and those needing respecialization.
         for (render_entity, visible_entity) in dirty_wireframe_specializations.iter_to_queue(
             view.retained_view_entity,
-            visible_entities,
+            &[visible_entities],
             &view_pending_wireframe2d_queues.prev_frame,
             &mut mesh_instances_queued_this_iteration_scratch_space,
         ) {

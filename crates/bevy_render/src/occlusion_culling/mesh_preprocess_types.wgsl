@@ -37,6 +37,21 @@ struct PreviousMeshInput {
     world_from_local: mat3x4<f32>,
 };
 
+// Information about each mesh instance needed to cull it on GPU.
+//
+// This consists of its axis-aligned bounding box (AABB) and a per-slot alive
+// value used by GPU-authored instance batches.
+struct MeshCullingData {
+    // The 3D center of the AABB in model space.
+    aabb_center: vec3<f32>,
+    _pad: f32,
+    // The 3D extents of the AABB in model space, divided by two.
+    aabb_half_extents: vec3<f32>,
+    // > 0.0 = render, <= 0.0 = skip in preprocessing. Only the sign is
+    // ever read; the magnitude is free for simulations to use.
+    alive: f32,
+}
+
 // The `wgpu` indirect parameters structure. This is a union of two structures.
 // For more information, see the corresponding comment in
 // `gpu_preprocessing.rs`.
@@ -84,10 +99,13 @@ struct IndirectParametersMetadata {
     // multidraw isn't in use.
     batch_set_index: u32,
 
-    // The index of the mesh in the `MeshInput` buffer.
+    // The draw's vertex and index ranges, copied from the mesh's
+    // `MeshInput`.
     //
-    // The mesh preprocessing shader fills this in.
-    mesh_index: u32,
+    // The mesh preprocessing shader fills these in.
+    first_vertex_index: u32,
+    first_index_index: u32,
+    index_count: u32,
 
 #ifdef WRITE_INDIRECT_PARAMETERS_METADATA
     // The number of instances that were visible last frame (if occlusion

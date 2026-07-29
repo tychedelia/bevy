@@ -76,6 +76,7 @@ use bevy_utils::{default, Parallel, TypeIdHashMap};
 use core::any::TypeId;
 use core::iter;
 use core::mem::size_of;
+use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU64, Ordering};
 use indexmap::IndexSet;
 use static_assertions::const_assert_eq;
@@ -194,6 +195,7 @@ impl Plugin for MeshRenderPlugin {
             render_app
                 .init_gpu_resource::<MeshCullingDataBuffer>()
                 .init_resource::<RenderMaterialInstances>()
+                .init_resource::<RenderGpuInstanceRanges>()
                 .configure_sets(
                     ExtractSchedule,
                     MeshExtractionSystems.after_weak(view::extract_visibility_ranges),
@@ -650,16 +652,36 @@ impl_atomic_pod!(PreviousMeshInputUniform, PreviousMeshInputUniformBlob);
 
 /// Information about each mesh instance needed to cull it on GPU.
 ///
-/// This consists of its axis-aligned bounding box (AABB).
-#[derive(ShaderType, Pod, Zeroable, Clone, Copy, Default)]
+/// This consists of its axis-aligned bounding box (AABB) and a per-slot alive
+/// value used by GPU-authored instances.
+#[derive(ShaderType, Pod, Zeroable, Clone, Copy)]
 #[repr(C)]
 pub struct MeshCullingData {
-    /// The 3D center of the AABB in model space, padded with an extra unused
-    /// float value.
-    pub aabb_center: Vec4,
-    /// The 3D extents of the AABB in model space, divided by two, padded with
-    /// an extra unused float value.
-    pub aabb_half_extents: Vec4,
+    /// The 3D center of the AABB in model space.
+    pub aabb_center: Vec3,
+    _pad: f32,
+    /// The 3D extents of the AABB in model space, divided by two.
+    pub aabb_half_extents: Vec3,
+    /// `> 0.0` = render, `<= 0.0` = skip in preprocessing.
+    ///
+    /// Ordinary meshes, and freshly-reserved [`GpuInstances3d`] slots, are
+    /// written with an alive of 1.0. GPU simulations retire slots in a
+    /// reservation by writing an alive of zero or less. Only the sign is ever
+    /// read; the magnitude is free for simulations to use.
+    ///
+    /// [`GpuInstances3d`]: crate::gpu_instances::GpuInstances3d
+    pub alive: f32,
+}
+
+impl Default for MeshCullingData {
+    fn default() -> Self {
+        Self {
+            aabb_center: Vec3::ZERO,
+            _pad: 0.0,
+            aabb_half_extents: Vec3::ZERO,
+            alive: 1.0,
+        }
+    }
 }
 
 /// A GPU buffer that holds the information needed to cull meshes on GPU.
@@ -668,6 +690,10 @@ pub struct MeshCullingData {
 ///
 /// To avoid wasting CPU time in the CPU culling case, this buffer will be empty
 /// if GPU culling isn't in use.
+///
+/// This buffer doesn't allocate slots of its own: it's indexed by the same
+/// index as the mesh preprocessing input buffer, so it just grows to mirror
+/// whatever ranges that buffer's allocator hands out.
 #[derive(Resource, Deref, DerefMut)]
 pub struct MeshCullingDataBuffer(AtomicSparseBufferVec<MeshCullingData>);
 
@@ -1214,6 +1240,25 @@ pub struct RenderMeshInstancesCpu(MainEntityHashMap<RenderMeshInstanceCpu>);
 #[derive(Default, Deref, DerefMut)]
 pub struct RenderMeshInstancesGpu(MainEntityHashMap<RenderMeshInstanceGpu>);
 
+/// A range of `count` GPU-authored mesh instances rendered as a single
+/// indirect draw.
+#[derive(Clone, Debug)]
+pub struct RenderGpuInstanceRange {
+    /// The [`AssetId`] of the mesh.
+    pub asset_id: AssetId<Mesh>,
+    /// The index of the first of the range's `MeshInputUniform`s.
+    pub base_input_index: u32,
+    /// The number of instance slots in the range.
+    pub count: NonZeroU32,
+    /// Whether the range's instances cast shadows.
+    pub shadow_caster: bool,
+}
+
+/// Information that the render world keeps about each entity that contains a
+/// GPU-authored instance range.
+#[derive(Resource, Default, Deref, DerefMut)]
+pub struct RenderGpuInstanceRanges(pub MainEntityHashMap<RenderGpuInstanceRange>);
+
 impl RenderMeshInstances {
     /// Creates a new [`RenderMeshInstances`] instance.
     fn new(use_gpu_instance_buffer_builder: bool) -> RenderMeshInstances {
@@ -1643,15 +1688,19 @@ impl MeshCullingData {
     ///
     /// If no AABB is provided, an infinitely-large one is conservatively
     /// chosen.
-    fn new(aabb: Option<&Aabb>) -> Self {
+    pub(crate) fn new(aabb: Option<&Aabb>) -> Self {
         match aabb {
             Some(aabb) => MeshCullingData {
-                aabb_center: aabb.center.extend(0.0),
-                aabb_half_extents: aabb.half_extents.extend(0.0),
+                aabb_center: aabb.center.into(),
+                _pad: 0.0,
+                aabb_half_extents: aabb.half_extents.into(),
+                alive: 1.0,
             },
             None => MeshCullingData {
-                aabb_center: Vec3::ZERO.extend(0.0),
-                aabb_half_extents: Vec3::INFINITY.extend(0.0),
+                aabb_center: Vec3::ZERO,
+                _pad: 0.0,
+                aabb_half_extents: Vec3::INFINITY,
+                alive: 1.0,
             },
         }
     }
@@ -2469,9 +2518,11 @@ pub fn collect_meshes_for_gpu_building(
         ..
     } = batched_instance_buffers.into_inner();
 
-    // Make sure the mesh culling data buffer has enough space.
+    // Make sure the mesh culling data buffer has enough space. Zero-filling
+    // would give the new slots an `alive` of 0.0, i.e. "culled", so fill with
+    // live defaults instead.
     if !current_input_buffer.is_empty() {
-        mesh_culling_data_buffer.grow(current_input_buffer.len() as u32);
+        mesh_culling_data_buffer.grow_default(current_input_buffer.len() as u32);
     }
 
     // Pre-allocate the previous input buffer for concurrent pushes.
@@ -3019,7 +3070,9 @@ impl GetFullBatchData for MeshPipeline {
                 None => !0,
             },
             // These fields are filled in by the GPU:
-            mesh_index: 0,
+            first_vertex_index: 0,
+            first_index_index: 0,
+            index_count: 0,
             early_instance_count: 0,
             late_instance_count: 0,
         };
@@ -4445,6 +4498,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
         SRes<RenderDevice>,
         SRes<MeshBindGroups>,
         SRes<RenderMeshInstances>,
+        SRes<RenderGpuInstanceRanges>,
         SRes<SkinUniforms>,
         SRes<MorphIndices>,
         SRes<MeshAllocator>,
@@ -4463,6 +4517,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             render_device,
             bind_groups,
             mesh_instances,
+            gpu_instance_ranges,
             skin_uniforms,
             morph_indices,
             mesh_allocator,
@@ -4473,12 +4528,16 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
     ) -> RenderCommandResult {
         let bind_groups = bind_groups.into_inner();
         let mesh_instances = mesh_instances.into_inner();
+        let gpu_instance_ranges = gpu_instance_ranges.into_inner();
         let skin_uniforms = skin_uniforms.into_inner();
         let morph_indices = morph_indices.into_inner();
 
         let entity = &item.main_entity();
 
-        let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(*entity) else {
+        let Some(mesh_asset_id) = mesh_instances
+            .mesh_asset_id(*entity)
+            .or_else(|| gpu_instance_ranges.get(entity).map(|range| range.asset_id))
+        else {
             return RenderCommandResult::Success;
         };
 
@@ -4605,6 +4664,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
     type Param = (
         SRes<RenderAssets<RenderMesh>>,
         SRes<RenderMeshInstances>,
+        SRes<RenderGpuInstanceRanges>,
         SRes<IndirectParametersBuffers>,
         SRes<PipelineCache>,
         SRes<MeshAllocator>,
@@ -4621,6 +4681,7 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
         (
             meshes,
             mesh_instances,
+            gpu_instance_ranges,
             indirect_parameters_buffer,
             pipeline_cache,
             mesh_allocator,
@@ -4642,10 +4703,18 @@ impl<P: PhaseItem> RenderCommand<P> for DrawMesh {
 
         let meshes = meshes.into_inner();
         let mesh_instances = mesh_instances.into_inner();
+        let gpu_instance_ranges = gpu_instance_ranges.into_inner();
         let indirect_parameters_buffer = indirect_parameters_buffer.into_inner();
         let mesh_allocator = mesh_allocator.into_inner();
 
-        let Some(mesh_asset_id) = mesh_instances.mesh_asset_id(item.main_entity()) else {
+        let Some(mesh_asset_id) = mesh_instances
+            .mesh_asset_id(item.main_entity())
+            .or_else(|| {
+                gpu_instance_ranges
+                    .get(&item.main_entity())
+                    .map(|range| range.asset_id)
+            })
+        else {
             return RenderCommandResult::Skip;
         };
         let Some(gpu_mesh) = meshes.get(mesh_asset_id) else {

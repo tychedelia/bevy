@@ -487,7 +487,9 @@ impl GetFullBatchData for Mesh2dPipeline {
                 Some(batch_set_index) => u32::from(batch_set_index),
             },
             // These fields are unused in the 2D pipeline.
-            mesh_index: 0,
+            first_vertex_index: 0,
+            first_index_index: 0,
+            index_count: 0,
             early_instance_count: 0,
             late_instance_count: 0,
         };

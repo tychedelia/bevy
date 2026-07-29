@@ -13,11 +13,7 @@
     IndirectParametersIndexed,
     IndirectParametersNonIndexed,
     IndirectParametersMetadata,
-    MeshInput
 }
-
-// The data for each mesh that the CPU supplied to the GPU.
-@group(0) @binding(0) var<storage> current_input: array<MeshInput>;
 
 // Data that we use to generate the indirect parameters.
 //
@@ -59,7 +55,6 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
     // Unpack the metadata for this batch.
     let base_output_index = indirect_parameters_metadata[instance_index].base_output_index;
     let batch_set_index = indirect_parameters_metadata[instance_index].batch_set_index;
-    let mesh_index = indirect_parameters_metadata[instance_index].mesh_index;
 
     // If we aren't using `multi_draw_indirect_count`, we have a 1:1 fixed
     // assignment of batches to slots in the indirect parameters buffer, so we
@@ -124,15 +119,15 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
 #endif  // LATE_PHASE
 
     indirect_parameters[indirect_parameters_index].base_vertex =
-        current_input[mesh_index].first_vertex_index;
+        indirect_parameters_metadata[instance_index].first_vertex_index;
 
 #ifdef INDEXED
     indirect_parameters[indirect_parameters_index].index_count =
-        current_input[mesh_index].index_count;
+        indirect_parameters_metadata[instance_index].index_count;
     indirect_parameters[indirect_parameters_index].first_index =
-        current_input[mesh_index].first_index_index;
+        indirect_parameters_metadata[instance_index].first_index_index;
 #else   // INDEXED
     indirect_parameters[indirect_parameters_index].vertex_count =
-        current_input[mesh_index].index_count;
+        indirect_parameters_metadata[instance_index].index_count;
 #endif  // INDEXED
 }
