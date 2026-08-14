@@ -4563,8 +4563,11 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             return RenderCommandResult::Success;
         };
 
-        let mesh_slabs = mesh_allocator.mesh_slabs(&mesh_asset_id);
+        // Only the metadata/morph slabs are needed here, so binding 0 (which
+        // every allocated mesh has) suffices.
+        let mesh_slabs = mesh_allocator.mesh_slabs(&mesh_asset_id, 1);
         let metadata_slab_id = mesh_slabs
+            .as_ref()
             .and_then(|slabs| slabs.metadata_slab_id)
             .unwrap_or(metadata_fallback_buffer.slab_id);
         let skins_use_uniform_buffers = skins_use_uniform_buffers(&render_device.limits());

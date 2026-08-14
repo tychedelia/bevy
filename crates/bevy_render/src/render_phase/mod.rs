@@ -79,7 +79,6 @@ use core::{
     hash::Hash,
     iter,
     marker::PhantomData,
-    mem,
     num::NonZeroU32,
     ops::{Range, RangeBounds},
 };

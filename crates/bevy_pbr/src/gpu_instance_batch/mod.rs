@@ -33,10 +33,11 @@ use bevy_render::sync_world::{MainEntity, MainEntityHashMap};
 use bevy_render::{Extract, ExtractSchedule, Render, RenderApp, RenderSystems};
 use bevy_transform::components::Transform;
 
+use bevy_render::material_bind_groups::RenderMaterialBindings;
+
 use crate::{
     MeshCullingData, MeshCullingDataBuffer, MeshFlags, MeshInputUniform, MeshUniform,
-    RenderMaterialBindings, RenderMaterialInstances, RenderMeshInstanceBatch,
-    RenderMeshInstanceBatches,
+    RenderMaterialInstances, RenderMeshInstanceBatch, RenderMeshInstanceBatches,
 };
 
 /// A batch of up to `max_capacity` GPU-authored mesh instances. Must be
@@ -292,6 +293,10 @@ pub fn prepare_gpu_batched_mesh_reservations(
             material_and_lightmap_bind_group_slot,
             tag: 0,
             morph_descriptor_index: u32::MAX,
+            metadata_index: 0,
+            pad1: 0,
+            pad2: 0,
+            pad3: 0,
         };
 
         let input_buffer_base =

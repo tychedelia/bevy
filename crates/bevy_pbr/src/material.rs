@@ -1223,8 +1223,10 @@ pub(crate) fn specialize_material_meshes(
 /// them to [`BinnedRenderPhase`]s or [`SortedRenderPhase`]s as appropriate.
 pub fn queue_material_meshes(
     render_materials: Res<ErasedRenderAssets<PreparedMaterial>>,
-    render_mesh_instances: Res<RenderMeshInstances>,
-    render_mesh_instance_batches: Res<RenderMeshInstanceBatches>,
+    (render_mesh_instances, render_mesh_instance_batches): (
+        Res<RenderMeshInstances>,
+        Res<RenderMeshInstanceBatches>,
+    ),
     render_material_instances: Res<RenderMaterialInstances>,
     mesh_assets: Res<RenderAssets<RenderMesh>>,
     mesh_allocator: Res<MeshAllocator>,

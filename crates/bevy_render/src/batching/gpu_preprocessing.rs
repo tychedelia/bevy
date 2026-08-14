@@ -2156,9 +2156,11 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
                         indirect_parameters_index,
                         count,
                     );
-                    phase_indirect_parameters_buffers
-                        .buffers
-                        .add_batch_set(item_is_indexed, indirect_parameters_index);
+                    phase_indirect_parameters_buffers.buffers.add_batch_set(
+                        item_is_indexed,
+                        &extracted_view.retained_view_entity,
+                        indirect_parameters_index..(indirect_parameters_index + 1),
+                    );
                     PhaseItemExtraIndex::IndirectParametersIndex {
                         range: indirect_parameters_index..(indirect_parameters_index + 1),
                         batch_set_index: None,
@@ -2664,9 +2666,11 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
                         count_u32,
                     );
 
-                    phase_indirect_parameters_buffers
-                        .buffers
-                        .add_batch_set(indexed, indirect_parameters_index);
+                    phase_indirect_parameters_buffers.buffers.add_batch_set(
+                        indexed,
+                        &extracted_view.retained_view_entity,
+                        indirect_parameters_index..(indirect_parameters_index + 1),
+                    );
 
                     PhaseItemExtraIndex::IndirectParametersIndex {
                         range: indirect_parameters_index..(indirect_parameters_index + 1),

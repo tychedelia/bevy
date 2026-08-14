@@ -1091,7 +1091,9 @@ impl DirtySpecializations {
         view: RetainedViewEntity,
         classes: &'a [&'a RenderVisibleEntitiesClass],
         last_frame_view_pending_queues: &'a HashSet<(Entity, MainEntity)>,
+        mesh_instances_queued_this_iteration_scratch_space: &'a mut MainEntityHashSet,
     ) -> impl Iterator<Item = (&'a Entity, &'a MainEntity)> {
+        mesh_instances_queued_this_iteration_scratch_space.clear();
         let must_wipe = self.must_wipe_specializations_for_view(view);
         classes
             .iter()
@@ -1131,6 +1133,11 @@ impl DirtySpecializations {
                     }
                 },
             ))
+            // Avoid yielding the same mesh instance twice (which would bin it
+            // twice — illegal); multi-class iteration makes duplicates likely.
+            .filter(|(_, main_entity)| {
+                mesh_instances_queued_this_iteration_scratch_space.insert(**main_entity)
+            })
     }
 }
 
