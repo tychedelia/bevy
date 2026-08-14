@@ -14,6 +14,10 @@ struct RangeWorkItem {
     base_output_or_indirect_parameters_index: u32,
     count: u32,
     cumulative_offset: u32,
+    // Reservations are not contiguous across ranges (ordinary phase items
+    // push work items between range reservations), so each range carries its
+    // own base index into the work item buffer.
+    work_item_base: u32,
 }
 
 @group(0) @binding(0) var<uniform> metadata: RangeUnpackingMetadata;
@@ -40,7 +44,7 @@ fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
 
     let range = ranges[range_idx];
     let i_in_range = global_id - range.cumulative_offset;
-    let work_item_idx = metadata.work_item_base + global_id;
+    let work_item_idx = range.work_item_base + i_in_range;
 
     preprocess_work_items[work_item_idx].input_index =
         range.base_input_index + i_in_range;

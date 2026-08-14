@@ -902,6 +902,7 @@ impl PreprocessWorkItemBuffers {
             base_output_or_indirect_parameters_index,
             count,
             cumulative_offset,
+            work_item_base,
         });
         ranges.total_instance_count += count;
 
@@ -985,6 +986,10 @@ pub struct RangeWorkItem {
     pub count: u32,
     /// Sum of `count` for all earlier ranges in the same buffer.
     pub cumulative_offset: u32,
+    /// Where this range's reserved work-item slots start. Reservations are
+    /// NOT contiguous across ranges: ordinary phase items push work items
+    /// between two `push_range` calls, so each range records its own base.
+    pub work_item_base: u32,
 }
 
 /// Per-(view, phase, indexed-ness) range entries plus bookkeeping for the
@@ -2101,6 +2106,7 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
         );
 
         // Walk through the list of phase items, building up batches as we go.
+        phase.instance_batch_item_indices.clear();
         let mut batch_set: Option<SortedRenderBatchSet<GFBD>> = None;
 
         for current_index in 0..phase.items.len() {
@@ -2171,6 +2177,9 @@ pub fn batch_and_prepare_sorted_render_phase<I, GFBD>(
                     phase.items[current_index].batch_range_and_extra_index_mut();
                 *batch_range = output_base..(output_base + count);
                 *batch_extra_index = extra_index;
+                // One phase item spanning many GPU instances: tell the
+                // renderer to advance a single item after drawing it.
+                phase.instance_batch_item_indices.insert(current_index);
                 continue;
             }
 
@@ -2624,6 +2633,8 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
             }
         }
 
+        if !phase.instance_batches.is_empty() {
+        }
         for (key, bin) in &phase.instance_batches {
             let indexed = key.0.indexed();
 

@@ -31,7 +31,7 @@ mod rangefinder;
 use bevy_app::{App, Plugin};
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::entity::EntityHash;
-use bevy_platform::collections::{hash_map::Entry, HashMap};
+use bevy_platform::collections::{hash_map::Entry, HashMap, HashSet};
 use bevy_utils::default;
 use bytemuck::{Pod, Zeroable};
 pub use draw::*;
@@ -2037,6 +2037,15 @@ where
     /// Items within this render phase that will be automatically removed after
     /// this frame.
     pub transient_items: Vec<(Entity, MainEntity)>,
+    /// Indices (into `items`, post-sort) of GPU-authored instance batch items.
+    ///
+    /// A regular batch of N instances spans N phase items, so the renderer
+    /// advances by `batch_range.len()` after drawing its leader. An instance
+    /// batch is a SINGLE phase item whose `batch_range` covers all its GPU
+    /// instances; advancing by `batch_range.len()` would wrongly skip the
+    /// following unrelated items. The batcher records those item indices here
+    /// each frame so the renderer advances them by one item instead.
+    pub instance_batch_item_indices: HashSet<usize>,
 }
 
 impl<I> Default for SortedRenderPhase<I>
@@ -2047,6 +2056,7 @@ where
         Self {
             items: IndexMap::default(),
             transient_items: vec![],
+            instance_batch_item_indices: HashSet::default(),
         }
     }
 }
@@ -2122,6 +2132,11 @@ where
         view: Entity,
         range: impl RangeBounds<usize>,
     ) -> Result<(), DrawError> {
+        let first_index = match range.start_bound() {
+            core::ops::Bound::Included(&start) => start,
+            core::ops::Bound::Excluded(&start) => start + 1,
+            core::ops::Bound::Unbounded => 0,
+        };
         let items = self
             .items
             .get_range(range)
@@ -2140,7 +2155,17 @@ where
             } else {
                 let draw_function = draw_functions.get_mut(item.draw_function()).unwrap();
                 draw_function.draw(world, render_pass, view, item)?;
-                index += batch_range.len();
+                // A regular batch's leader stands in for `batch_range.len()`
+                // consecutive phase items; an instance batch is one item whose
+                // range spans GPU instances, so advance by a single item.
+                if self
+                    .instance_batch_item_indices
+                    .contains(&(first_index + index))
+                {
+                    index += 1;
+                } else {
+                    index += batch_range.len();
+                }
             }
         }
         Ok(())
