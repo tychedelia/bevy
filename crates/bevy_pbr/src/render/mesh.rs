@@ -781,6 +781,11 @@ bitflags::bitflags! {
         ///
         /// If false, this uses distance from the world-space translation of the
         /// mesh instead.
+        /// Skinned instanced crowds (particle pose pools): the vertex
+        /// shader composes the per-instance transform with the shared
+        /// skeleton pose instead of letting joint matrices fully define
+        /// placement. Set per instance by the particle pack kernel.
+        const SKIN_INSTANCE_COMPOSE       = 1 << 26;
         const AABB_BASED_VISIBILITY_RANGE = 1 << 27;
         /// Disables frustum culling for this mesh.
         ///
@@ -4525,6 +4530,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
         SRes<MeshAllocator>,
         SRes<RenderLightmaps>,
         SRes<MeshMetadataFallbackBuffer>,
+        SRes<RenderAssets<RenderMesh>>,
     );
     type ViewQuery = Has<MotionVectorPrepass>;
     type ItemQuery = ();
@@ -4544,6 +4550,7 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             mesh_allocator,
             lightmaps,
             metadata_fallback_buffer,
+            render_meshes,
         ): SystemParamItem<'w, '_, Self::Param>,
         pass: &mut TrackedRenderPass<'w>,
     ) -> RenderCommandResult {
@@ -4606,7 +4613,24 @@ impl<P: PhaseItem, const I: usize> RenderCommand<P> for SetMeshBindGroup<I> {
             }
         };
 
-        let is_skinned = current_skin_byte_offset.is_some();
+        // Entities without a `SkinnedMesh` component (GPU-instanced batch
+        // entities, or plain draws of a rigged mesh) resolve no skin here,
+        // yet their PIPELINE is skinned whenever the mesh layout carries
+        // joint attributes — specialization keys off the layout. The bind
+        // group must follow the same rule or the two disagree (a wgpu
+        // validation error that kills rendering). So on the storage-buffer
+        // skin path, where the joint matrices are one global array needing
+        // no per-entity dynamic offset, skinned-ness falls back to the mesh
+        // layout itself; per-instance addressing comes from
+        // `MeshInputUniform::current_skin_index`. (Deliberately NOT gated on
+        // batch membership: binned phase items are retained across frames,
+        // so a same-frame batch-map lookup can miss while the item still
+        // draws.)
+        let is_skinned = current_skin_byte_offset.is_some()
+            || (!skins_use_uniform_buffers
+                && render_meshes
+                    .get(mesh_asset_id)
+                    .is_some_and(|mesh| is_skinned(&mesh.layout)));
 
         let lightmap_slab_index = lightmaps
             .render_lightmaps

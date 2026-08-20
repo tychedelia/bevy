@@ -1,3 +1,4 @@
+#import bevy_pbr::mesh_types::MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT
 #import bevy_pbr::{
     prepass_bindings,
     mesh_bindings::mesh,
@@ -86,6 +87,10 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.joint_weights,
         vertex_no_morph.instance_index
     );
+    // Instanced skinned crowds: compose the instance transform (see mesh.wgsl).
+    if ((mesh[vertex_no_morph.instance_index].flags & MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT) != 0u) {
+        world_from_local = mesh_world_from_local * world_from_local;
+    }
 #else // SKINNED
     var world_from_local = mesh_world_from_local;
 #endif // SKINNED

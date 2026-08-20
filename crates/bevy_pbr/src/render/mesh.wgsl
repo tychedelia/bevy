@@ -1,6 +1,7 @@
 #import bevy_pbr::{
     mesh_bindings::mesh,
     mesh_functions,
+    mesh_types::MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT,
     skinning,
     morph::{morph_position, morph_normal, morph_tangent},
     forward_io::{Vertex, UncompressedVertex, VertexOutput, decompress_vertex},
@@ -54,6 +55,11 @@ fn vertex(vertex_no_morph: Vertex) -> VertexOutput {
         vertex.joint_weights,
         vertex_no_morph.instance_index
     );
+    // Instanced skinned crowds: joint matrices carry the (origin-parked)
+    // puppet pose; the instance transform places each body in the world.
+    if ((mesh[vertex_no_morph.instance_index].flags & MESH_FLAGS_SKIN_INSTANCE_COMPOSE_BIT) != 0u) {
+        world_from_local = mesh_world_from_local * world_from_local;
+    }
 #else
     var world_from_local = mesh_world_from_local;
 #endif

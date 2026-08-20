@@ -109,7 +109,15 @@ impl Plugin for GpuInstanceBatchPlugin {
             .add_systems(ExtractSchedule, extract_gpu_batched_mesh_changes)
             .add_systems(
                 Render,
-                prepare_gpu_batched_mesh_reservations.in_set(RenderSystems::PrepareResources),
+                // Must run BEFORE Queue: specialization and phase queuing
+                // read `RenderMeshInstanceBatches` the same frame, so a body
+                // swap refreshed after Queue would leave the queued items'
+                // pipelines disagreeing with the draw-time batch state (a
+                // wgpu bind-group validation error). After the mesh
+                // allocator, so a freshly-loaded mesh has vertex slices.
+                prepare_gpu_batched_mesh_reservations
+                    .in_set(RenderSystems::PrepareAssets)
+                    .after(bevy_render::mesh::allocator::allocate_and_free_meshes),
             );
     }
 
@@ -237,8 +245,25 @@ pub fn prepare_gpu_batched_mesh_reservations(
     }
 
     extracted.added_or_changed.retain(|main_entity, batch| {
-        if reservations.by_entity.contains_key(main_entity) {
-            return false;
+        if let Some(existing) = reservations.by_entity.get(main_entity) {
+            if existing.mesh_asset_id == batch.mesh_asset_id
+                && existing.max_capacity == batch.max_capacity
+            {
+                // Same body, same capacity: the live reservation stands.
+                // (Draw commands re-insert `GpuBatchedMesh3d` every frame,
+                // so this is the hot path.)
+                return false;
+            }
+            // The live batch swapped its body (or resized): the reservation
+            // holds the OLD mesh's vertex/index ranges and
+            // `RenderMeshInstanceBatch` the old asset id, so without a
+            // refresh the entity keeps drawing the old geometry forever.
+            // Release the stale reservation and fall through to re-reserve
+            // with the new mesh.
+            let stale = reservations.by_entity.remove(main_entity).unwrap();
+            input_uniform_buffer.remove_range(stale.input_buffer_base, stale.max_capacity);
+            culling_data_buffer.remove_range(stale.culling_buffer_base, stale.max_capacity);
+            render_mesh_instance_batches.remove(main_entity);
         }
 
         let Some(material_instance) = render_material_instances.instances.get(main_entity) else {

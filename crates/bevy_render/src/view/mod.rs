@@ -954,6 +954,14 @@ impl ViewTarget {
     /// Failing to do so will cause the current main texture information to be lost.
     pub fn post_process_write(&self) -> PostProcessWrite<'_> {
         let old_is_a_main_texture = self.main_texture.fetch_xor(1, Ordering::SeqCst);
+        if std::env::var("PROCESSING_TRACE_VT").is_ok() {
+            eprintln!(
+                "VT flip: old_main={} a={:?} b={:?}",
+                if old_is_a_main_texture == 0 { "a" } else { "b" },
+                self.main_textures.a.texture.texture.id(),
+                self.main_textures.b.texture.texture.id()
+            );
+        }
         // if the old main texture is a, then the post processing must write from a to b
         if old_is_a_main_texture == 0 {
             self.main_textures.b.mark_as_cleared();
@@ -1308,8 +1316,15 @@ pub fn prepare_view_targets(
     )>,
     view_target_attachments: Res<ViewTargetAttachments>,
     mut main_texture_atomics: Local<HashMap<MainTextureKey, Weak<AtomicUsize>>>,
+    mut pinned_main_textures: Local<HashMap<MainTextureKey, PinnedMainTextures>>,
 ) {
     main_texture_atomics.retain(|_, weak| weak.strong_count() > 0);
+    // Pinned entries age ONLY on runs that actually prepared cameras — the
+    // render app also runs for camera-less updates (compute dispatch pumps),
+    // and those must not count toward staleness or the pin dies the same
+    // eviction death it exists to prevent.
+    let mut pinned_touched = <std::collections::HashSet<MainTextureKey>>::default();
+    let mut any_camera = false;
 
     let mut textures = <HashMap<_, _>>::default();
     for (entity, camera, view, texture_usage, msaa) in cameras.iter() {
@@ -1331,6 +1346,7 @@ pub fn prepare_view_targets(
             continue;
         }
 
+        any_camera = true;
         let main_texture_format = view.target_format;
 
         let clear_color = match camera.clear_color {
@@ -1369,37 +1385,86 @@ pub fn prepare_view_targets(
                     _ => &[],
                 },
             };
-            let a = texture_cache.get(
-                &render_device,
-                TextureDescriptor {
-                    label: Some("main_texture_a"),
-                    ..descriptor
-                },
-            );
-            let b = texture_cache.get(
-                &render_device,
-                TextureDescriptor {
-                    label: Some("main_texture_b"),
-                    ..descriptor
-                },
-            );
-            let sampled = if msaa.samples() > 1 {
-                let sampled = texture_cache.get(
+            // A camera with `ClearColorConfig::None` ACCUMULATES: its main
+            // textures carry last frame's content forward and are therefore
+            // state, not per-frame scratch. They must not rotate through the
+            // TextureCache — any app update that renders no cameras (e.g. a
+            // compute dispatch pump) still ages the cache, and two such
+            // updates in a row silently evict and reallocate the canvas,
+            // destroying persistence. Pin them in a dedicated store instead.
+            let persistent = clear_color.is_none();
+            let (a, b, sampled) = if persistent {
+                pinned_touched.insert(key.clone());
+                let entry = pinned_main_textures.entry(key.clone());
+                let make = || {
+                    let mk = |label: &'static str, samples: u32, usage: TextureUsages| {
+                        let texture = render_device.create_texture(&TextureDescriptor {
+                            label: Some(label),
+                            sample_count: samples,
+                            usage,
+                            ..descriptor
+                        });
+                        let default_view = texture.create_view(&Default::default());
+                        CachedTexture {
+                            texture,
+                            default_view,
+                        }
+                    };
+                    PinnedMainTextures {
+                        age: 0,
+                        size: target_size.to_extents(),
+                        a: mk("main_texture_a_pinned", 1, texture_usage.0),
+                        b: mk("main_texture_b_pinned", 1, texture_usage.0),
+                        sampled: (msaa.samples() > 1).then(|| {
+                            mk(
+                                "main_texture_sampled_pinned",
+                                msaa.samples(),
+                                TextureUsages::RENDER_ATTACHMENT,
+                            )
+                        }),
+                    }
+                };
+                let pinned = match entry {
+                    Entry::Occupied(mut e) => {
+                        if e.get().size != target_size.to_extents() {
+                            *e.get_mut() = make();
+                        }
+                        e.into_mut()
+                    }
+                    Entry::Vacant(e) => e.insert(make()),
+                };
+                (pinned.a.clone(), pinned.b.clone(), pinned.sampled.clone())
+            } else {
+                let a = texture_cache.get(
                     &render_device,
                     TextureDescriptor {
-                        label: Some("main_texture_sampled"),
-                        size: target_size.to_extents(),
-                        mip_level_count: 1,
-                        sample_count: msaa.samples(),
-                        dimension: TextureDimension::D2,
-                        format: main_texture_format,
-                        usage: TextureUsages::RENDER_ATTACHMENT,
-                        view_formats: descriptor.view_formats,
+                        label: Some("main_texture_a"),
+                        ..descriptor
                     },
                 );
-                Some(sampled)
-            } else {
-                None
+                let b = texture_cache.get(
+                    &render_device,
+                    TextureDescriptor {
+                        label: Some("main_texture_b"),
+                        ..descriptor
+                    },
+                );
+                let sampled = (msaa.samples() > 1).then(|| {
+                    texture_cache.get(
+                        &render_device,
+                        TextureDescriptor {
+                            label: Some("main_texture_sampled"),
+                            size: target_size.to_extents(),
+                            mip_level_count: 1,
+                            sample_count: msaa.samples(),
+                            dimension: TextureDimension::D2,
+                            format: main_texture_format,
+                            usage: TextureUsages::RENDER_ATTACHMENT,
+                            view_formats: descriptor.view_formats,
+                        },
+                    )
+                });
+                (a, b, sampled)
             };
             // re-use the same atomics frame to frame for views with the same main texture
             // to ensure post process writes persist through msaa writeback
@@ -1423,6 +1488,15 @@ pub fn prepare_view_targets(
             main_texture: main_texture.clone(),
         };
 
+        if std::env::var("PROCESSING_TRACE_VT").is_ok() {
+            eprintln!(
+                "VT prepare: atomic={} a={:?} b={:?} sampled={:?}",
+                main_textures.main_texture.load(core::sync::atomic::Ordering::SeqCst),
+                main_textures.a.texture.texture.id(),
+                main_textures.b.texture.texture.id(),
+                main_textures.a.resolve_target.as_ref().map(|t| t.texture.id()),
+            );
+        }
         commands.entity(entity).insert(ViewTarget {
             main_texture: main_textures.main_texture.clone(),
             main_textures,
@@ -1431,4 +1505,30 @@ pub fn prepare_view_targets(
             compositing_space: camera.compositing_space,
         });
     }
+    if any_camera {
+        pinned_main_textures.retain(|key, pinned| {
+            if pinned_touched.contains(key) {
+                pinned.age = 0;
+                true
+            } else {
+                pinned.age += 1;
+                // ~10s at 60fps of camera-bearing runs: long enough that no
+                // legitimate cadence trips it, short enough to reclaim
+                // destroyed canvases.
+                pinned.age < 600
+            }
+        });
+    }
+}
+
+/// Main textures for persistent (non-clearing) cameras, held outside the
+/// [`TextureCache`] so canvas accumulation survives arbitrary app-update
+/// cadences. See the comment at the allocation site in
+/// [`prepare_view_targets`].
+pub struct PinnedMainTextures {
+    age: usize,
+    size: wgpu::Extent3d,
+    a: CachedTexture,
+    b: CachedTexture,
+    sampled: Option<CachedTexture>,
 }
