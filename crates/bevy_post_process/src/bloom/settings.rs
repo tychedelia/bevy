@@ -231,9 +231,9 @@ impl ExtractComponent<RenderApp> for Bloom {
 
     fn extract_component((bloom, camera): QueryItem<'_, '_, Self::QueryData>) -> Option<Self::Out> {
         match (
-            camera.physical_viewport_rect(),
-            camera.physical_viewport_size(),
-            camera.physical_target_size(),
+            camera.physical_render_viewport_rect(),
+            camera.physical_render_viewport_size(),
+            camera.physical_render_size(),
             camera.is_active,
         ) {
             (Some(URect { min: origin, .. }), Some(size), Some(target_size), true)

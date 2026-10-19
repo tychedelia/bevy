@@ -112,8 +112,8 @@ fn prepare_msaa_writeback_pipelines(
     for (_, view_target, camera, _) in view_targets.iter() {
         first_writer_indices
             .entry(view_target.main_texture().id())
-            .and_modify(|first| *first = (*first).min(camera.sorted_camera_index_for_target))
-            .or_insert(camera.sorted_camera_index_for_target);
+            .and_modify(|first| *first = (*first).min(camera.sorted_camera_index))
+            .or_insert(camera.sorted_camera_index);
     }
 
     for (entity, view_target, camera, msaa) in view_targets.iter() {
@@ -128,9 +128,9 @@ fn prepare_msaa_writeback_pipelines(
             // the real content
             MsaaWriteback::Auto => {
                 matches!(camera.clear_color, ClearColorConfig::None)
-                    || (camera.viewport.is_none()
+                    || (camera.render_viewport.is_none()
                         && first_writer_indices[&view_target.main_texture().id()]
-                            < camera.sorted_camera_index_for_target)
+                            < camera.sorted_camera_index)
             }
             MsaaWriteback::Always => true,
         };
@@ -141,6 +141,7 @@ fn prepare_msaa_writeback_pipelines(
                 samples: msaa.samples(),
                 blend_state: None,
                 source_space: None,
+                filter: FilterMode::Nearest,
             };
 
             let pipeline = pipelines.specialize(&pipeline_cache, &blit_pipeline, key);

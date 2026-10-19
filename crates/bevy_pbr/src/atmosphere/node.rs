@@ -194,7 +194,7 @@ pub fn render_sky(
     let pass_span = diagnostics.pass_span(&mut render_sky_pass, "render_sky");
 
     if let Some(viewport) =
-        Viewport::from_viewport_and_override(camera.viewport.as_ref(), resolution_override)
+        Viewport::from_viewport_and_override(camera.render_viewport.as_ref(), resolution_override)
     {
         render_sky_pass.set_viewport(
             viewport.physical_position.x as f32,

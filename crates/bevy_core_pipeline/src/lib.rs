@@ -13,6 +13,7 @@ pub mod deferred;
 pub mod fullscreen_material;
 pub mod mip_generation;
 pub mod oit;
+pub mod post_process_camera;
 pub mod prepass;
 pub mod schedule;
 pub mod skybox;
@@ -22,7 +23,9 @@ pub mod upscaling;
 use bevy_ecs::schedule::IntoScheduleConfigs;
 pub use bevy_light::Skybox;
 pub use fullscreen_vertex_shader::FullscreenShader;
-pub use schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems};
+pub use schedule::{
+    Core2d, Core2dSystems, Core3d, Core3dSystems, CorePostProcess, CorePostProcessSystems,
+};
 
 mod fullscreen_vertex_shader;
 
@@ -32,8 +35,8 @@ use crate::schedule::{
 use crate::{
     blit::BlitPlugin, core_2d::Core2dPlugin, core_3d::Core3dPlugin,
     deferred::copy_lighting_id::CopyDeferredLightingIdPlugin, mip_generation::MipGenerationPlugin,
-    prepass::BackgroundMotionVectorsPlugin, tonemapping::TonemappingPlugin,
-    upscaling::UpscalingPlugin,
+    post_process_camera::PostProcessCameraPlugin, prepass::BackgroundMotionVectorsPlugin,
+    tonemapping::TonemappingPlugin, upscaling::UpscalingPlugin,
 };
 use bevy_app::{App, Plugin};
 use bevy_render::renderer::{RenderGraph, RenderGraphSystems};
@@ -49,15 +52,20 @@ impl Plugin for CorePipelinePlugin {
         load_shader_library!(app, "fullscreen_vertex_shader.wesl");
         load_shader_library!(app, "tonemapping.wesl");
 
-        app.add_plugins((Core2dPlugin, Core3dPlugin, CopyDeferredLightingIdPlugin))
-            .add_plugins((
-                BlitPlugin,
-                TonemappingPlugin,
-                UpscalingPlugin,
-                OrderIndependentTransparencyPlugin,
-                MipGenerationPlugin,
-                BackgroundMotionVectorsPlugin,
-            ));
+        app.add_plugins((
+            Core2dPlugin,
+            Core3dPlugin,
+            PostProcessCameraPlugin,
+            CopyDeferredLightingIdPlugin,
+        ))
+        .add_plugins((
+            BlitPlugin,
+            TonemappingPlugin,
+            UpscalingPlugin,
+            OrderIndependentTransparencyPlugin,
+            MipGenerationPlugin,
+            BackgroundMotionVectorsPlugin,
+        ));
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else {
             return;
         };

@@ -52,7 +52,7 @@ pub fn prepare_core_3d_transmission_textures(
             continue;
         };
 
-        let Some(physical_target_size) = camera.physical_target_size else {
+        let Some(physical_render_size) = camera.physical_render_size else {
             continue;
         };
 
@@ -69,14 +69,14 @@ pub fn prepare_core_3d_transmission_textures(
         }
 
         let cached_texture = textures
-            .entry(camera.target.clone())
+            .entry((camera.target.clone(), physical_render_size))
             .or_insert_with(|| {
                 let usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
 
                 let descriptor = TextureDescriptor {
                     label: Some("view_transmission_texture"),
                     // The size of the transmission texture
-                    size: physical_target_size.to_extents(),
+                    size: physical_render_size.to_extents(),
                     mip_level_count: 1,
                     sample_count: 1, // No need for MSAA, as we'll only copy the main texture here
                     dimension: TextureDimension::D2,

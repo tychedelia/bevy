@@ -2,7 +2,7 @@ use crate::primitives::Frustum;
 
 use super::{
     visibility::{Visibility, VisibleEntities},
-    ClearColorConfig, MsaaWriteback,
+    ClearColorConfig, CompositingSpace, MsaaWriteback,
 };
 use bevy_asset::Handle;
 use bevy_derive::Deref;
@@ -18,7 +18,7 @@ use bevy_window::{NormalizedWindowRef, WindowRef};
 use core::ops::Range;
 use derive_more::derive::From;
 use thiserror::Error;
-use wgpu_types::{BlendState, TextureUsages};
+use wgpu_types::{BlendState, TextureFormat};
 
 /// Render viewport configuration for the [`Camera`] component.
 ///
@@ -219,6 +219,9 @@ impl Default for RenderTargetInfo {
 pub struct ComputedCameraValues {
     pub clip_from_view: Mat4,
     pub target_info: Option<RenderTargetInfo>,
+    /// The physical size the camera renders at, when its [`MainTexture`] makes that differ from
+    /// the size of its [`RenderTarget`].
+    pub render_size: Option<UVec2>,
     // size of the `Viewport`
     pub old_viewport_size: Option<UVec2>,
     pub old_sub_camera_view: Option<SubCameraView>,
@@ -374,14 +377,7 @@ pub enum ViewportConversionError {
 /// [`Camera3d`]: crate::Camera3d
 #[derive(Component, Debug, Reflect, Clone)]
 #[reflect(Component, Default, Debug, Clone)]
-#[require(
-    Frustum,
-    CameraMainTextureUsages,
-    VisibleEntities,
-    Transform,
-    Visibility,
-    RenderTarget
-)]
+#[require(Frustum, VisibleEntities, Transform, Visibility, RenderTarget)]
 pub struct Camera {
     /// If set, this camera will render to the given [`Viewport`] rectangle within the configured [`RenderTarget`].
     pub viewport: Option<Viewport>,
@@ -515,6 +511,62 @@ impl Camera {
     #[inline]
     pub fn physical_target_size(&self) -> Option<UVec2> {
         self.computed.target_info.as_ref().map(|t| t.physical_size)
+    }
+
+    /// The physical size this camera renders at, ignoring custom `viewport` configuration.
+    ///
+    /// This is [`Camera::physical_target_size`], unless the camera has a [`CameraMainTexture`]
+    /// whose [`MainTexture::size`] gives it another size.
+    /// For logic that requires the full physical size of the [`RenderTarget`], prefer
+    /// [`Camera::physical_target_size`].
+    #[inline]
+    pub fn physical_render_size(&self) -> Option<UVec2> {
+        let target_size = self.physical_target_size()?;
+        if target_size.x == 0 || target_size.y == 0 {
+            return Some(target_size);
+        }
+        Some(self.computed.render_size.unwrap_or(target_size))
+    }
+
+    /// The physical viewport rect, scaled to [`Camera::physical_render_size`].
+    pub fn physical_render_viewport_rect(&self) -> Option<URect> {
+        let rect = self.physical_viewport_rect()?;
+        let target_size = self.physical_target_size()?;
+        let render_size = self.physical_render_size()?;
+        if render_size == target_size {
+            return Some(rect);
+        }
+        if render_size.x == 0 || render_size.y == 0 {
+            return Some(URect::default());
+        }
+        let scale = render_size.as_vec2() / target_size.as_vec2();
+        // Rounding both corners keeps neighboring viewports adjacent.
+        let min = (rect.min.as_vec2() * scale)
+            .round()
+            .as_uvec2()
+            .min(render_size - 1);
+        let max = (rect.max.as_vec2() * scale)
+            .round()
+            .as_uvec2()
+            .clamp(min + 1, render_size);
+        Some(URect { min, max })
+    }
+
+    /// The physical viewport size, scaled to [`Camera::physical_render_size`].
+    #[inline]
+    pub fn physical_render_viewport_size(&self) -> Option<UVec2> {
+        self.physical_render_viewport_rect().map(|rect| rect.size())
+    }
+
+    /// The `viewport`, scaled to [`Camera::physical_render_size`].
+    pub fn render_viewport(&self) -> Option<Viewport> {
+        let viewport = self.viewport.as_ref()?;
+        let rect = self.physical_render_viewport_rect()?;
+        Some(Viewport {
+            physical_position: rect.min,
+            physical_size: rect.size(),
+            depth: viewport.depth.clone(),
+        })
     }
 
     #[inline]
@@ -1042,39 +1094,150 @@ impl Default for RenderTarget {
     }
 }
 
-/// This component lets you control the [`TextureUsages`] field of the main texture generated for the camera
-#[derive(Component, Clone, Copy, Reflect)]
-#[reflect(opaque)]
-#[reflect(Component, Default, Clone)]
-pub struct CameraMainTextureUsages(pub TextureUsages);
+/// A main texture that cameras render into before their output is written to a [`RenderTarget`].
+///
+/// Cameras normally get a main texture chosen for them, and cameras on the same render target
+/// share one when their settings match. Spawning this component on its own entity and
+/// pointing cameras at it with [`CameraMainTexture`] makes that choice explicit. Every camera
+/// that points at the entity renders into the same texture, and the texture keeps its contents
+/// between frames.
+///
+/// Cameras that share a main texture must render at the same size. A camera whose size differs
+/// from the lowest [`Camera::order`] camera on the texture is not rendered. Each camera keeps its
+/// own `Msaa` setting.
+#[derive(Component, Default, Clone, Copy, Debug, PartialEq, Reflect)]
+#[reflect(Component, Default, Clone, Debug, PartialEq)]
+pub struct MainTexture {
+    /// The size of the texture.
+    pub size: MainTextureSize,
+    /// The format of the texture.
+    ///
+    /// `None` uses the format that the lowest [`Camera::order`] camera on the texture would have
+    /// without a [`CameraMainTexture`], which depends on [`Hdr`](crate::Hdr) and the render
+    /// target.
+    pub format: Option<TextureFormat>,
+    /// The space the cameras composite in.
+    ///
+    /// `None` uses the [`CompositingSpace`] of each camera.
+    pub compositing_space: Option<CompositingSpace>,
+    /// How the texture is sampled when it is scaled to fit the [`RenderTarget`]. It has no
+    /// effect when the texture and the render target have the same size.
+    pub filter: MainTextureFilter,
+}
 
-impl Default for CameraMainTextureUsages {
-    fn default() -> Self {
-        Self(
-            TextureUsages::RENDER_ATTACHMENT
-                | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::COPY_SRC,
-        )
+/// The size of a [`MainTexture`].
+///
+/// When the size differs from the size of the [`RenderTarget`], the camera renders at the size
+/// of the texture and its output is scaled to fit the render target. A [`Viewport`] still
+/// describes a region of the render target, and is scaled the same way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Reflect)]
+#[reflect(Default, Clone, Debug, PartialEq)]
+pub enum MainTextureSize {
+    /// The physical size of the camera's [`RenderTarget`].
+    #[default]
+    Target,
+    /// The physical size of the camera's [`RenderTarget`] multiplied by a factor. `0.5` renders
+    /// at half the width and half the height.
+    Scale(f32),
+    /// A size in physical pixels.
+    Fixed(UVec2),
+}
+
+impl MainTextureSize {
+    /// The size of the texture for a render target of the given physical size.
+    /// `max_dimension` is the largest width or height the device supports.
+    ///
+    /// A [`MainTextureSize::Scale`] that would exceed `max_dimension` is reduced to fit, keeping
+    /// its aspect ratio.
+    pub fn resolve(
+        self,
+        target_size: UVec2,
+        max_dimension: u32,
+    ) -> Result<UVec2, MainTextureSizeError> {
+        match self {
+            MainTextureSize::Target => Ok(target_size),
+            MainTextureSize::Scale(scale) => {
+                if !scale.is_finite() || scale <= 0.0 {
+                    return Err(MainTextureSizeError::InvalidScale(scale));
+                }
+                let size = target_size.as_vec2() * scale;
+                let fit = (max_dimension as f32 / size.max_element()).min(1.0);
+                Ok((size * fit)
+                    .round()
+                    .as_uvec2()
+                    .clamp(UVec2::ONE, UVec2::splat(max_dimension)))
+            }
+            MainTextureSize::Fixed(size) => {
+                if size.x == 0 || size.y == 0 {
+                    Err(MainTextureSizeError::ZeroSize(size))
+                } else if size.max_element() > max_dimension {
+                    Err(MainTextureSizeError::TooLarge {
+                        size,
+                        max_dimension,
+                    })
+                } else {
+                    Ok(size)
+                }
+            }
+        }
     }
 }
 
-impl CameraMainTextureUsages {
-    pub fn with(mut self, usages: TextureUsages) -> Self {
-        self.0 |= usages;
-        self
-    }
+/// A [`MainTextureSize`] that can't be used.
+#[derive(Debug, Clone, Copy, PartialEq, Error)]
+pub enum MainTextureSizeError {
+    /// The scale isn't a positive, finite number.
+    #[error("the scale {0} is not a positive, finite number")]
+    InvalidScale(f32),
+    /// The size is zero on an axis.
+    #[error("the size {0} is zero on an axis")]
+    ZeroSize(UVec2),
+    /// The size is larger than the device supports.
+    #[error("the size {size} is larger than the {max_dimension} pixels the device supports")]
+    TooLarge {
+        /// The requested size.
+        size: UVec2,
+        /// The largest width or height the device supports.
+        max_dimension: u32,
+    },
 }
+
+/// How a [`MainTexture`] is sampled when it is scaled to fit the [`RenderTarget`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Default, Clone, Debug, PartialEq, Hash)]
+pub enum MainTextureFilter {
+    /// Each output pixel takes the nearest texture pixel.
+    Nearest,
+    /// Each output pixel blends the surrounding texture pixels.
+    #[default]
+    Linear,
+}
+
+/// Makes a camera render into the [`MainTexture`] on the given entity.
+#[derive(Component, FromTemplate, Clone, Copy, Debug, PartialEq, Eq, Hash, Reflect)]
+#[reflect(Component, Clone, Debug, PartialEq, Hash)]
+#[relationship(relationship_target = MainTextureCameras)]
+pub struct CameraMainTexture(pub Entity);
+
+/// The cameras that render into a [`MainTexture`].
+#[derive(Component, Default, Debug, Reflect)]
+#[reflect(Component, Default, Debug)]
+#[relationship_target(relationship = CameraMainTexture)]
+#[require(MainTexture)]
+pub struct MainTextureCameras(Vec<Entity>);
 
 #[cfg(test)]
 mod test {
-    use bevy_math::{Vec2, Vec3};
+    use bevy_ecs::hierarchy::Children;
+    use bevy_math::{UVec2, Vec2, Vec3};
     use bevy_scene::bsn;
     use bevy_transform::components::GlobalTransform;
     use bevy_window::WindowRef;
 
     use crate::{
-        Camera, OrthographicProjection, PerspectiveProjection, Projection, RenderTarget,
-        RenderTargetInfo, Viewport,
+        Camera, CameraMainTexture, MainTexture, MainTextureCameras, MainTextureSize,
+        MainTextureSizeError, OrthographicProjection, PerspectiveProjection, Projection,
+        RenderTarget, RenderTargetInfo, Viewport,
     };
 
     fn make_camera(mut projection: Projection, physical_size: Vec2) -> Camera {
@@ -1156,5 +1319,128 @@ mod test {
         let _ = bsn! {
             RenderTarget::Window(WindowRef::default())
         };
+    }
+
+    #[test]
+    fn main_texture_in_bsn() {
+        let _ = bsn! {
+            #Texture
+            MainTexture { size: MainTextureSize::Scale(0.5) }
+            MainTextureCameras [
+                Camera
+            ]
+        };
+        let _ = bsn! {
+            #Texture
+            MainTexture
+            Children [
+                Camera
+                CameraMainTexture(#Texture)
+            ]
+        };
+    }
+
+    #[test]
+    fn main_texture_size_resolves() {
+        let target = UVec2::new(1280, 720);
+        let max = 8192;
+        assert_eq!(MainTextureSize::Target.resolve(target, max), Ok(target));
+        assert_eq!(
+            MainTextureSize::Scale(0.5).resolve(target, max),
+            Ok(UVec2::new(640, 360))
+        );
+        // A scale too small for one pixel still gives one.
+        assert_eq!(
+            MainTextureSize::Scale(0.0001).resolve(target, max),
+            Ok(UVec2::ONE)
+        );
+        // An oversized scale is reduced to fit and keeps its aspect ratio.
+        assert_eq!(
+            MainTextureSize::Scale(16.0).resolve(target, max),
+            Ok(UVec2::new(8192, 4608))
+        );
+        for scale in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            assert!(matches!(
+                MainTextureSize::Scale(scale).resolve(target, max),
+                Err(MainTextureSizeError::InvalidScale(_))
+            ));
+        }
+        assert_eq!(
+            MainTextureSize::Fixed(UVec2::new(320, 180)).resolve(target, max),
+            Ok(UVec2::new(320, 180))
+        );
+        assert!(matches!(
+            MainTextureSize::Fixed(UVec2::new(320, 0)).resolve(target, max),
+            Err(MainTextureSizeError::ZeroSize(_))
+        ));
+        assert!(matches!(
+            MainTextureSize::Fixed(UVec2::new(9000, 100)).resolve(target, max),
+            Err(MainTextureSizeError::TooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn render_viewport_scales_with_the_render_size() {
+        let target = UVec2::new(1280, 720);
+        let camera = |viewport: Option<(UVec2, UVec2)>| {
+            let mut camera = Camera {
+                viewport: viewport.map(|(physical_position, physical_size)| Viewport {
+                    physical_position,
+                    physical_size,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            camera.computed.target_info = Some(RenderTargetInfo {
+                physical_size: target,
+                scale_factor: 1.0,
+            });
+            camera
+        };
+        let rect = |camera: &Camera| camera.physical_render_viewport_rect().unwrap();
+
+        // Without a render size the viewport is unchanged.
+        let unscaled = camera(Some((UVec2::new(10, 20), UVec2::new(30, 40))));
+        assert_eq!(unscaled.physical_render_size(), Some(target));
+        assert_eq!(rect(&unscaled), unscaled.physical_viewport_rect().unwrap());
+
+        let render_size = UVec2::new(320, 180);
+        let mut full = camera(None);
+        full.computed.render_size = Some(render_size);
+        assert_eq!(full.physical_render_size(), Some(render_size));
+        assert_eq!(rect(&full).min, UVec2::ZERO);
+        assert_eq!(rect(&full).max, render_size);
+        assert!(full.render_viewport().is_none());
+
+        // Split screen halves stay adjacent and cover the texture.
+        let mut left = camera(Some((UVec2::ZERO, UVec2::new(641, 720))));
+        let mut right = camera(Some((UVec2::new(641, 0), UVec2::new(639, 720))));
+        left.computed.render_size = Some(render_size);
+        right.computed.render_size = Some(render_size);
+        assert_eq!(rect(&left).min, UVec2::ZERO);
+        assert_eq!(rect(&right).min.x, rect(&left).max.x);
+        assert_eq!(rect(&right).max, render_size);
+
+        // A render target without any pixels keeps its size.
+        let mut empty = camera(None);
+        empty.computed.target_info = Some(RenderTargetInfo {
+            physical_size: UVec2::ZERO,
+            scale_factor: 1.0,
+        });
+        empty.computed.render_size = Some(render_size);
+        assert_eq!(empty.physical_render_size(), Some(UVec2::ZERO));
+        assert_eq!(empty.physical_render_viewport_size(), Some(UVec2::ZERO));
+
+        // A viewport that overhangs the render target stays inside the texture.
+        let mut overhanging = camera(Some((UVec2::new(1000, 600), UVec2::new(1000, 1000))));
+        overhanging.computed.render_size = Some(render_size);
+        assert_eq!(rect(&overhanging).min, UVec2::new(250, 150));
+        assert_eq!(rect(&overhanging).max, render_size);
+
+        // A viewport smaller than one rendered pixel still gets one.
+        let mut tiny = camera(Some((UVec2::new(1279, 719), UVec2::ONE)));
+        tiny.computed.render_size = Some(render_size);
+        assert_eq!(rect(&tiny).min, UVec2::new(319, 179));
+        assert_eq!(tiny.render_viewport().unwrap().physical_size, UVec2::ONE);
     }
 }

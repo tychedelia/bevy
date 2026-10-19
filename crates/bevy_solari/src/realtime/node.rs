@@ -112,6 +112,11 @@ pub fn solari_lighting(
         view_dlss_rr_textures,
     ) = view.into_inner();
 
+    // See `request_main_texture_usages`.
+    if view_target.main_texture_format() != TextureFormat::Rgba16Float {
+        return;
+    }
+
     let Some(pipelines) = solari_pipelines else {
         return;
     };

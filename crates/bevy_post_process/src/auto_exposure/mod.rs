@@ -30,7 +30,7 @@ use crate::auto_exposure::{
     compensation_curve::GpuAutoExposureCompensationCurve, pipeline::init_auto_exposure_pipeline,
 };
 use bevy_core_pipeline::{
-    schedule::{Core3d, Core3dSystems},
+    schedule::{Core3d, Core3dSystems, CorePostProcess, CorePostProcessSystems},
     tonemapping::tonemapping,
 };
 
@@ -82,6 +82,12 @@ impl Plugin for AutoExposurePlugin {
                 auto_exposure
                     .before(tonemapping)
                     .in_set(Core3dSystems::PostProcess),
+            )
+            .add_systems(
+                CorePostProcess,
+                auto_exposure
+                    .before(tonemapping)
+                    .in_set(CorePostProcessSystems::PostProcess),
             );
     }
 }

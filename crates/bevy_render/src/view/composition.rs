@@ -1,12 +1,14 @@
 //! Resolution of per-camera [`CompositingSpace`] requests.
 //!
 //! Cameras that render to the same target share main textures when their
-//! settings match, and composite over each other in that texture. Later
+//! settings match, or when they point at the same
+//! [`MainTexture`](bevy_camera::MainTexture), and composite over each other in
+//! that texture. Later
 //! passes need to know how the texture is encoded, so the whole stack has to
 //! agree on one compositing space. This module picks that space each frame
 //! and stores it in each view's [`ResolvedCompositingSpace`].
 
-use bevy_camera::{Camera2d, CameraMainTextureUsages, ClearColorConfig, CompositingSpace};
+use bevy_camera::{Camera2d, ClearColorConfig, CompositingSpace};
 use bevy_ecs::{
     component::Component,
     entity::{Entity, EntityHashMap},
@@ -19,7 +21,7 @@ use bevy_platform::collections::HashMap;
 use wgpu::TextureFormat;
 
 use super::{main_texture_key, ExtractedView, MainTextureKey, Msaa};
-use crate::camera::ExtractedCamera;
+use crate::camera::{ExtractedCamera, ExtractedCameraMainTexture};
 
 /// The compositing space a camera view actually uses this frame, written by
 /// [`resolve_composition_spaces`].
@@ -50,7 +52,7 @@ pub struct ResolveCompositingSpaces;
 /// Whether a camera composites over the previous camera's output and covers
 /// the whole render target. Decides membership in a compositing stack.
 pub fn composites_fullscreen(camera: &ExtractedCamera) -> bool {
-    matches!(camera.clear_color, ClearColorConfig::None) && camera.viewport.is_none()
+    matches!(camera.clear_color, ClearColorConfig::None) && camera.render_viewport.is_none()
 }
 
 /// Whether a main texture format can store the negative values that Oklab
@@ -72,8 +74,8 @@ pub fn resolve_composition_spaces(
         Entity,
         &ExtractedCamera,
         &ExtractedView,
-        &CameraMainTextureUsages,
         &Msaa,
+        Option<&ExtractedCameraMainTexture>,
         Has<Camera2d>,
         &mut ResolvedCompositingSpace,
     )>,
@@ -93,12 +95,12 @@ pub fn resolve_composition_spaces(
     let inputs: Vec<(MainTextureKey, SpaceInput)> = views
         .iter()
         .map(
-            |(entity, camera, view, texture_usage, msaa, is_camera_2d, resolved)| {
+            |(entity, camera, view, msaa, main_texture, is_camera_2d, resolved)| {
                 (
-                    main_texture_key(camera, view, texture_usage, *msaa),
+                    main_texture_key(camera, view, *msaa, main_texture),
                     SpaceInput {
                         entity,
-                        sorted_index: camera.sorted_camera_index_for_target,
+                        sorted_index: camera.sorted_camera_index,
                         // Extraction seeded each component with the camera's
                         // own request.
                         request: resolved.0,
@@ -140,7 +142,8 @@ pub fn resolve_composition_spaces(
                 warn_once!(
                     "CompositingSpace::Oklab on views {entities:?} resolves to linear because \
                     the main texture format cannot store the signed Oklab channels. Add the Hdr \
-                    component to the camera to get a main texture format that can."
+                    component to the camera, or set a format on its MainTexture, to get a main \
+                    texture format that can."
                 );
             }
         }
@@ -150,14 +153,14 @@ pub fn resolve_composition_spaces(
 /// Per-view input to [`resolve_spaces`].
 struct SpaceInput {
     entity: Entity,
-    /// The camera's position in its render target's sorted camera order.
+    /// The camera's position in the sorted camera order.
     sorted_index: usize,
     request: Option<CompositingSpace>,
     composites_fullscreen: bool,
     is_camera_2d: bool,
     /// Whether the main texture format stores signed values, see
-    /// [`stores_signed_values`]. The format is part of the texture key, so
-    /// this is the same for every view in a group.
+    /// [`stores_signed_values`]. Every view in a group has the same main
+    /// texture format, so this is the same for every view in a group.
     signed_storage: bool,
 }
 
@@ -311,7 +314,6 @@ fn resolve_members(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wgpu::TextureUsages;
 
     const SRGB: Option<CompositingSpace> = Some(CompositingSpace::Srgb);
     const OKLAB: Option<CompositingSpace> = Some(CompositingSpace::Oklab);
@@ -332,12 +334,7 @@ mod tests {
     ) -> (MainTextureKey, SpaceInput) {
         let msaa = [Msaa::Off, Msaa::Sample4][texture];
         (
-            (
-                None,
-                TextureUsages::RENDER_ATTACHMENT,
-                TextureFormat::Rgba16Float,
-                msaa,
-            ),
+            MainTextureKey::Implicit(None, TextureFormat::Rgba16Float, msaa),
             SpaceInput {
                 entity: entity(raw),
                 sorted_index: index,

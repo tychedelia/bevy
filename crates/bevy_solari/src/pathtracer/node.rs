@@ -75,6 +75,11 @@ pub fn pathtracer(
     let (pathtracer_settings, accumulation_texture, camera, view_target, view_uniform_offset) =
         view.into_inner();
 
+    // See `request_main_texture_usages`.
+    if view_target.main_texture_format() != TextureFormat::Rgba16Float {
+        return;
+    }
+
     let Some(pathtracer_pipelines) = pathtracer_pipelines else {
         return;
     };
@@ -82,7 +87,7 @@ pub fn pathtracer(
     let (Some(pipeline), Some(scene_bind_group), Some(viewport), Some(view_uniforms_binding)) = (
         pipeline_cache.get_compute_pipeline(pathtracer_pipelines.pipeline),
         &scene_bindings.bind_group,
-        camera.physical_viewport_size,
+        camera.physical_render_viewport_size,
         view_uniforms.uniforms.binding(),
     ) else {
         return;

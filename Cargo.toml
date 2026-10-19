@@ -4942,6 +4942,17 @@ category = "Camera"
 wasm = true
 
 [[example]]
+name = "main_texture"
+path = "examples/camera/main_texture.rs"
+doc-scrape-examples = true
+
+[package.metadata.example.main_texture]
+name = "Main texture"
+description = "Renders several cameras into one shared main texture and post-processes it once"
+category = "Camera"
+wasm = true
+
+[[example]]
 name = "free_camera_controller"
 path = "examples/camera/free_camera_controller.rs"
 doc-scrape-examples = true

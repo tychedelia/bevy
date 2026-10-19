@@ -1,4 +1,7 @@
-use crate::{primitives::Frustum, Camera, CameraProjection, OrthographicProjection, Projection};
+use crate::{
+    primitives::Frustum, visibility::RenderLayers, Camera, CameraProjection,
+    OrthographicProjection, Projection,
+};
 use bevy_ecs::prelude::*;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect, ReflectDeserialize, ReflectSerialize};
 use bevy_transform::prelude::{GlobalTransform, Transform};
@@ -14,6 +17,19 @@ use wgpu_types::{LoadOp, TextureUsages};
     Frustum = OrthographicProjection::default_2d().compute_frustum(&GlobalTransform::from(Transform::default())),
 )]
 pub struct Camera2d;
+
+/// A camera that draws nothing itself. It post-processes the main texture that other cameras
+/// rendered into and writes the result to its render target.
+///
+/// It shares a [`MainTexture`](crate::MainTexture) with the cameras that draw the scene through
+/// [`CameraMainTexture`](crate::CameraMainTexture), and has a higher [`Camera::order`] than
+/// they do. Effects that need depth or motion vectors belong on the scene cameras.
+///
+/// The camera never clears its main texture.
+#[derive(Component, Default, Reflect, Clone)]
+#[reflect(Component, Default, Clone)]
+#[require(Camera, RenderLayers::none())]
+pub struct PostProcessCamera;
 
 /// A 3D camera component. Enables the main 3D render graph for a [`Camera`].
 ///
@@ -95,6 +111,8 @@ pub struct Hdr;
 /// and custom materials that don't tonemap themselves, and effects that read the main
 /// texture before tonemapping get values that aren't tonemapped yet. Depth of field and
 /// motion blur require this component. Cameras that share a render target ignore it.
+/// So does a camera with a [`MainTexture`](crate::MainTexture) whose format is set, or chosen by
+/// another camera.
 #[derive(Component, Default, Copy, Clone, Reflect, PartialEq, Eq, Hash, Debug)]
 #[reflect(Component, Default, PartialEq, Hash, Debug)]
 pub struct TonemappingPass;

@@ -32,7 +32,9 @@
 use bevy_app::{App, Plugin};
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer, Handle};
 use bevy_core_pipeline::{
-    schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems},
+    schedule::{
+        Core2d, Core2dSystems, Core3d, Core3dSystems, CorePostProcess, CorePostProcessSystems,
+    },
     tonemapping::tonemapping,
 };
 use bevy_derive::{Deref, DerefMut};
@@ -381,6 +383,11 @@ impl Plugin for SmaaPlugin {
             .add_systems(
                 Core2d,
                 smaa.after(tonemapping).in_set(Core2dSystems::PostProcess),
+            )
+            .add_systems(
+                CorePostProcess,
+                smaa.after(tonemapping)
+                    .in_set(CorePostProcessSystems::PostProcess),
             );
     }
 }
@@ -689,7 +696,7 @@ fn prepare_smaa_textures(
     view_targets: Query<(Entity, &ExtractedCamera), (With<ExtractedView>, With<Smaa>)>,
 ) {
     for (entity, camera) in &view_targets {
-        let Some(texture_size) = camera.physical_target_size else {
+        let Some(texture_size) = camera.physical_render_size else {
             continue;
         };
 

@@ -13,7 +13,9 @@ use bevy_app::{App, Plugin};
 use bevy_asset::embedded_asset;
 use bevy_color::{Gray, LinearRgba};
 use bevy_core_pipeline::{
-    schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems},
+    schedule::{
+        Core2d, Core2dSystems, Core3d, Core3dSystems, CorePostProcess, CorePostProcessSystems,
+    },
     tonemapping::tonemapping,
 };
 use bevy_ecs::prelude::*;
@@ -81,6 +83,12 @@ impl Plugin for BloomPlugin {
             .add_systems(
                 Core2d,
                 bloom.before(tonemapping).in_set(Core2dSystems::PostProcess),
+            )
+            .add_systems(
+                CorePostProcess,
+                bloom
+                    .before(tonemapping)
+                    .in_set(CorePostProcessSystems::PostProcess),
             );
     }
 }
@@ -255,7 +263,7 @@ pub fn bloom(
             &bind_groups.upsampling_bind_groups[(bloom_texture.mip_count - 1) as usize],
             &[uniform_index.index()],
         );
-        if let Some(viewport) = camera.viewport.as_ref() {
+        if let Some(viewport) = camera.render_viewport.as_ref() {
             upsampling_final_pass.set_viewport(
                 viewport.physical_position.x as f32,
                 viewport.physical_position.y as f32,
@@ -321,7 +329,7 @@ fn prepare_bloom_textures(
     views: Query<(Entity, &ExtractedCamera, &Bloom)>,
 ) {
     for (entity, camera, bloom) in &views {
-        if let Some(viewport) = camera.physical_viewport_size {
+        if let Some(viewport) = camera.physical_render_viewport_size {
             // How many times we can halve the resolution minus one so we don't go unnecessarily low
             let mip_count = bloom.max_mip_dimension.ilog2().max(2) - 1;
             let mip_height_ratio = if viewport.y != 0 {

@@ -26,11 +26,15 @@ use bevy_ecs::{
     system::{Commands, Query},
 };
 use bevy_light::AtmosphereEnvironmentMapLight;
+use bevy_log::warn_once;
 use bevy_pbr::DefaultOpaqueRendererMethod;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 use bevy_render::{
-    init_gpu_resource, renderer::RenderDevice, ExtractSchedule, Render, RenderApp, RenderStartup,
-    RenderSystems,
+    init_gpu_resource,
+    render_resource::{TextureFormat, TextureUsages},
+    renderer::RenderDevice,
+    view::{ExtractedView, ViewMainTextureUsages},
+    ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use bevy_shader::load_shader_library;
 use extract::extract_solari_lighting;
@@ -101,6 +105,10 @@ impl Plugin for SolariLightingPlugin {
                     .in_set(RenderSystems::PrepareResources),
             )
             .add_systems(
+                Render,
+                request_main_texture_usages.in_set(RenderSystems::CreateViews),
+            )
+            .add_systems(
                 Core3d,
                 solari_lighting
                     .before(main_opaque_pass_3d)
@@ -111,8 +119,7 @@ impl Plugin for SolariLightingPlugin {
 
 /// A component for a 3d camera entity to enable the Solari raytraced lighting system.
 ///
-/// Must be used with `CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING)`, and
-/// `Msaa::Off`.
+/// Must be used with `Msaa::Off`.
 #[derive(Component, Reflect, Clone)]
 #[reflect(Component, Default, Clone)]
 #[require(Hdr, DeferredPrepass, DepthPrepass, MotionVectorPrepass)]
@@ -290,5 +297,22 @@ fn disable_atmosphere_env_map_filtering(
                 filtered: false,
                 ..light.clone()
             });
+    }
+}
+
+/// Solari lighting writes into the main texture as an `Rgba16Float` storage texture.
+fn request_main_texture_usages(
+    mut views: Query<(&mut ViewMainTextureUsages, &ExtractedView), With<SolariLighting>>,
+) {
+    for (mut usages, view) in &mut views {
+        if view.target_format == TextureFormat::Rgba16Float {
+            usages.0 |= TextureUsages::STORAGE_BINDING;
+        } else {
+            warn_once!(
+                "SolariLighting requires an Rgba16Float main texture, but the camera's main texture is \
+                {:?}. SolariLighting is disabled on this camera.",
+                view.target_format
+            );
+        }
     }
 }

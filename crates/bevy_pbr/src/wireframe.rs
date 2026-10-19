@@ -834,7 +834,7 @@ pub fn wireframe_3d(
         multiview_mask: None,
     });
 
-    if let Some(viewport) = camera.viewport.as_ref() {
+    if let Some(viewport) = camera.render_viewport.as_ref() {
         render_pass.set_camera_viewport(viewport);
     }
 

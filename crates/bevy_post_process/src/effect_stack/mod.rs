@@ -57,7 +57,7 @@ use bevy_utils::prelude::default;
 
 use crate::{bloom::bloom, dof::depth_of_field};
 use bevy_core_pipeline::{
-    schedule::{Core2d, Core3d},
+    schedule::{Core2d, Core3d, CorePostProcess},
     tonemapping::tonemapping,
     FullscreenShader,
 };
@@ -169,7 +169,11 @@ impl Plugin for EffectStackPlugin {
                 Core3d,
                 post_processing.after(depth_of_field).before(tonemapping),
             )
-            .add_systems(Core2d, post_processing.after(bloom).before(tonemapping));
+            .add_systems(Core2d, post_processing.after(bloom).before(tonemapping))
+            .add_systems(
+                CorePostProcess,
+                post_processing.after(bloom).before(tonemapping),
+            );
     }
 }
 

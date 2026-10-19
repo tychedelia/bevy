@@ -63,7 +63,7 @@ pub fn ui_pass(
     });
     let pass_span = diagnostics.pass_span(&mut render_pass, "ui");
 
-    if let Some(viewport) = camera.viewport.as_ref() {
+    if let Some(viewport) = camera.render_viewport.as_ref() {
         render_pass.set_camera_viewport(viewport);
     }
 

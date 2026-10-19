@@ -111,6 +111,34 @@ impl Core2d {
     }
 }
 
+/// Schedule label for the rendering pipeline of a
+/// [`PostProcessCamera`](bevy_camera::PostProcessCamera).
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct CorePostProcess;
+
+/// System sets for the rendering pipeline of a
+/// [`PostProcessCamera`](bevy_camera::PostProcessCamera). The camera draws nothing, so the only
+/// set is `PostProcess`, for effects that work on the whole main texture.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CorePostProcessSystems {
+    PostProcess,
+}
+
+impl CorePostProcess {
+    pub fn base_schedule() -> Schedule {
+        use bevy_ecs::schedule::ScheduleBuildSettings;
+
+        let mut schedule = Schedule::new(Self);
+
+        schedule.set_build_settings(ScheduleBuildSettings {
+            auto_insert_apply_deferred: false,
+            ..Default::default()
+        });
+
+        schedule
+    }
+}
+
 /// Holds the entity of windows that are a render target for a camera
 #[derive(Resource)]
 struct CameraWindows(EntityHashSet);

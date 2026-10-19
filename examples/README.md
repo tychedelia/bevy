@@ -306,6 +306,7 @@ Example | Description
 [Custom Projection](../examples/camera/custom_projection.rs) | Shows how to create custom camera projections.
 [First person view model](../examples/camera/first_person_view_model.rs) | A first-person camera that uses a world model and a view model with different field of views (FOV)
 [Free Camera controller](../examples/camera/free_camera_controller.rs) | Demonstrates the FreeCamera controller for 3D scenes.
+[Main texture](../examples/camera/main_texture.rs) | Renders several cameras into one shared main texture and post-processes it once
 [Minimal Pan Orbit Camera](../examples/camera/pan_orbit_camera_minimal.rs) | Minimum setup for working PanOrbitCamera
 [Orthographic Pan Orbit Camera](../examples/camera/pan_orbit_camera_ortho.rs) | Using Pan Orbit Camera in orthographic-only projection
 [Pan Camera](../examples/camera/pan_camera_controller.rs) | Example Pan-Camera Styled Camera Controller for 2D scenes

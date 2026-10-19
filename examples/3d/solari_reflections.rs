@@ -1,14 +1,14 @@
 //! Test bed for Solari reflections.
 
 use bevy::{
-    camera::{CameraMainTextureUsages, Exposure},
+    camera::Exposure,
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     diagnostic::{Diagnostic, DiagnosticPath, DiagnosticsStore},
     image::{ImageAddressMode, ImageLoaderSettings},
     math::ops,
     mesh::{Indices, VertexAttributeValues},
     prelude::*,
-    render::{diagnostic::RenderDiagnosticsPlugin, render_resource::TextureUsages},
+    render::diagnostic::RenderDiagnosticsPlugin,
     solari::{
         pathtracer::{Pathtracer, PathtracingPlugin},
         prelude::{RaytracingMesh3d, SolariLighting, SolariPlugins},
@@ -243,7 +243,6 @@ fn setup(
         },
         Transform::from_xyz(0.0, 2.8, 9.5).looking_at(Vec3::new(0.0, 1.6, -1.0), Vec3::Y),
         Exposure::INDOOR,
-        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
         Msaa::Off,
         SolariLighting::default(),
     ));

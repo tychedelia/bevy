@@ -162,7 +162,7 @@ pub fn prepare_solari_lighting_resources(
             has_dlss_rr,
         ) = query_item;
 
-        let Some(mut view_size) = camera.physical_viewport_size else {
+        let Some(mut view_size) = camera.physical_render_viewport_size else {
             continue;
         };
         if let Some(MainPassResolutionOverride(resolution_override)) = resolution_override {

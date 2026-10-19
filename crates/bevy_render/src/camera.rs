@@ -2,18 +2,20 @@ use core::mem;
 
 use crate::{
     batching::gpu_preprocessing::{GpuPreprocessingMode, GpuPreprocessingSupport},
-    extract_component::{ExtractComponent, ExtractComponentPlugin},
+    extract_component::ExtractComponent,
     extract_resource::{extract_resource, ExtractResource, ExtractResourcePlugin},
     render_asset::RenderAssets,
     render_resource::TextureView,
-    sync_component::SyncComponent,
+    renderer::{RenderAdapter, RenderDevice},
+    sync_component::{SyncComponent, SyncComponentPlugin},
     sync_world::{MainEntity, MainEntityHashSet, RenderEntity, SyncToRenderWorld},
     texture::{GpuImage, ManualTextureViews},
     view::{
-        ColorGrading, ExtractedView, ExtractedWindow, Msaa, NoIndirectDrawing,
+        texture_format_features, texture_format_is_hdr, validate_main_texture_format, ColorGrading,
+        ExtractedView, ExtractedWindow, MainTextureAllocation, Msaa, NoIndirectDrawing,
         RenderExtractedVisibleEntities, RenderVisibleEntities, RenderVisibleEntitiesClass,
-        ResolvedCompositingSpace, RetainedViewEntity, Tonemapping, ViewUniformOffset,
-        VisibilityExtractionSystemParam,
+        ResolvedCompositingSpace, RetainedViewEntity, Tonemapping, ViewMainTextureUsages,
+        ViewTarget, ViewUniformOffset, VisibilityExtractionSystemParam,
     },
     Extract, ExtractSchedule, Render, RenderApp, RenderSystems,
 };
@@ -23,10 +25,10 @@ use bevy_asset::{AssetEvent, AssetEventSystems, AssetId, Assets};
 use bevy_camera::{
     primitives::Frustum,
     visibility::{self, RenderLayers, VisibleEntities},
-    Camera, Camera2d, Camera3d, CameraMainTextureUsages, CameraOutputMode, CameraUpdateSystems,
-    ClearColor, ClearColorConfig, CompositingSpace, Exposure, Hdr, ManualTextureViewHandle,
-    MsaaWriteback, NormalizedRenderTarget, Projection, RenderTarget, RenderTargetInfo,
-    TonemappingPass, Viewport,
+    Camera, Camera2d, Camera3d, CameraMainTexture, CameraOutputMode, CameraUpdateSystems,
+    ClearColor, ClearColorConfig, CompositingSpace, Exposure, Hdr, MainTexture, MainTextureFilter,
+    ManualTextureViewHandle, MsaaWriteback, NormalizedRenderTarget, PostProcessCamera, Projection,
+    RenderTarget, RenderTargetInfo, TonemappingPass, Viewport,
 };
 use bevy_derive::{Deref, DerefMut};
 use bevy_ecs::{
@@ -53,7 +55,7 @@ use bevy_reflect::prelude::*;
 use bevy_transform::components::GlobalTransform;
 use bevy_window::{PrimaryWindow, Window, WindowCreated, WindowResized, WindowScaleFactorChanged};
 use itertools::Either;
-use wgpu::TextureFormat;
+use wgpu::{FilterMode, TextureFormat, TextureFormatFeatureFlags};
 
 /// Main-pass color [`TextureFormat`] keyed by camera render entity.
 #[derive(Resource, Default, Deref, DerefMut)]
@@ -67,10 +69,11 @@ impl Plugin for CameraPlugin {
         app.register_required_components::<Camera, Msaa>()
             .register_required_components::<Camera, SyncToRenderWorld>()
             .register_required_components::<Camera3d, ColorGrading>()
+            .register_required_components::<PostProcessCamera, ColorGrading>()
             .register_required_components::<Camera3d, Exposure>()
             .add_plugins((
                 ExtractResourcePlugin::<ClearColor>::default(),
-                ExtractComponentPlugin::<CameraMainTextureUsages>::default(),
+                SyncComponentPlugin::<MainTexture>::default(),
             ))
             .add_systems(PostStartup, camera_system.in_set(CameraUpdateSystems))
             .add_systems(
@@ -133,18 +136,9 @@ impl ExtractResource<RenderApp> for ClearColor {
     }
 }
 
-impl SyncComponent<RenderApp> for CameraMainTextureUsages {
-    type Target = Self;
-}
-
-impl ExtractComponent<RenderApp> for CameraMainTextureUsages {
-    type QueryData = &'static Self;
-    type QueryFilter = ();
-    type Out = Self;
-
-    fn extract_component(item: QueryItem<Self::QueryData>) -> Option<Self::Out> {
-        Some(*item)
-    }
+// Removing a `MainTexture` frees its textures.
+impl SyncComponent<RenderApp> for MainTexture {
+    type Target = MainTextureAllocation;
 }
 
 impl SyncComponent<RenderApp> for Camera2d {
@@ -361,8 +355,19 @@ pub fn camera_system(
     windows: Query<(Entity, &Window)>,
     images: Res<Assets<Image>>,
     manual_texture_views: Res<ManualTextureViews>,
-    mut cameras: Query<(&mut Camera, &RenderTarget, &mut Projection)>,
+    mut cameras: Query<(
+        &mut Camera,
+        &RenderTarget,
+        Option<&mut Projection>,
+        Option<&CameraMainTexture>,
+    )>,
+    main_textures: Query<&MainTexture>,
+    render_device: Option<Res<RenderDevice>>,
 ) -> Result<(), BevyError> {
+    let max_texture_dimension = render_device.map_or(u32::MAX, |render_device| {
+        render_device.limits().max_texture_dimension_2d
+    });
+
     let primary_window = primary_window.iter().next();
 
     let mut changed_window_ids = EntityHashSet::default();
@@ -382,7 +387,7 @@ pub fn camera_system(
         })
         .collect();
 
-    for (mut camera, render_target, mut camera_projection) in &mut cameras {
+    for (mut camera, render_target, mut camera_projection, camera_main_texture) in &mut cameras {
         let mut viewport_size = camera
             .viewport
             .as_ref()
@@ -391,7 +396,9 @@ pub fn camera_system(
         if let Some(normalized_target) = render_target.normalize(primary_window)
             && (normalized_target.is_changed(&changed_window_ids, &changed_image_handles)
                 || camera.is_added()
-                || camera_projection.is_changed()
+                || camera_projection
+                    .as_ref()
+                    .is_some_and(DetectChanges::is_changed)
                 || camera.computed.old_viewport_size != viewport_size
                 || camera.computed.old_sub_camera_view != camera.sub_camera_view)
         {
@@ -426,7 +433,8 @@ pub fn camera_system(
                 viewport.clamp_to_size(new_computed_target_info.physical_size);
             }
             camera.computed.target_info = Some(new_computed_target_info);
-            if let Some(size) = camera.logical_viewport_size()
+            if let Some(camera_projection) = camera_projection.as_mut()
+                && let Some(size) = camera.logical_viewport_size()
                 && size.x != 0.0
                 && size.y != 0.0
             {
@@ -436,6 +444,20 @@ pub fn camera_system(
                     None => camera_projection.get_clip_from_view(),
                 }
             }
+        }
+
+        let render_size = camera_main_texture
+            .and_then(|main_texture| main_textures.get(main_texture.0).ok())
+            .zip(camera.physical_target_size())
+            .and_then(|(main_texture, target_size)| {
+                main_texture
+                    .size
+                    .resolve(target_size, max_texture_dimension)
+                    .ok()
+            })
+            .filter(|render_size| Some(*render_size) != camera.physical_target_size());
+        if camera.computed.render_size != render_size {
+            camera.computed.render_size = render_size;
         }
 
         if camera.computed.old_viewport_size != viewport_size {
@@ -458,14 +480,26 @@ pub fn camera_system(
 #[require(RenderVisibleEntities)]
 pub struct ExtractedCamera {
     pub target: Option<NormalizedRenderTarget>,
-    pub physical_viewport_size: Option<UVec2>,
-    pub physical_target_size: Option<UVec2>,
-    pub viewport: Option<Viewport>,
+    /// The size of [`ExtractedCamera::render_viewport`], or of the whole main texture when there
+    /// is no viewport.
+    pub physical_render_viewport_size: Option<UVec2>,
+    /// The size the camera renders at, which is the size of its main texture. This is the size of
+    /// the render target, unless the camera has a [`MainTexture`] with another
+    /// [`MainTextureSize`](bevy_camera::MainTextureSize).
+    pub physical_render_size: Option<UVec2>,
+    /// The camera's viewport within its main texture.
+    pub render_viewport: Option<Viewport>,
+    /// The camera's viewport within its render target. It differs from
+    /// [`ExtractedCamera::render_viewport`] when the main texture and the render target have
+    /// different sizes.
+    pub target_viewport: Option<Viewport>,
     pub schedule: InternedScheduleLabel,
     pub order: isize,
     pub output_mode: CameraOutputMode,
     pub msaa_writeback: MsaaWriteback,
     pub clear_color: ClearColorConfig,
+    /// The camera's position among all cameras, in the order they render.
+    pub sorted_camera_index: usize,
     pub sorted_camera_index_for_target: usize,
     pub exposure: f32,
     pub hdr: bool,
@@ -476,8 +510,43 @@ pub struct ExtractedCamera {
     /// [`TonemappingPass`], a non-linear [`CompositingSpace`], or a non-window render
     /// target. Those exceptions don't apply when the render target is shared by
     /// multiple cameras.
+    ///
+    /// A camera with a [`CameraMainTexture`] doesn't follow these rules, unless it decides the
+    /// format of the texture. It runs the tonemapping pass when the format is an HDR format, and
+    /// tonemaps in its material shaders otherwise.
     pub tonemap_in_shader: bool,
 }
+
+/// The [`MainTexture`] a camera view renders into, for cameras with a [`CameraMainTexture`].
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtractedCameraMainTexture {
+    /// The render world entity of the [`MainTexture`].
+    pub entity: Entity,
+    /// How the texture is sampled when it is written to the render target. This is
+    /// [`FilterMode::Nearest`] when the texture and the render target have the same size.
+    pub filter: FilterMode,
+}
+
+type ExtractedCameraComponents = (
+    ExtractedCamera,
+    ExtractedView,
+    ResolvedCompositingSpace,
+    TemporalJitter,
+    MipBias,
+    RenderLayers,
+    Projection,
+    NoIndirectDrawing,
+    ViewUniformOffset,
+    ViewMainTextureUsages,
+);
+
+/// The components removed from a camera that is skipped this frame.
+type SkippedCameraComponents = (
+    ExtractedCameraComponents,
+    ExtractedCameraMainTexture,
+    RenderVisibleEntities,
+    ViewTarget,
+);
 
 pub fn extract_cameras(
     mut commands: Commands,
@@ -504,9 +573,15 @@ pub fn extract_cameras(
                 Option<&Projection>,
                 Has<NoIndirectDrawing>,
                 Has<TonemappingPass>,
+                Option<&CameraMainTexture>,
+                Option<&Msaa>,
+                Has<PostProcessCamera>,
             ),
         )>,
     >,
+    main_textures: Extract<Query<(RenderEntity, &MainTexture)>>,
+    render_device: Res<RenderDevice>,
+    render_adapter: Res<RenderAdapter>,
     primary_window: Extract<Query<Entity, With<PrimaryWindow>>>,
     manual_texture_views: Res<ManualTextureViews>,
     images: Res<RenderAssets<GpuImage>>,
@@ -518,6 +593,7 @@ pub fn extract_cameras(
     visibility_extraction_system_param: VisibilityExtractionSystemParam,
     extracted_swap_chains: Query<(MainEntity, &ExtractedWindow)>,
     mut active_cameras_per_target: Local<HashMap<NormalizedRenderTarget, usize>>,
+    mut main_texture_deciders: Local<EntityHashMap<MainTextureCamera>>,
 ) {
     main_pass_formats.clear();
     let primary_window = primary_window.iter().next();
@@ -534,16 +610,91 @@ pub fn extract_cameras(
         }
     }
 
-    type ExtractedCameraComponents = (
-        ExtractedCamera,
-        ExtractedView,
-        ResolvedCompositingSpace,
-        TemporalJitter,
-        MipBias,
-        RenderLayers,
-        Projection,
-        NoIndirectDrawing,
-        ViewUniformOffset,
+    // What a camera's main texture would be without a `MainTexture` format.
+    let derived_main_texture =
+        |render_target: &RenderTarget,
+         hdr: bool,
+         tonemapping: Option<&Tonemapping>,
+         tonemapping_pass: bool,
+         compositing_space: Option<CompositingSpace>| {
+            let target = render_target.normalize(primary_window);
+            let output_texture_format = target
+                .as_ref()
+                .and_then(|target| {
+                    target
+                        .get_texture_view_format(
+                            &extracted_swap_chains,
+                            &images,
+                            &manual_texture_views,
+                        )
+                        .map(|format| normalize_bgra8(target, format))
+                })
+                .unwrap_or(TextureFormat::Rgba8UnormSrgb);
+            let shares_target = target
+                .as_ref()
+                .and_then(|t| active_cameras_per_target.get(t))
+                .is_some_and(|&count| count > 1);
+            resolve_main_texture(
+                None,
+                hdr,
+                tonemapping.is_some_and(Tonemapping::is_enabled),
+                tonemapping_pass,
+                compositing_space,
+                target.as_ref(),
+                shares_target,
+                output_texture_format,
+            )
+        };
+
+    deciding_cameras(
+        query.iter().filter_map(
+            |(
+                main_entity,
+                _,
+                camera,
+                render_target,
+                ..,
+                (
+                    hdr,
+                    tonemapping,
+                    compositing_space,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    tonemapping_pass,
+                    camera_main_texture,
+                    ..,
+                ),
+            )| {
+                let size = camera.physical_render_size()?;
+                if !camera.is_active || size.x == 0 || size.y == 0 {
+                    return None;
+                }
+                let camera_main_texture = camera_main_texture?;
+                let (_, main_texture) = main_textures.get(camera_main_texture.0).ok()?;
+                let compositing_space = main_texture
+                    .compositing_space
+                    .or(compositing_space.copied());
+                Some(MainTextureCamera {
+                    camera: main_entity,
+                    main_texture: camera_main_texture.0,
+                    order: camera.order,
+                    size,
+                    resolved: derived_main_texture(
+                        render_target,
+                        hdr,
+                        tonemapping,
+                        tonemapping_pass,
+                        compositing_space,
+                    ),
+                })
+            },
+        ),
+        &mut main_texture_deciders,
     );
 
     for (
@@ -567,14 +718,19 @@ pub fn extract_cameras(
             projection,
             no_indirect_drawing,
             tonemapping_pass,
+            camera_main_texture,
+            msaa,
+            post_process_camera,
         ),
     ) in query.iter()
     {
         if !camera.is_active {
             // Note: `RenderVisibleEntities` is here because several other retained data `ViewBinnedRenderPhase<Opaque3d>` will be removed when camera is not active
-            commands
-                .entity(render_entity)
-                .remove::<(ExtractedCameraComponents, RenderVisibleEntities)>();
+            commands.entity(render_entity).remove::<(
+                ExtractedCameraComponents,
+                ExtractedCameraMainTexture,
+                RenderVisibleEntities,
+            )>();
             continue;
         }
 
@@ -586,18 +742,141 @@ pub fn extract_cameras(
                 ..
             }),
             Some(viewport_size),
-            Some(target_size),
+            Some(render_size),
         ) = (
-            camera.physical_viewport_rect(),
-            camera.physical_viewport_size(),
-            camera.physical_target_size(),
+            camera.physical_render_viewport_rect(),
+            camera.physical_render_viewport_size(),
+            camera.physical_render_size(),
         ) {
-            if target_size.x == 0 || target_size.y == 0 {
+            if render_size.x == 0 || render_size.y == 0 {
                 commands
                     .entity(render_entity)
-                    .remove::<ExtractedCameraComponents>();
+                    .remove::<(ExtractedCameraComponents, ExtractedCameraMainTexture)>();
                 continue;
             }
+
+            let main_texture =
+                camera_main_texture.and_then(|main_texture| main_textures.get(main_texture.0).ok());
+            let compositing_space = main_texture
+                .and_then(|(_, main_texture)| main_texture.compositing_space)
+                .or(compositing_space.copied());
+
+            let output_viewport = camera.viewport.clone();
+            let viewport = camera.render_viewport();
+
+            let target = render_target.normalize(primary_window);
+            let tonemapping_enabled = tonemapping.is_some_and(Tonemapping::is_enabled);
+            let explicit_format = main_texture.and_then(|(_, main_texture)| main_texture.format);
+            let deciding = camera_main_texture
+                .and_then(|main_texture| main_texture_deciders.get(&main_texture.0));
+
+            if let Some(deciding) = deciding
+                && deciding.size != render_size
+            {
+                warn_once!(
+                    "Camera {main_entity} is not rendered: it renders at {render_size:?}, but its \
+                    MainTexture is {:?}. Cameras that share a MainTexture must render at the same \
+                    size.",
+                    deciding.size,
+                );
+                commands
+                    .entity(render_entity)
+                    .remove::<SkippedCameraComponents>();
+                continue;
+            }
+
+            // Every camera adapts to an explicit format. Without one, every camera but the
+            // deciding one adapts.
+            let adapts_format = explicit_format.is_some()
+                || deciding.is_some_and(|deciding| deciding.camera != main_entity);
+            let resolved = match (explicit_format, deciding) {
+                (Some(format), _) => resolve_main_texture(
+                    Some(format),
+                    hdr,
+                    tonemapping_enabled,
+                    tonemapping_pass,
+                    compositing_space,
+                    target.as_ref(),
+                    false,
+                    format,
+                ),
+                (None, Some(deciding)) if deciding.camera != main_entity => {
+                    let format = deciding.resolved.format;
+                    ResolvedMainTexture {
+                        format,
+                        hdr: deciding.resolved.hdr,
+                        tonemap_in_shader: tonemapping_enabled && !texture_format_is_hdr(format),
+                    }
+                }
+                _ => derived_main_texture(
+                    render_target,
+                    hdr,
+                    tonemapping,
+                    tonemapping_pass,
+                    compositing_space,
+                ),
+            };
+            let target_format = resolved.format;
+            let in_shader = resolved.tonemap_in_shader;
+
+            if let Some((_, main_texture)) = main_texture
+                && let Some(Err(error)) = camera.physical_target_size().map(|size| {
+                    main_texture
+                        .size
+                        .resolve(size, render_device.limits().max_texture_dimension_2d)
+                })
+            {
+                warn_once!(
+                    "Camera {main_entity} is not rendered: its MainTexture size is invalid \
+                    ({error})."
+                );
+                commands
+                    .entity(render_entity)
+                    .remove::<SkippedCameraComponents>();
+                continue;
+            }
+            let format_features = main_texture
+                .map(|_| texture_format_features(&render_device, &render_adapter, target_format));
+            if let (Some(format), Some(features)) = (explicit_format, format_features)
+                && let Err(error) = validate_main_texture_format(
+                    format,
+                    msaa.copied().unwrap_or_default().samples(),
+                    features,
+                )
+            {
+                warn_once!("Camera {main_entity} is not rendered: {error}.");
+                commands
+                    .entity(render_entity)
+                    .remove::<SkippedCameraComponents>();
+                continue;
+            }
+            if adapts_format {
+                let format = target_format;
+                if hdr && !resolved.hdr {
+                    warn_once!(
+                        "Camera {main_entity} has Hdr, but the format {format:?} of its \
+                        MainTexture is not an HDR format. Hdr is ignored, and effects that need \
+                        it don't run on this camera."
+                    );
+                }
+                if tonemapping_pass && tonemapping_enabled && !resolved.hdr {
+                    warn_once!(
+                        "Camera {main_entity} has TonemappingPass, but the format {format:?} of \
+                        its MainTexture is not an HDR format, so the camera tonemaps in its \
+                        material shaders instead."
+                    );
+                }
+                if format.is_srgb() && compositing_space == Some(CompositingSpace::Srgb) {
+                    warn_once!(
+                        "Camera {main_entity} composites in CompositingSpace::Srgb, but its \
+                        MainTexture format {format:?} is already sRGB. Set MainTexture::format \
+                        to {:?}.",
+                        format.remove_srgb_suffix(),
+                    );
+                }
+            }
+            let hdr = resolved.hdr;
+            main_pass_formats.insert(render_entity, target_format);
 
             let mut render_visible_entities_cpu_culling =
                 match existing_render_visible_entities_cpu_culling.get_mut(render_entity) {
@@ -630,53 +909,26 @@ pub fn extract_cameras(
             // *now*, phases need to be able to find the entities that were just
             // removed from it.
 
-            let target = render_target.normalize(primary_window);
-            let output_texture_format = target
-                .as_ref()
-                .and_then(|target| {
-                    target
-                        .get_texture_view_format(
-                            &extracted_swap_chains,
-                            &images,
-                            &manual_texture_views,
-                        )
-                        .map(|format| normalize_bgra8(target, format))
-                })
-                .unwrap_or(TextureFormat::Rgba8UnormSrgb);
-            let tonemapping_enabled = tonemapping.is_some_and(Tonemapping::is_enabled);
-            let shares_target = target
-                .as_ref()
-                .and_then(|t| active_cameras_per_target.get(t))
-                .is_some_and(|&count| count > 1);
-            let in_shader = tonemaps_in_shader(
-                hdr,
-                tonemapping_enabled,
-                tonemapping_pass,
-                compositing_space.copied(),
-                target.as_ref(),
-                shares_target,
-            );
-            let target_format = main_texture_format(
-                hdr,
-                tonemapping_enabled && !in_shader,
-                compositing_space.copied(),
-                output_texture_format,
-            );
-            main_pass_formats.insert(render_entity, target_format);
-
             let mut commands = commands.entity(render_entity);
             commands.insert((
                 ExtractedCamera {
                     target,
-                    viewport: camera.viewport.clone(),
-                    physical_viewport_size: Some(viewport_size),
-                    physical_target_size: Some(target_size),
+                    render_viewport: viewport,
+                    target_viewport: output_viewport,
+                    physical_render_viewport_size: Some(viewport_size),
+                    physical_render_size: Some(render_size),
                     schedule: camera_render_graph.0,
                     order: camera.order,
                     output_mode: camera.output_mode,
                     msaa_writeback: camera.msaa_writeback,
-                    clear_color: camera.clear_color,
+                    // A post-process camera works on what other cameras left in the texture.
+                    clear_color: if post_process_camera {
+                        ClearColorConfig::None
+                    } else {
+                        camera.clear_color
+                    },
                     // this will be set in sort_cameras
+                    sorted_camera_index: 0,
                     sorted_camera_index_for_target: 0,
                     exposure: exposure
                         .map(Exposure::exposure)
@@ -684,7 +936,7 @@ pub fn extract_cameras(
                     hdr,
                     tonemap_in_shader: in_shader,
                 },
-                ResolvedCompositingSpace(compositing_space.copied()),
+                ResolvedCompositingSpace(compositing_space),
                 ExtractedView {
                     retained_view_entity: RetainedViewEntity::new(main_entity.into(), None, 0),
                     clip_from_view: camera.clip_from_view(),
@@ -702,7 +954,37 @@ pub fn extract_cameras(
                 },
                 render_visible_entities_cpu_culling,
                 *frustum,
+                ViewMainTextureUsages::default(),
             ));
+
+            if let Some((entity, main_texture)) = main_texture {
+                // The texture is only filtered when it is scaled.
+                let filter = match main_texture.filter {
+                    MainTextureFilter::Linear
+                        if camera.physical_render_size() != camera.physical_target_size() =>
+                    {
+                        if format_features.is_some_and(|features| {
+                            features
+                                .flags
+                                .contains(TextureFormatFeatureFlags::FILTERABLE)
+                        }) {
+                            FilterMode::Linear
+                        } else {
+                            warn_once!(
+                                "Camera {main_entity} has a MainTexture with \
+                                MainTextureFilter::Linear, but the device can't filter the \
+                                format {target_format:?}. Falling back to \
+                                MainTextureFilter::Nearest."
+                            );
+                            FilterMode::Nearest
+                        }
+                    }
+                    _ => FilterMode::Nearest,
+                };
+                commands.insert(ExtractedCameraMainTexture { entity, filter });
+            } else {
+                commands.remove::<ExtractedCameraMainTexture>();
+            }
 
             if let Some(temporal_jitter) = temporal_jitter {
                 commands.insert(temporal_jitter.clone());
@@ -774,6 +1056,60 @@ fn tonemaps_in_shader(
                 && matches!(target, Some(NormalizedRenderTarget::Window(_)))))
 }
 
+/// The main texture settings that follow from a camera and its [`MainTexture`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResolvedMainTexture {
+    /// The format of the main texture.
+    format: TextureFormat,
+    /// Whether the main texture is an HDR texture. See [`ExtractedCamera::hdr`].
+    hdr: bool,
+    /// See [`ExtractedCamera::tonemap_in_shader`].
+    tonemap_in_shader: bool,
+}
+
+/// Resolves a camera's main texture settings.
+///
+/// With an explicit format, the camera runs the tonemapping pass if the format is an HDR format,
+/// and tonemaps in its material shaders otherwise. Without one, the format is picked from where
+/// the camera tonemaps.
+fn resolve_main_texture(
+    explicit_format: Option<TextureFormat>,
+    hdr: bool,
+    tonemapping_enabled: bool,
+    tonemapping_pass: bool,
+    compositing_space: Option<CompositingSpace>,
+    target: Option<&NormalizedRenderTarget>,
+    shares_target: bool,
+    output_texture_format: TextureFormat,
+) -> ResolvedMainTexture {
+    if let Some(format) = explicit_format {
+        let hdr = texture_format_is_hdr(format);
+        return ResolvedMainTexture {
+            format,
+            hdr,
+            tonemap_in_shader: tonemapping_enabled && !hdr,
+        };
+    }
+    let tonemap_in_shader = tonemaps_in_shader(
+        hdr,
+        tonemapping_enabled,
+        tonemapping_pass,
+        compositing_space,
+        target,
+        shares_target,
+    );
+    ResolvedMainTexture {
+        format: main_texture_format(
+            hdr,
+            tonemapping_enabled && !tonemap_in_shader,
+            compositing_space,
+            output_texture_format,
+        ),
+        hdr,
+        tonemap_in_shader,
+    }
+}
+
 /// The main texture format for a camera view.
 fn main_texture_format(
     hdr: bool,
@@ -788,6 +1124,42 @@ fn main_texture_format(
         TextureFormat::Rgba8Unorm
     } else {
         output_texture_format
+    }
+}
+
+/// A camera that renders into a [`MainTexture`], used to pick the camera that decides the
+/// texture's size and format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MainTextureCamera {
+    /// The main world entity of the camera.
+    camera: Entity,
+    /// The main world entity of the [`MainTexture`].
+    main_texture: Entity,
+    /// The camera's [`Camera::order`].
+    order: isize,
+    /// The size the camera renders at.
+    size: UVec2,
+    /// The main texture the camera would have on its own.
+    resolved: ResolvedMainTexture,
+}
+
+/// For each [`MainTexture`], finds the camera with the lowest order, with the entity breaking a
+/// tie. That camera decides the size of the texture and, when [`MainTexture::format`] is `None`,
+/// its format.
+fn deciding_cameras(
+    cameras: impl IntoIterator<Item = MainTextureCamera>,
+    deciding: &mut EntityHashMap<MainTextureCamera>,
+) {
+    deciding.clear();
+    for camera in cameras {
+        deciding
+            .entry(camera.main_texture)
+            .and_modify(|deciding| {
+                if (camera.order, camera.camera) < (deciding.order, deciding.camera) {
+                    *deciding = camera;
+                }
+            })
+            .or_insert(camera);
     }
 }
 
@@ -822,7 +1194,10 @@ pub fn sort_cameras(
     let mut previous_order_target = None;
     let mut ambiguities = <HashSet<_>>::default();
     let mut target_counts = <HashMap<_, _>>::default();
-    for sorted_camera in &mut sorted_cameras.0 {
+    for (index, sorted_camera) in sorted_cameras.0.iter_mut().enumerate() {
+        if let Ok((_, mut camera)) = cameras.get_mut(sorted_camera.entity) {
+            camera.sorted_camera_index = index;
+        }
         let new_order_target = (sorted_camera.order, sorted_camera.target.clone());
         if let Some(previous_order_target) = previous_order_target
             && previous_order_target == new_order_target
@@ -1496,6 +1871,94 @@ mod tests {
         assert_case_table(&table);
     }
 
+    #[test]
+    fn explicit_formats_decide_where_tonemapping_runs() {
+        let window = window_target();
+        let resolve = |format, hdr, tonemapping_enabled, tonemapping_pass| {
+            resolve_main_texture(
+                Some(format),
+                hdr,
+                tonemapping_enabled,
+                tonemapping_pass,
+                None,
+                Some(&window),
+                false,
+                OUTPUT_FORMAT,
+            )
+        };
+        let resolved = |format, hdr, tonemap_in_shader| ResolvedMainTexture {
+            format,
+            hdr,
+            tonemap_in_shader,
+        };
+
+        // An HDR format runs the pass, with or without the `Hdr` component.
+        for format in [
+            TextureFormat::Rgba16Float,
+            TextureFormat::Rgba32Float,
+            TextureFormat::Rg11b10Ufloat,
+        ] {
+            assert_eq!(
+                resolve(format, false, true, false),
+                resolved(format, true, false)
+            );
+            assert_eq!(
+                resolve(format, true, false, false),
+                resolved(format, true, false)
+            );
+        }
+        // Any other format tonemaps in shader, even with `Hdr` or `TonemappingPass`.
+        let format = TextureFormat::Rgba8UnormSrgb;
+        assert_eq!(
+            resolve(format, true, true, true),
+            resolved(format, false, true)
+        );
+        assert_eq!(
+            resolve(format, false, false, false),
+            resolved(format, false, false)
+        );
+    }
+
+    #[test]
+    fn lowest_order_camera_decides_the_main_texture() {
+        let entity = |raw| Entity::from_raw_u32(raw).unwrap();
+        let resolved = |format| ResolvedMainTexture {
+            format,
+            hdr: false,
+            tonemap_in_shader: false,
+        };
+        let camera = |raw, texture, order, size: u32| MainTextureCamera {
+            camera: entity(raw),
+            main_texture: entity(texture),
+            order,
+            size: UVec2::splat(size),
+            resolved: resolved(TextureFormat::Rgba8UnormSrgb),
+        };
+        let mut deciding = EntityHashMap::default();
+
+        // The lowest order decides, whatever the iteration order.
+        let first = camera(3, 100, -1, 64);
+        let later = camera(1, 100, 0, 32);
+        for cameras in [[first, later], [later, first]] {
+            deciding_cameras(cameras, &mut deciding);
+            assert_eq!(deciding[&entity(100)], first);
+        }
+
+        // Ties are broken the same way.
+        let a = camera(1, 100, 0, 64);
+        let b = camera(2, 100, 0, 32);
+        deciding_cameras([a, b], &mut deciding);
+        let winner = deciding[&entity(100)];
+        deciding_cameras([b, a], &mut deciding);
+        assert_eq!(deciding[&entity(100)], winner);
+
+        // Each main texture has its own deciding camera.
+        let other = camera(4, 101, 5, 16);
+        deciding_cameras([first, other], &mut deciding);
+        assert_eq!(deciding[&entity(100)], first);
+        assert_eq!(deciding[&entity(101)], other);
+    }
+
     fn extracted_camera(
         order: isize,
         hdr: bool,
@@ -1503,14 +1966,16 @@ mod tests {
     ) -> ExtractedCamera {
         ExtractedCamera {
             target: Some(target),
-            physical_viewport_size: None,
-            physical_target_size: None,
-            viewport: None,
+            physical_render_viewport_size: None,
+            physical_render_size: None,
+            render_viewport: None,
+            target_viewport: None,
             schedule: Main.intern(),
             order,
             output_mode: CameraOutputMode::default(),
             msaa_writeback: MsaaWriteback::default(),
             clear_color: ClearColorConfig::Default,
+            sorted_camera_index: 0,
             sorted_camera_index_for_target: 0,
             exposure: 1.0,
             hdr,

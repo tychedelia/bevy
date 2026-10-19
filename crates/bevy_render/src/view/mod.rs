@@ -3,8 +3,8 @@ pub mod visibility;
 pub mod window;
 
 use bevy_camera::{
-    primitives::Frustum, Camera, CameraMainTextureUsages, ClearColor, ClearColorConfig,
-    CompositingSpace, Exposure, MainPassResolutionOverride, NormalizedRenderTarget,
+    primitives::Frustum, Camera, ClearColor, ClearColorConfig, CompositingSpace, Exposure,
+    MainPassResolutionOverride, NormalizedRenderTarget,
 };
 use bevy_diagnostic::FrameCount;
 pub use composition::*;
@@ -12,7 +12,10 @@ pub use visibility::*;
 pub use window::*;
 
 use crate::{
-    camera::{ExtractedCamera, MipBias, NormalizedRenderTargetExt as _, TemporalJitter},
+    camera::{
+        ExtractedCamera, ExtractedCameraMainTexture, MipBias, NormalizedRenderTargetExt as _,
+        TemporalJitter,
+    },
     extract_component::ExtractComponentPlugin,
     occlusion_culling::OcclusionCulling,
     render_asset::RenderAssets,
@@ -20,21 +23,22 @@ use crate::{
     render_resource::{
         BindGroup, DynamicUniformBuffer, ShaderType, Texture, TextureView, TextureViewId,
     },
-    renderer::{RenderDevice, RenderQueue},
+    renderer::{RenderAdapter, RenderDevice, RenderQueue},
     sync_world::MainEntity,
     texture::{
         CachedTexture, ColorAttachment, DepthStencilAttachment, GpuImage, ManualTextureViews,
         OutputColorAttachment, TextureCache,
     },
-    GpuResourceAppExt, Render, RenderApp, RenderSystems,
+    GpuResourceAppExt, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use alloc::sync::{Arc, Weak};
 use bevy_app::{App, Plugin};
 use bevy_color::{LinearRgba, Oklaba, Srgba};
 use bevy_derive::{Deref, DerefMut};
-use bevy_ecs::prelude::*;
+use bevy_ecs::{entity::EntityHashMap, prelude::*};
 use bevy_extract_macros::ExtractComponent;
 use bevy_image::ToExtents;
+use bevy_log::warn_once;
 use bevy_math::{mat3, vec2, vec3, Mat3, Mat4, UVec4, Vec2, Vec3, Vec4, Vec4Swizzles};
 use bevy_platform::collections::{hash_map::Entry, HashMap};
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
@@ -43,9 +47,11 @@ use core::{
     ops::Range,
     sync::atomic::{AtomicUsize, Ordering},
 };
+use thiserror::Error;
 use wgpu::{
-    BufferUsages, Color as WgpuColor, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
-    StoreOp, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+    BufferUsages, Color as WgpuColor, Features, RenderPassColorAttachment,
+    RenderPassDepthStencilAttachment, StoreOp, TextureDescriptor, TextureDimension, TextureFormat,
+    TextureFormatFeatureFlags, TextureFormatFeatures, TextureUsages, TextureViewDescriptor,
 };
 
 /// The matrix that converts from the RGB to the LMS color space.
@@ -134,6 +140,96 @@ pub fn texture_format_to_code(format: TextureFormat) -> Option<u8> {
     })
 }
 
+/// Whether a format stores values above 1.0 instead of clamping them. A main texture with such a
+/// format is an HDR main texture.
+#[inline]
+pub fn texture_format_is_hdr(format: TextureFormat) -> bool {
+    matches!(
+        format,
+        TextureFormat::R16Float
+            | TextureFormat::Rg16Float
+            | TextureFormat::Rgba16Float
+            | TextureFormat::R32Float
+            | TextureFormat::Rg32Float
+            | TextureFormat::Rgba32Float
+            | TextureFormat::Rg11b10Ufloat
+    )
+}
+
+/// A [`MainTexture`](bevy_camera::MainTexture) format that cameras can't render into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum MainTextureFormatError {
+    /// The render pipelines have no key for the format.
+    #[error("the format {0:?} is not a supported main texture format")]
+    Unsupported(TextureFormat),
+    /// The device doesn't allow some of the usages for the format.
+    #[error("the device doesn't allow the usages {missing:?} for the format {format:?}")]
+    UsagesNotAllowed {
+        /// The format.
+        format: TextureFormat,
+        /// The usages the device doesn't allow.
+        missing: TextureUsages,
+    },
+    /// The format can't hold a color image.
+    #[error("the format {0:?} has fewer than three color channels")]
+    MissingColorChannels(TextureFormat),
+    /// The device can't blend into the format.
+    #[error("the device can't blend into the format {0:?}")]
+    NotBlendable(TextureFormat),
+    /// The device can't filter the format.
+    #[error("the device can't filter the format {0:?}")]
+    NotFilterable(TextureFormat),
+    /// The device can't multisample the format with the camera's `Msaa` setting.
+    #[error("the device can't render the format {format:?} with {samples} samples and resolve it")]
+    SamplesNotSupported {
+        /// The format.
+        format: TextureFormat,
+        /// The sample count of the camera's `Msaa` setting.
+        samples: u32,
+    },
+}
+
+/// Checks that a camera can render into a [`MainTexture`](bevy_camera::MainTexture) with the
+/// given format. `samples` is the sample count of the camera's [`Msaa`] setting, and `features`
+/// is what the device supports for the format.
+pub fn validate_main_texture_format(
+    format: TextureFormat,
+    samples: u32,
+    features: TextureFormatFeatures,
+) -> Result<(), MainTextureFormatError> {
+    if texture_format_to_code(format).is_none() {
+        return Err(MainTextureFormatError::Unsupported(format));
+    }
+    if format.components() < 3 {
+        return Err(MainTextureFormatError::MissingColorChannels(format));
+    }
+    let missing = ViewMainTextureUsages::default().0 - features.allowed_usages;
+    if !missing.is_empty() {
+        return Err(MainTextureFormatError::UsagesNotAllowed { format, missing });
+    }
+    if !features
+        .flags
+        .contains(TextureFormatFeatureFlags::BLENDABLE)
+    {
+        return Err(MainTextureFormatError::NotBlendable(format));
+    }
+    if !features
+        .flags
+        .contains(TextureFormatFeatureFlags::FILTERABLE)
+    {
+        return Err(MainTextureFormatError::NotFilterable(format));
+    }
+    if samples > 1
+        && !(features.flags.sample_count_supported(samples)
+            && features
+                .flags
+                .contains(TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE))
+    {
+        return Err(MainTextureFormatError::SamplesNotSupported { format, samples });
+    }
+    Ok(())
+}
+
 /// Decode a 5-bit code back into a [`TextureFormat`].
 ///
 /// Inverse of [`texture_format_to_code`].
@@ -210,6 +306,7 @@ impl Plugin for ViewPlugin {
                     collect_visible_cpu_culled_entities.in_set(RenderSystems::PrepareAssets),
                 ),
             );
+            render_app.add_systems(RenderStartup, clear_main_texture_allocations);
         }
     }
 
@@ -1366,25 +1463,92 @@ pub fn cleanup_view_targets_for_resize(
 /// The settings that decide which cameras share main textures. Cameras with
 /// equal keys share one allocation in [`prepare_view_targets`], and
 /// [`resolve_composition_spaces`] groups them the same way.
-type MainTextureKey = (
-    Option<NormalizedRenderTarget>,
-    TextureUsages,
-    TextureFormat,
-    Msaa,
-);
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum MainTextureKey {
+    /// A main texture chosen for the cameras whose settings match.
+    Implicit(Option<NormalizedRenderTarget>, TextureFormat, Msaa),
+    /// The [`MainTexture`](bevy_camera::MainTexture) on a render world entity.
+    Explicit(Entity),
+}
 
 fn main_texture_key(
     camera: &ExtractedCamera,
     view: &ExtractedView,
-    texture_usage: &CameraMainTextureUsages,
     msaa: Msaa,
+    main_texture: Option<&ExtractedCameraMainTexture>,
 ) -> MainTextureKey {
-    (
-        camera.target.clone(),
-        texture_usage.0,
-        view.target_format,
-        msaa,
-    )
+    match main_texture {
+        Some(main_texture) => MainTextureKey::Explicit(main_texture.entity),
+        None => MainTextureKey::Implicit(camera.target.clone(), view.target_format, msaa),
+    }
+}
+
+/// The usages a camera view needs from its main texture.
+///
+/// Extraction resets this every frame to the usages the renderer needs. A render feature that
+/// uses the main texture in another way adds its usages before [`prepare_view_targets`] runs, for
+/// example in [`RenderSystems::CreateViews`]. A main texture gets the usages of every view that
+/// renders into it.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq, Deref, DerefMut)]
+pub struct ViewMainTextureUsages(pub TextureUsages);
+
+impl Default for ViewMainTextureUsages {
+    fn default() -> Self {
+        Self(
+            TextureUsages::RENDER_ATTACHMENT
+                | TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_SRC,
+        )
+    }
+}
+
+/// What the device supports for a texture format.
+pub fn texture_format_features(
+    render_device: &RenderDevice,
+    render_adapter: &RenderAdapter,
+    format: TextureFormat,
+) -> TextureFormatFeatures {
+    if render_device
+        .features()
+        .contains(Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES)
+    {
+        render_adapter.get_texture_format_features(format)
+    } else {
+        format.guaranteed_format_features(render_device.features())
+    }
+}
+
+/// The textures of a [`MainTexture`](bevy_camera::MainTexture). They stay on its render world
+/// entity so the texture keeps its contents between frames.
+#[derive(Component, Clone)]
+pub struct MainTextureAllocation {
+    descriptor: TextureDescriptor<'static>,
+    a: CachedTexture,
+    b: CachedTexture,
+    /// 0 represents `a`, 1 represents `b`
+    main_texture: Arc<AtomicUsize>,
+}
+
+/// This is not required on first startup but is required during render recovery
+fn clear_main_texture_allocations(
+    mut commands: Commands,
+    main_textures: Query<Entity, With<MainTextureAllocation>>,
+) {
+    for entity in &main_textures {
+        commands.entity(entity).remove::<MainTextureAllocation>();
+    }
+}
+
+fn create_texture(
+    render_device: &RenderDevice,
+    descriptor: TextureDescriptor<'static>,
+) -> CachedTexture {
+    let texture = render_device.create_texture(&descriptor);
+    let default_view = texture.create_view(&TextureViewDescriptor::default());
+    CachedTexture {
+        texture,
+        default_view,
+    }
 }
 
 pub fn prepare_view_targets(
@@ -1396,18 +1560,33 @@ pub fn prepare_view_targets(
         Entity,
         &ExtractedCamera,
         &ExtractedView,
-        &CameraMainTextureUsages,
+        &ViewMainTextureUsages,
         &Msaa,
         Option<&ResolvedCompositingSpace>,
+        Option<&ExtractedCameraMainTexture>,
+        MainEntity,
     )>,
+    render_adapter: Res<RenderAdapter>,
+    allocations: Query<&MainTextureAllocation>,
     view_target_attachments: Res<ViewTargetAttachments>,
     mut main_texture_atomics: Local<HashMap<MainTextureKey, Weak<AtomicUsize>>>,
 ) {
     main_texture_atomics.retain(|_, weak| weak.strong_count() > 0);
 
+    let mut usages = <HashMap<MainTextureKey, TextureUsages>>::default();
+    for (_, camera, view, texture_usage, msaa, _, main_texture, _) in cameras.iter() {
+        *usages
+            .entry(main_texture_key(camera, view, *msaa, main_texture))
+            .or_insert(TextureUsages::empty()) |= texture_usage.0;
+    }
+
+    let mut main_texture_allocations = EntityHashMap::<MainTextureAllocation>::default();
+    // The multisampled textures that resolve into each `MainTexture`, one per `Msaa` setting.
+    let mut main_texture_sampled = <HashMap<(Entity, Msaa), CachedTexture>>::default();
     let mut textures = <HashMap<_, _>>::default();
-    for (entity, camera, view, texture_usage, msaa, resolved_space) in cameras.iter() {
-        let Some(target_size) = camera.physical_target_size else {
+    for (entity, camera, view, _, msaa, resolved_space, main_texture, main_entity) in cameras.iter()
+    {
+        let Some(render_size) = camera.physical_render_size else {
             // If we don't have a target size, we can't create the main texture and have to bail
             commands.entity(entity).try_remove::<ViewTarget>();
             continue;
@@ -1427,6 +1606,26 @@ pub fn prepare_view_targets(
 
         let main_texture_format = view.target_format;
 
+        let key = main_texture_key(camera, view, *msaa, main_texture);
+        let usage = usages[&key];
+        // Usages beyond the default set aren't allowed for every format.
+        if usage != ViewMainTextureUsages::default().0 {
+            let missing = usage
+                - texture_format_features(&render_device, &render_adapter, main_texture_format)
+                    .allowed_usages;
+            if !missing.is_empty() {
+                warn_once!(
+                    "Camera {main_entity} is not rendered: {}.",
+                    MainTextureFormatError::UsagesNotAllowed {
+                        format: main_texture_format,
+                        missing,
+                    }
+                );
+                commands.entity(entity).try_remove::<ViewTarget>();
+                continue;
+            }
+        }
+
         let clear_color = match camera.clear_color {
             ClearColorConfig::Custom(color) => Some(color),
             ClearColorConfig::None => None,
@@ -1443,69 +1642,127 @@ pub fn prepare_view_targets(
                 Some(CompositingSpace::Linear) | None => LinearRgba::from(color).into(),
             });
 
-        let key = main_texture_key(camera, view, texture_usage, *msaa);
-        let (a, b, sampled, main_texture) = textures.entry(key.clone()).or_insert_with(|| {
-            let descriptor = TextureDescriptor {
-                label: None,
-                size: target_size.to_extents(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: TextureDimension::D2,
-                format: main_texture_format,
-                usage: texture_usage.0,
-                view_formats: match main_texture_format {
-                    TextureFormat::Bgra8Unorm => &[TextureFormat::Bgra8UnormSrgb],
-                    TextureFormat::Rgba8Unorm => &[TextureFormat::Rgba8UnormSrgb],
-                    _ => &[],
-                },
-            };
-            let a = texture_cache.get(
-                &render_device,
-                TextureDescriptor {
-                    label: Some("main_texture_a"),
-                    ..descriptor
-                },
-            );
-            let b = texture_cache.get(
-                &render_device,
-                TextureDescriptor {
-                    label: Some("main_texture_b"),
-                    ..descriptor
-                },
-            );
-            let sampled = if msaa.samples() > 1 {
-                let sampled = texture_cache.get(
+        let descriptor = TextureDescriptor {
+            label: None,
+            size: render_size.to_extents(),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: main_texture_format,
+            usage,
+            view_formats: match main_texture_format {
+                TextureFormat::Bgra8Unorm => &[TextureFormat::Bgra8UnormSrgb],
+                TextureFormat::Rgba8Unorm => &[TextureFormat::Rgba8UnormSrgb],
+                _ => &[],
+            },
+        };
+        let (a, b, sampled, main_texture) = if let MainTextureKey::Explicit(texture_entity) = key {
+            let allocation = main_texture_allocations
+                .entry(texture_entity)
+                .or_insert_with(|| match allocations.get(texture_entity) {
+                    Ok(allocation) if allocation.descriptor == descriptor => allocation.clone(),
+                    _ => {
+                        let allocation = MainTextureAllocation {
+                            a: create_texture(
+                                &render_device,
+                                TextureDescriptor {
+                                    label: Some("main_texture_a"),
+                                    ..descriptor
+                                },
+                            ),
+                            b: create_texture(
+                                &render_device,
+                                TextureDescriptor {
+                                    label: Some("main_texture_b"),
+                                    ..descriptor
+                                },
+                            ),
+                            main_texture: Arc::new(AtomicUsize::new(0)),
+                            descriptor: descriptor.clone(),
+                        };
+                        commands
+                            .entity(texture_entity)
+                            .try_insert(allocation.clone());
+                        allocation
+                    }
+                });
+            let sampled = (msaa.samples() > 1).then(|| {
+                main_texture_sampled
+                    .entry((texture_entity, *msaa))
+                    .or_insert_with(|| {
+                        texture_cache.get(
+                            &render_device,
+                            TextureDescriptor {
+                                label: Some("main_texture_sampled"),
+                                size: render_size.to_extents(),
+                                mip_level_count: 1,
+                                sample_count: msaa.samples(),
+                                dimension: TextureDimension::D2,
+                                format: main_texture_format,
+                                usage: TextureUsages::RENDER_ATTACHMENT,
+                                view_formats: descriptor.view_formats,
+                            },
+                        )
+                    })
+                    .clone()
+            });
+            (
+                allocation.a.clone(),
+                allocation.b.clone(),
+                sampled,
+                allocation.main_texture.clone(),
+            )
+        } else {
+            let (a, b, sampled, main_texture) = textures.entry(key.clone()).or_insert_with(|| {
+                let a = texture_cache.get(
                     &render_device,
                     TextureDescriptor {
-                        label: Some("main_texture_sampled"),
-                        size: target_size.to_extents(),
-                        mip_level_count: 1,
-                        sample_count: msaa.samples(),
-                        dimension: TextureDimension::D2,
-                        format: main_texture_format,
-                        usage: TextureUsages::RENDER_ATTACHMENT,
-                        view_formats: descriptor.view_formats,
+                        label: Some("main_texture_a"),
+                        ..descriptor
                     },
                 );
-                Some(sampled)
-            } else {
-                None
-            };
-            // re-use the same atomics frame to frame for views with the same main texture
-            // to ensure post process writes persist through msaa writeback
-            let main_texture = match main_texture_atomics.entry(key) {
-                Entry::Occupied(e) => e
-                    .get()
-                    .upgrade()
-                    .expect("dead weaks were pruned at top of system"),
-                Entry::Vacant(e) => {
-                    let arc = Arc::new(AtomicUsize::new(0));
-                    e.insert(Arc::downgrade(&arc));
-                    arc
-                }
-            };
-            (a, b, sampled, main_texture)
-        });
+                let b = texture_cache.get(
+                    &render_device,
+                    TextureDescriptor {
+                        label: Some("main_texture_b"),
+                        ..descriptor
+                    },
+                );
+                let sampled = if msaa.samples() > 1 {
+                    let sampled = texture_cache.get(
+                        &render_device,
+                        TextureDescriptor {
+                            label: Some("main_texture_sampled"),
+                            size: render_size.to_extents(),
+                            mip_level_count: 1,
+                            sample_count: msaa.samples(),
+                            dimension: TextureDimension::D2,
+                            format: main_texture_format,
+                            usage: TextureUsages::RENDER_ATTACHMENT,
+                            view_formats: descriptor.view_formats,
+                        },
+                    );
+                    Some(sampled)
+                } else {
+                    None
+                };
+                // re-use the same atomics frame to frame for views with the same main texture
+                // to ensure post process writes persist through msaa writeback
+                let main_texture = match main_texture_atomics.entry(key) {
+                    Entry::Occupied(e) => e
+                        .get()
+                        .upgrade()
+                        .expect("dead weaks were pruned at top of system"),
+                    Entry::Vacant(e) => {
+                        let arc = Arc::new(AtomicUsize::new(0));
+                        e.insert(Arc::downgrade(&arc));
+                        arc
+                    }
+                };
+                (a, b, sampled, main_texture)
+            });
+            (a.clone(), b.clone(), sampled.clone(), main_texture.clone())
+        };
 
         let main_textures = MainTargetTextures {
             a: ColorAttachment::new(a.clone(), sampled.clone(), None, converted_clear_color),
@@ -1519,5 +1776,113 @@ pub fn prepare_view_targets(
             main_texture_format,
             out_texture: out_attachment.cloned(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn features(flags: TextureFormatFeatureFlags) -> TextureFormatFeatures {
+        TextureFormatFeatures {
+            allowed_usages: ViewMainTextureUsages::default().0,
+            flags,
+        }
+    }
+
+    const BLEND_AND_FILTER: TextureFormatFeatureFlags =
+        TextureFormatFeatureFlags::BLENDABLE.union(TextureFormatFeatureFlags::FILTERABLE);
+
+    #[test]
+    fn hdr_formats_are_the_unclamped_float_formats() {
+        for format in [
+            TextureFormat::Rgba16Float,
+            TextureFormat::Rgba32Float,
+            TextureFormat::Rg11b10Ufloat,
+        ] {
+            assert!(texture_format_is_hdr(format), "{format:?}");
+        }
+        for format in [
+            TextureFormat::Rgba8Unorm,
+            TextureFormat::Rgba8UnormSrgb,
+            TextureFormat::Bgra8UnormSrgb,
+            TextureFormat::Rgba16Unorm,
+            TextureFormat::Rgba16Snorm,
+            TextureFormat::Rgb10a2Unorm,
+        ] {
+            assert!(!texture_format_is_hdr(format), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn main_texture_formats_are_validated() {
+        let format = TextureFormat::Rgba16Float;
+        assert_eq!(
+            validate_main_texture_format(format, 1, features(BLEND_AND_FILTER)),
+            Ok(())
+        );
+        assert_eq!(
+            validate_main_texture_format(TextureFormat::Rgba8Uint, 1, features(BLEND_AND_FILTER)),
+            Err(MainTextureFormatError::Unsupported(
+                TextureFormat::Rgba8Uint
+            ))
+        );
+        for format in [TextureFormat::R16Float, TextureFormat::Rg32Float] {
+            assert_eq!(
+                validate_main_texture_format(format, 1, features(BLEND_AND_FILTER)),
+                Err(MainTextureFormatError::MissingColorChannels(format))
+            );
+        }
+        assert_eq!(
+            validate_main_texture_format(
+                format,
+                1,
+                TextureFormatFeatures {
+                    allowed_usages: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_SRC,
+                    flags: BLEND_AND_FILTER,
+                }
+            ),
+            Err(MainTextureFormatError::UsagesNotAllowed {
+                format,
+                missing: TextureUsages::RENDER_ATTACHMENT,
+            })
+        );
+        assert_eq!(
+            validate_main_texture_format(
+                format,
+                1,
+                features(TextureFormatFeatureFlags::FILTERABLE)
+            ),
+            Err(MainTextureFormatError::NotBlendable(format))
+        );
+        assert_eq!(
+            validate_main_texture_format(format, 1, features(TextureFormatFeatureFlags::BLENDABLE)),
+            Err(MainTextureFormatError::NotFilterable(format))
+        );
+        // Multisampling needs both the sample count and a resolve.
+        assert_eq!(
+            validate_main_texture_format(format, 4, features(BLEND_AND_FILTER)),
+            Err(MainTextureFormatError::SamplesNotSupported { format, samples: 4 })
+        );
+        assert_eq!(
+            validate_main_texture_format(
+                format,
+                4,
+                features(BLEND_AND_FILTER | TextureFormatFeatureFlags::MULTISAMPLE_X4)
+            ),
+            Err(MainTextureFormatError::SamplesNotSupported { format, samples: 4 })
+        );
+        assert_eq!(
+            validate_main_texture_format(
+                format,
+                4,
+                features(
+                    BLEND_AND_FILTER
+                        | TextureFormatFeatureFlags::MULTISAMPLE_X4
+                        | TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE
+                )
+            ),
+            Ok(())
+        );
     }
 }

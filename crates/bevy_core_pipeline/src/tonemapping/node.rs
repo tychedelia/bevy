@@ -6,11 +6,11 @@ use bevy_render::{
     render_asset::RenderAssets,
     render_resource::{
         BindGroup, BindGroupEntries, BufferId, LoadOp, Operations, PipelineCache,
-        RenderPassColorAttachment, RenderPassDescriptor, StoreOp, TextureFormat, TextureViewId,
+        RenderPassColorAttachment, RenderPassDescriptor, StoreOp, TextureViewId,
     },
     renderer::{RenderContext, ViewQuery},
     texture::{FallbackImage, GpuImage},
-    view::{ViewTarget, ViewUniformOffset, ViewUniforms},
+    view::{texture_format_is_hdr, ViewTarget, ViewUniformOffset, ViewUniforms},
 };
 
 use super::{get_lut_bindings, Tonemapping};
@@ -43,8 +43,8 @@ pub fn tonemapping(
 ) {
     let (view_entity, view_uniform_offset, target, view_tonemapping_pipeline) = view.into_inner();
 
-    // Views that run this pass always have an `Rgba16Float` main texture.
-    debug_assert_eq!(target.main_texture_format(), TextureFormat::Rgba16Float);
+    // Views that run this pass always have an HDR main texture.
+    debug_assert!(texture_format_is_hdr(target.main_texture_format()));
 
     // Drop the bind groups of views that no longer run the pass, so their main
     // textures can be freed.

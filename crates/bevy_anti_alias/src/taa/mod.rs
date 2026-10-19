@@ -209,7 +209,7 @@ pub fn temporal_anti_alias(
 
     taa_pass.set_render_pipeline(taa_pipeline);
     taa_pass.set_bind_group(0, &taa_bind_group, &[]);
-    if let Some(viewport) = camera.viewport.as_ref() {
+    if let Some(viewport) = camera.render_viewport.as_ref() {
         taa_pass.set_camera_viewport(viewport);
     }
     taa_pass.draw(0..3, 0..1);
@@ -397,10 +397,10 @@ fn prepare_taa_history_textures(
     cameras: Query<(Entity, &ExtractedView, &ExtractedCamera), With<TemporalAntiAliasing>>,
 ) {
     for (entity, view, camera) in &cameras {
-        if let Some(physical_target_size) = camera.physical_target_size {
+        if let Some(physical_render_size) = camera.physical_render_size {
             let mut texture_descriptor = TextureDescriptor {
                 label: None,
-                size: physical_target_size.to_extents(),
+                size: physical_render_size.to_extents(),
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: TextureDimension::D2,

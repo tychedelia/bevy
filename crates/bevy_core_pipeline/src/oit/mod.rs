@@ -257,7 +257,7 @@ pub fn prepare_oit_buffers(
     let mut max_size = UVec2::new(0, 0);
     let mut fragments_per_pixel_average = 0f32;
     for (camera, settings) in &cameras {
-        let Some(size) = camera.physical_target_size else {
+        let Some(size) = camera.physical_render_size else {
             continue;
         };
         max_size = max_size.max(size);

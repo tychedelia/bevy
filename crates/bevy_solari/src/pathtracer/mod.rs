@@ -19,10 +19,14 @@ use bevy_ecs::{
     system::{Commands, Query},
 };
 use bevy_light::AtmosphereEnvironmentMapLight;
+use bevy_log::warn_once;
 use bevy_reflect::{std_traits::ReflectDefault, Reflect};
 use bevy_render::{
-    init_gpu_resource, renderer::RenderDevice, ExtractSchedule, Render, RenderApp, RenderStartup,
-    RenderSystems,
+    init_gpu_resource,
+    render_resource::{TextureFormat, TextureUsages},
+    renderer::RenderDevice,
+    view::{ExtractedView, ViewMainTextureUsages},
+    ExtractSchedule, Render, RenderApp, RenderStartup, RenderSystems,
 };
 use extract::extract_pathtracer;
 use node::{init_pathtracer_pipelines, pathtracer};
@@ -64,6 +68,10 @@ impl Plugin for PathtracingPlugin {
                 prepare_pathtracer_accumulation_texture.in_set(RenderSystems::PrepareResources),
             )
             .add_systems(
+                Render,
+                request_main_texture_usages.in_set(RenderSystems::CreateViews),
+            )
+            .add_systems(
                 Core3d,
                 pathtracer
                     .after(Core3dSystems::MainPass)
@@ -98,5 +106,22 @@ fn disable_atmosphere_env_map_filtering(
                 filtered: false,
                 ..light.clone()
             });
+    }
+}
+
+/// The pathtracer writes into the main texture as an `Rgba16Float` storage texture.
+fn request_main_texture_usages(
+    mut views: Query<(&mut ViewMainTextureUsages, &ExtractedView), With<Pathtracer>>,
+) {
+    for (mut usages, view) in &mut views {
+        if view.target_format == TextureFormat::Rgba16Float {
+            usages.0 |= TextureUsages::STORAGE_BINDING;
+        } else {
+            warn_once!(
+                "Pathtracer requires an Rgba16Float main texture, but the camera's main texture is \
+                {:?}. Pathtracer is disabled on this camera.",
+                view.target_format
+            );
+        }
     }
 }

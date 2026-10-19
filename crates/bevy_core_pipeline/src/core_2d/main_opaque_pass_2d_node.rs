@@ -55,7 +55,7 @@ pub fn main_opaque_pass_2d(
     });
     let pass_span = diagnostics.pass_span(&mut render_pass, "main_opaque_pass_2d");
 
-    if let Some(viewport) = camera.viewport.as_ref() {
+    if let Some(viewport) = camera.render_viewport.as_ref() {
         render_pass.set_camera_viewport(viewport);
     }
 

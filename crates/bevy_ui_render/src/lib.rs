@@ -1430,8 +1430,14 @@ pub fn extract_ui_camera_view(
         let retained_view_entity = RetainedViewEntity::new(main_entity, None, UI_CAMERA_SUBVIEW);
 
         // ignore inactive cameras
-        if let (Some(physical_viewport_rect), Some(target_size), Some(target_format)) = (
+        if let (
+            Some(physical_viewport_rect),
+            Some(render_viewport_rect),
+            Some(target_size),
+            Some(target_format),
+        ) = (
             camera.physical_viewport_rect(),
+            camera.physical_render_viewport_rect(),
             camera.physical_target_size(),
             main_pass_formats.get(&render_entity).copied(),
         ) && target_size.x != 0
@@ -1464,7 +1470,7 @@ pub fn extract_ui_camera_view(
                 ),
                 clip_from_world: None,
                 target_format,
-                viewport: UVec4::from((physical_viewport_rect.min, physical_viewport_rect.size())),
+                viewport: UVec4::from((render_viewport_rect.min, render_viewport_rect.size())),
                 color_grading: Default::default(),
                 invert_culling: false,
             };

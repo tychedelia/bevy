@@ -36,6 +36,10 @@ impl Plugin for BlitPlugin {
 pub struct BlitPipeline {
     pub layout: BindGroupLayoutDescriptor,
     pub sampler: Sampler,
+    /// The layout for [`FilterMode::Linear`] blits.
+    pub linear_layout: BindGroupLayoutDescriptor,
+    /// The sampler for [`FilterMode::Linear`] blits.
+    pub linear_sampler: Sampler,
     pub fullscreen_shader: FullscreenShader,
     pub fragment_shader: Handle<Shader>,
 }
@@ -57,11 +61,30 @@ pub fn init_blit_pipeline(
         ),
     );
 
+    let linear_layout = BindGroupLayoutDescriptor::new(
+        "blit_linear_bind_group_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+            ),
+        ),
+    );
+
     let sampler = render_device.create_sampler(&SamplerDescriptor::default());
+
+    let linear_sampler = render_device.create_sampler(&SamplerDescriptor {
+        mag_filter: FilterMode::Linear,
+        min_filter: FilterMode::Linear,
+        ..default()
+    });
 
     commands.insert_resource(BlitPipeline {
         layout,
         sampler,
+        linear_layout,
+        linear_sampler,
         fullscreen_shader: fullscreen_shader.clone(),
         fragment_shader: load_embedded_asset!(asset_server.as_ref(), "blit.wesl"),
     });
@@ -80,6 +103,26 @@ impl BlitPipeline {
             &BindGroupEntries::sequential((src_texture, &self.sampler)),
         )
     }
+
+    /// Creates the bind group for a pipeline specialized with the given
+    /// [`BlitPipelineKey::filter`].
+    pub fn create_bind_group_with_filter(
+        &self,
+        render_device: &RenderDevice,
+        src_texture: &TextureView,
+        pipeline_cache: &PipelineCache,
+        filter: FilterMode,
+    ) -> BindGroup {
+        let (layout, sampler) = match filter {
+            FilterMode::Linear => (&self.linear_layout, &self.linear_sampler),
+            FilterMode::Nearest => (&self.layout, &self.sampler),
+        };
+        render_device.create_bind_group(
+            None,
+            &pipeline_cache.get_bind_group_layout(layout),
+            &BindGroupEntries::sequential((src_texture, sampler)),
+        )
+    }
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
@@ -90,6 +133,9 @@ pub struct BlitPipelineKey {
     /// Color space of the source texture. When `Some(Srgb)` or `Some(Oklab)`, the blit converts
     /// to linear RGB before writing to the output target.
     pub source_space: Option<CompositingSpace>,
+    /// How the source texture is sampled. Bind groups for a [`FilterMode::Linear`] pipeline come
+    /// from [`BlitPipeline::create_bind_group_with_filter`].
+    pub filter: FilterMode,
 }
 
 impl SpecializedRenderPipeline for BlitPipeline {
@@ -105,7 +151,10 @@ impl SpecializedRenderPipeline for BlitPipeline {
 
         RenderPipelineDescriptor {
             label: Some("blit pipeline".into()),
-            layout: vec![self.layout.clone()],
+            layout: vec![match key.filter {
+                FilterMode::Linear => self.linear_layout.clone(),
+                FilterMode::Nearest => self.layout.clone(),
+            }],
             vertex: self.fullscreen_shader.to_vertex_state(),
             fragment: Some(FragmentState {
                 shader: self.fragment_shader.clone(),

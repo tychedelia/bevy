@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use argh::FromArgs;
 use bevy::{
     asset::LoadState,
-    camera::{CameraMainTextureUsages, Hdr},
+    camera::Hdr,
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     gltf::Gltf,
@@ -22,7 +22,7 @@ use bevy::{
     platform::collections::{HashMap, HashSet},
     post_process::bloom::Bloom,
     prelude::*,
-    render::{diagnostic::RenderDiagnosticsPlugin, render_resource::TextureUsages},
+    render::diagnostic::RenderDiagnosticsPlugin,
     solari::prelude::{RaytracingMesh3d, SolariLighting, SolariPlugins},
     time::common_conditions::on_timer,
     window::{PresentMode, WindowResolution},
@@ -355,14 +355,7 @@ fn setup(
             ..default()
         },
     ));
-    cam.insert_if(
-        (
-            // Solari writes its result into the main texture with a storage binding.
-            CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
-            SolariLighting::default(),
-        ),
-        || !args.no_solari,
-    );
+    cam.insert_if(SolariLighting::default(), || !args.no_solari);
     #[cfg(all(feature = "dlss", not(feature = "force_disable_dlss")))]
     if dlss_rr_supported.is_some() && !args.no_solari {
         cam.insert(dlss_rr(args.dlss_quality));

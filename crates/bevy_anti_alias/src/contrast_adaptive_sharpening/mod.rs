@@ -3,7 +3,9 @@ use bevy_app::prelude::*;
 use bevy_asset::{embedded_asset, load_embedded_asset, AssetServer};
 use bevy_camera::Camera;
 use bevy_core_pipeline::{
-    schedule::{Core2d, Core2dSystems, Core3d, Core3dSystems},
+    schedule::{
+        Core2d, Core2dSystems, Core3d, Core3dSystems, CorePostProcess, CorePostProcessSystems,
+    },
     FullscreenShader,
 };
 use bevy_ecs::{prelude::*, query::QueryItem};
@@ -128,6 +130,12 @@ impl Plugin for CasPlugin {
                 cas.after(fxaa)
                     .after(smaa)
                     .in_set(Core2dSystems::PostProcess),
+            )
+            .add_systems(
+                CorePostProcess,
+                cas.after(fxaa)
+                    .after(smaa)
+                    .in_set(CorePostProcessSystems::PostProcess),
             );
     }
 }

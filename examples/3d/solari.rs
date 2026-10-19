@@ -2,7 +2,6 @@
 
 use argh::FromArgs;
 use bevy::{
-    camera::CameraMainTextureUsages,
     camera_controller::free_camera::{FreeCamera, FreeCameraPlugin},
     diagnostic::{Diagnostic, DiagnosticPath, DiagnosticsStore},
     gltf::GltfMaterialName,
@@ -10,7 +9,7 @@ use bevy::{
     mesh::{Indices, VertexAttributeValues},
     post_process::bloom::Bloom,
     prelude::*,
-    render::{diagnostic::RenderDiagnosticsPlugin, render_resource::TextureUsages},
+    render::diagnostic::RenderDiagnosticsPlugin,
     solari::{
         pathtracer::{Pathtracer, PathtracingPlugin},
         prelude::{RaytracingMesh3d, SolariLighting, SolariPlugins},
@@ -152,8 +151,7 @@ fn setup_pica_pica(
         Transform::from_translation(Vec3::new(0.219417, 2.5764852, 6.9718704)).with_rotation(
             Quat::from_xyzw(-0.1466768, 0.013738206, 0.002037309, 0.989087),
         ),
-        // Msaa::Off and CameraMainTextureUsages with STORAGE_BINDING are required for Solari
-        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+        // Msaa::Off is required for Solari
         Msaa::Off,
     ));
 
@@ -329,8 +327,7 @@ fn setup_many_lights(
         Transform::from_translation(Vec3::new(6.11329, 166.74896, 451.8226)).with_rotation(
             Quat::from_xyzw(-0.183938, 0.009093744, 0.0017017953, 0.9828943),
         ),
-        // Msaa::Off and CameraMainTextureUsages with STORAGE_BINDING are required for Solari
-        CameraMainTextureUsages::default().with(TextureUsages::STORAGE_BINDING),
+        // Msaa::Off is required for Solari
         Msaa::Off,
         Bloom {
             intensity: 0.1,

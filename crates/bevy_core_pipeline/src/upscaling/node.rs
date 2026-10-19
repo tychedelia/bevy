@@ -4,14 +4,14 @@ use bevy_ecs::prelude::*;
 use bevy_render::{
     camera::ExtractedCamera,
     diagnostic::RecordDiagnostics,
-    render_resource::{BindGroup, PipelineCache, RenderPassDescriptor, TextureViewId},
+    render_resource::{BindGroup, FilterMode, PipelineCache, RenderPassDescriptor, TextureViewId},
     renderer::{RenderContext, ViewQuery},
     view::ViewTarget,
 };
 
 #[derive(Default)]
 pub struct UpscalingBindGroupCache {
-    cached: Option<(TextureViewId, BindGroup)>,
+    cached: Option<(TextureViewId, FilterMode, BindGroup)>,
 }
 
 pub fn upscaling(
@@ -46,16 +46,23 @@ pub fn upscaling(
     // texture to be upscaled to the output texture
     let main_texture_view = target.main_texture_view();
 
+    let filter = upscaling_target.1.filter;
+
     let bind_group = match &mut cache.cached {
-        Some((id, bind_group)) if main_texture_view.id() == *id => bind_group,
+        Some((id, cached_filter, bind_group))
+            if main_texture_view.id() == *id && filter == *cached_filter =>
+        {
+            bind_group
+        }
         cached => {
-            let bind_group = blit_pipeline.create_bind_group(
+            let bind_group = blit_pipeline.create_bind_group_with_filter(
                 ctx.render_device(),
                 main_texture_view,
                 &pipeline_cache,
+                filter,
             );
 
-            let (_, bind_group) = cached.insert((main_texture_view.id(), bind_group));
+            let (_, _, bind_group) = cached.insert((main_texture_view.id(), filter, bind_group));
             bind_group
         }
     };
@@ -89,7 +96,7 @@ pub fn upscaling(
         let mut render_pass = ctx.command_encoder().begin_render_pass(&pass_descriptor);
 
         if let Some(camera) = camera
-            && let Some(viewport) = &camera.viewport
+            && let Some(viewport) = &camera.target_viewport
         {
             let size = viewport.physical_size;
             let position = viewport.physical_position;

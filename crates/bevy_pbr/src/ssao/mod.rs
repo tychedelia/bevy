@@ -200,7 +200,7 @@ fn ssao(
         Some(spatial_denoise_pipeline),
         Some(ssao_pipeline),
     ) = (
-        camera.physical_viewport_size,
+        camera.physical_render_viewport_size,
         pipeline_cache.get_compute_pipeline(pipelines.preprocess_depth_pipeline),
         pipeline_cache.get_compute_pipeline(pipelines.spatial_denoise_pipeline),
         pipeline_cache.get_compute_pipeline(pipeline_id.0),
@@ -538,7 +538,7 @@ fn prepare_ssao_textures(
     views: Query<(Entity, &ExtractedCamera, &ScreenSpaceAmbientOcclusion)>,
 ) {
     for (entity, camera, ssao_settings) in &views {
-        let Some(physical_viewport_size) = camera.physical_viewport_size else {
+        let Some(physical_viewport_size) = camera.physical_render_viewport_size else {
             continue;
         };
         let size = physical_viewport_size.to_extents();

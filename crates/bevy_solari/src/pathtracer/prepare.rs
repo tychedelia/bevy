@@ -23,7 +23,7 @@ pub fn prepare_pathtracer_accumulation_texture(
     mut commands: Commands,
 ) {
     for (entity, camera) in &query {
-        let Some(viewport) = camera.physical_viewport_size else {
+        let Some(viewport) = camera.physical_render_viewport_size else {
             continue;
         };
 
