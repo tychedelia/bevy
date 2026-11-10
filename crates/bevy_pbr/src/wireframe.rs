@@ -33,7 +33,7 @@ use bevy_render::{
     camera::{
         DirtySpecializationSystems, DirtyWireframeSpecializations, ExtractedCamera, PendingQueues,
     },
-    extract_resource::ExtractResource,
+    extract_resource::{ExtractResource, ExtractResourcePlugin},
     mesh::{
         allocator::{MeshAllocator, MeshAllocatorSettings, MeshSlabs},
         RenderMesh, RenderMeshBufferInfo,
@@ -91,6 +91,7 @@ impl Plugin for WireframePlugin {
         app.add_plugins((
             BinnedRenderPhasePlugin::<Wireframe3d, MeshPipeline>::new(self.debug_flags),
             RenderAssetPlugin::<RenderWireframeMaterial>::default(),
+            ExtractResourcePlugin::<WireframeConfig>::default(),
         ))
         .init_asset::<WireframeMaterial>()
         .init_resource::<WireframeEntitiesNeedingSpecialization>()
