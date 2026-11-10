@@ -15,7 +15,11 @@ use bevy::{
         WireframePlugin, WireframeTopology,
     },
     prelude::*,
-    render::{render_resource::WgpuFeatures, settings::WgpuSettings, RenderPlugin},
+    render::{
+        render_resource::{Face, WgpuFeatures},
+        settings::WgpuSettings,
+        RenderPlugin,
+    },
 };
 
 fn main() {
@@ -150,12 +154,13 @@ X - Change global color
 C - Change color of the green cube wireframe
 V - Line width (current: {current_width:.1}px)
 B - Toggle topology (current: {:?})
+K - Toggle back-face culling (current: {:?})
 
 WireframeConfig
 -------------
 Global: {}
 Color: {:?}",
-        config.default_topology, config.global, config.default_color,
+        config.default_topology, config.cull_mode, config.global, config.default_color,
     );
 
     // Toggle showing a wireframe on all meshes
@@ -198,6 +203,15 @@ Color: {:?}",
         config.default_topology = match config.default_topology {
             WireframeTopology::Triangles => WireframeTopology::Quads,
             WireframeTopology::Quads => WireframeTopology::Triangles,
+        };
+    }
+
+    if keyboard_input.just_pressed(KeyCode::KeyN) {}
+
+    if keyboard_input.just_pressed(KeyCode::KeyK) {
+        config.cull_mode = match config.cull_mode {
+            Some(_) => None,
+            None => Some(Face::Back),
         };
     }
 }

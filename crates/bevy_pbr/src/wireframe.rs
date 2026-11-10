@@ -737,6 +737,7 @@ pub struct WireframePipelineKey {
     pub wide: bool,
     pub quads: bool,
     pub line_mode: bool,
+    pub cull_mode: Option<Face>,
 }
 
 impl SpecializedMeshPipeline for Wireframe3dPipeline {
@@ -748,6 +749,8 @@ impl SpecializedMeshPipeline for Wireframe3dPipeline {
         layout: &MeshVertexBufferLayoutRef,
     ) -> Result<RenderPipelineDescriptor, SpecializedMeshPipelineError> {
         let mut descriptor = self.mesh_pipeline.specialize(key.mesh_key, layout)?;
+
+        descriptor.primitive.cull_mode = key.cull_mode;
 
         if descriptor.primitive.topology.is_triangles() {
             descriptor.depth_stencil.as_mut().unwrap().bias.slope_scale = 1.0;
@@ -896,6 +899,10 @@ pub struct WireframeConfig {
     pub default_line_width: f32,
     /// Default edge topology.
     pub default_topology: WireframeTopology,
+    /// Which faces the wireframe pass culls. The default matches the mesh pipeline
+    /// and skips back faces, so a mesh with no fill shows only its front edges;
+    /// `None` draws the edges of every face, like a classic wireframe.
+    pub cull_mode: Option<Face>,
 }
 
 impl Default for WireframeConfig {
@@ -905,6 +912,7 @@ impl Default for WireframeConfig {
             default_color: Color::default(),
             default_line_width: 1.0,
             default_topology: WireframeTopology::default(),
+            cull_mode: Some(Face::Back),
         }
     }
 }
@@ -982,7 +990,16 @@ pub struct WireframeEntitiesNeedingSpecialization {
 #[derive(Resource, Default)]
 pub struct SpecializedWireframePipelineCache {
     views: HashMap<RetainedViewEntity, SpecializedWireframeViewPipelineCache>,
-    wide: HashMap<(MeshPipelineKey, MeshVertexBufferLayoutRef, bool, bool), CachedRenderPipelineId>,
+    wide: HashMap<
+        (
+            MeshPipelineKey,
+            MeshVertexBufferLayoutRef,
+            bool,
+            bool,
+            Option<Face>,
+        ),
+        CachedRenderPipelineId,
+    >,
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -1368,6 +1385,7 @@ pub fn specialize_wireframes(
     pipeline: Res<Wireframe3dPipeline>,
     pipeline_cache: Res<PipelineCache>,
     render_lightmaps: Res<RenderLightmaps>,
+    config: Res<WireframeConfig>,
 ) {
     let mut all_views: HashSet<RetainedViewEntity, FixedHasher> = HashSet::default();
 
@@ -1487,13 +1505,20 @@ pub fn specialize_wireframes(
             let line_mode = wide && !thick;
 
             let pipeline_id = if wide {
-                let cache_key = (mesh_key, mesh.layout.clone(), quads, line_mode);
+                let cache_key = (
+                    mesh_key,
+                    mesh.layout.clone(),
+                    quads,
+                    line_mode,
+                    config.cull_mode,
+                );
                 *wide_pipeline_cache.entry(cache_key).or_insert_with(|| {
                     let wireframe_key = WireframePipelineKey {
                         mesh_key,
                         wide: true,
                         quads,
                         line_mode,
+                        cull_mode: config.cull_mode,
                     };
                     match pipeline.specialize(wireframe_key, &mesh.layout) {
                         Ok(descriptor) => pipeline_cache.queue_render_pipeline(descriptor),
@@ -1509,6 +1534,7 @@ pub fn specialize_wireframes(
                     wide: false,
                     quads: false,
                     line_mode: false,
+                    cull_mode: config.cull_mode,
                 };
                 match pipelines.specialize(&pipeline_cache, &pipeline, wireframe_key, &mesh.layout)
                 {
@@ -1613,9 +1639,7 @@ fn queue_wireframes(
             let binding_count = render_meshes
                 .get(mesh_asset_id)
                 .map_or(1, |m| m.binding_count);
-            let Some(mesh_slabs) =
-                mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count)
-            else {
+            let Some(mesh_slabs) = mesh_allocator.mesh_slabs(&mesh_asset_id, binding_count) else {
                 continue;
             };
             let bin_key = Wireframe3dBinKey {
@@ -1632,7 +1656,11 @@ fn queue_wireframes(
                     // from storage), so set index_slab to None to make the
                     // preprocessor emit IndirectParametersNonIndexed instead of
                     // IndirectParametersIndexed.
-                    index_slab_id: if is_wide { None } else { mesh_slabs.index_slab_id },
+                    index_slab_id: if is_wide {
+                        None
+                    } else {
+                        mesh_slabs.index_slab_id
+                    },
                 },
                 mesh_asset_id: if is_wide {
                     Some(mesh_asset_id.untyped())
